@@ -66,6 +66,8 @@
 #include "exec/log.h"
 #include "sysemu/sysemu.h"
 
+#include "symbolic.h"
+
 /* Forward declarations for functions declared in tcg-target.inc.c and
    used here. */
 static void tcg_target_init(TCGContext *s);
@@ -4082,6 +4084,8 @@ int tcg_gen_code(TCGContext *s, TranslationBlock *tb)
 #ifdef CONFIG_PROFILER
     atomic_set(&prof->la_time, prof->la_time + profile_getclock());
 #endif
+
+    parse_translation_block(tb, tb->pc, tb->tc.ptr, tcg_ctx);
 
 #ifdef DEBUG_DISAS
     if (unlikely(qemu_loglevel_mask(CPU_LOG_TB_OP_OPT)
