@@ -66,7 +66,7 @@
 #include "exec/log.h"
 #include "sysemu/sysemu.h"
 
-#include "symbolic.h"
+#include "symbolic/symbolic.h"
 
 /* Forward declarations for functions declared in tcg-target.inc.c and
    used here. */
