@@ -263,6 +263,24 @@ static inline void move_temp(size_t from, size_t to, TCGOp *op_in, TCGContext *t
     tcg_temp_free_internal(t_from);
 }
 
+static inline void clear_temp(size_t idx, TCGOp *op_in, TCGContext *tcg_ctx)
+{
+    assert(idx < TCG_MAX_TEMPS);
+
+    TCGTemp *t_zero = new_non_conflicting_temp(TCG_TYPE_I64);
+    TCGOpcode opc = INDEX_op_movi_i64; // ToDo: i32
+    TCGOp *op = tcg_op_insert_before(tcg_ctx, op_in, opc);
+    op->args[0] = temp_arg(t_zero);
+    op->args[1] = (uintptr_t)0;
+
+    TCGTemp *t;
+    load_addr(&stemps[idx], &t, op_in, tcg_ctx);
+    store_to_addr(t, t_zero, 0, op_in, tcg_ctx);
+
+    tcg_temp_free_internal(t_zero);
+    tcg_temp_free_internal(t);
+}
+
 static inline void test_expr(void)
 {
     Expr * e = next_free_expr - 1;
@@ -568,6 +586,15 @@ void parse_translation_block(TranslationBlock *tb, uintptr_t pc, uint8_t *tb_cod
                 TCGTemp *t_b = arg_temp(op->args[2]);
                 binary_op(bin_opkind, t_out, t_a, t_b, op, tcg_ctx);
 #endif
+            }
+            break;
+
+        case INDEX_op_discard:
+            if (instrument)
+            {
+                mark_temp_as_in_use(arg_temp(op->args[0]));
+                TCGTemp *t = arg_temp(op->args[0]);
+                clear_temp(temp_idx(t), op, tcg_ctx);
             }
             break;
 
