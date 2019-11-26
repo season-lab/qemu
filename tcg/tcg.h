@@ -1514,4 +1514,6 @@ static inline const TCGOpcode *tcg_swap_vecop_list(const TCGOpcode *n)
 
 bool tcg_can_emit_vecop_list(const TCGOpcode *, TCGType, unsigned);
 
+void enable_symbolic_mode(void);
+
 #endif /* TCG_H */

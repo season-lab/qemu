@@ -373,6 +373,11 @@ static void handle_arg_singlestep(const char *arg)
     singlestep = 1;
 }
 
+static void handle_arg_symbolic(const char *arg)
+{
+    enable_symbolic_mode();
+}
+
 static void handle_arg_strace(const char *arg)
 {
     do_strace = 1;
@@ -443,6 +448,8 @@ static const struct qemu_argument arg_table[] = {
      "",           "Seed for pseudo-random number generator"},
     {"trace",      "QEMU_TRACE",       true,  handle_arg_trace,
      "",           "[[enable=]<pattern>][,events=<file>][,file=<file>]"},
+    {"symbolic",   "",         false,  handle_arg_symbolic,
+     "",     "enable symbolic mode' (default off)"},
     {"version",    "QEMU_VERSION",     false, handle_arg_version,
      "",           "display version information and exit"},
     {NULL, NULL, false, NULL, NULL, NULL}

@@ -3990,6 +3990,12 @@ int64_t tcg_cpu_exec_time(void)
 }
 #endif
 
+static uint8_t symbolic_mode = 0;
+void enable_symbolic_mode(void)
+{
+    symbolic_mode = 1;
+}
+
 
 int tcg_gen_code(TCGContext *s, TranslationBlock *tb)
 {
@@ -4085,7 +4091,8 @@ int tcg_gen_code(TCGContext *s, TranslationBlock *tb)
     atomic_set(&prof->la_time, prof->la_time + profile_getclock());
 #endif
 
-    parse_translation_block(tb, tb->pc, tb->tc.ptr, tcg_ctx);
+    if (symbolic_mode)
+        parse_translation_block(tb, tb->pc, tb->tc.ptr, tcg_ctx);
 
 #ifdef DEBUG_DISAS
     if (unlikely(qemu_loglevel_mask(CPU_LOG_TB_OP_OPT)
