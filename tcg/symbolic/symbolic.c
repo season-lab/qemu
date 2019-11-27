@@ -23,12 +23,6 @@ typedef enum OPKIND
     ROTR
 } OPKIND;
 
-typedef enum OPNUM
-{
-    FIRST,
-    SECOND
-} OPNUM;
-
 typedef struct Expr
 {
     //struct Expr *next_free; // eq to zero when in use or when not yet allocated
@@ -40,8 +34,32 @@ typedef struct Expr
     uint8_t is_symbolic_input;
 } Expr;
 
-// symbolic state
+// symbolic temps
 Expr *stemps[TCG_MAX_TEMPS] = {0};
+
+// symbolic memory
+#define L1_PAGE_BITS 16
+#define L2_PAGE_BITS 16
+#define L3_PAGE_BITS 16
+
+typedef struct l3_page_t {
+    Expr * entries[1 << L3_PAGE_BITS];
+} l3_page_t;
+
+typedef struct l2_page_t {
+    l3_page_t * entries[1 << L2_PAGE_BITS];
+} l2_page_t;
+
+typedef struct l1_page_t {
+    l2_page_t * entries[1 << L1_PAGE_BITS];
+} l1_page_t;
+
+// up to 48 bits addressing
+typedef struct s_memory_t {
+    l1_page_t table;
+} s_memory_t;
+
+s_memory_t s_memory = { 0 };
 
 // Expr allocation pool
 #define EXPR_POOL_CAPACITY (256 * 1024)
@@ -113,10 +131,35 @@ static inline void add_void_call_0(void *f, TCGOp *op_in, TCGContext *tcg_ctx)
 {
     TCGOpcode opc = INDEX_op_call;
     TCGOp *op = tcg_op_insert_before(tcg_ctx, op_in, opc);
-    TCGOP_CALLO(op) = 0;
     op->args[0] = (uintptr_t)f;
-    op->args[1] = 0;
-    TCGOP_CALLI(op) = 0;
+    op->args[1] = 0;        // flags
+    TCGOP_CALLI(op) = 0;    // input args
+    TCGOP_CALLO(op) = 0;    // ret args
+}
+
+static inline void add_void_call_1(void *f, TCGTemp * arg, TCGOp *op_in, TCGContext *tcg_ctx)
+{
+    // FixMe: check 32 bit, check other archs
+    TCGOpcode opc = INDEX_op_call;
+    TCGOp *op = tcg_op_insert_before(tcg_ctx, op_in, opc);
+    op->args[0] = temp_arg(arg);
+    op->args[1] = (uintptr_t)f;
+    op->args[2] = 0;        // flags
+    TCGOP_CALLI(op) = 1;    // input args
+    TCGOP_CALLO(op) = 0;    // ret args
+}
+
+static inline void add_void_call_2(void *f, TCGTemp * arg0, TCGTemp * arg1, TCGOp *op_in, TCGContext *tcg_ctx)
+{
+    // FixMe: check 32 bit, check other archs
+    TCGOpcode opc = INDEX_op_call;
+    TCGOp *op = tcg_op_insert_before(tcg_ctx, op_in, opc);
+    op->args[0] = temp_arg(arg0);
+    op->args[1] = temp_arg(arg1);
+    op->args[2] = (uintptr_t)f;
+    op->args[3] = 0;        // flags
+    TCGOP_CALLI(op) = 2;    // input args
+    TCGOP_CALLO(op) = 0;    // ret args
 }
 
 static inline void check_pool_expr_capacity(void)
@@ -160,7 +203,7 @@ static inline void load_addr(void *addr, TCGTemp **t, TCGOp *op_in, TCGContext *
     *t = ptr;
 }
 
-static inline void load_n_from_addr(TCGTemp *ptr, TCGTemp *val, size_t n_bytes, TCGOp *op_in, TCGContext *tcg_ctx)
+static inline void load_n_from_addr(TCGTemp *ptr, TCGTemp *val, uintptr_t offset, size_t n_bytes, TCGOp *op_in, TCGContext *tcg_ctx)
 {
     TCGOpcode opc;
     switch (n_bytes)
@@ -176,33 +219,33 @@ static inline void load_n_from_addr(TCGTemp *ptr, TCGTemp *val, size_t n_bytes, 
     TCGOp *op = tcg_op_insert_before(tcg_ctx, op_in, opc);
     op->args[0] = temp_arg(val);
     op->args[1] = temp_arg(ptr);
-    op->args[2] = 0;
+    op->args[2] = offset;
 }
 
-static inline void load_from_addr(TCGTemp *ptr, TCGTemp *val, TCGOp *op_in, TCGContext *tcg_ctx)
+static inline void load_from_addr(TCGTemp *ptr, TCGTemp *val, TCGOp *op_in, TCGContext *tcg_ctx) // ToDo: add offset arg
 {
-    load_n_from_addr(ptr, val, sizeof(uintptr_t), op_in, tcg_ctx);
+    load_n_from_addr(ptr, val, 0, sizeof(uintptr_t), op_in, tcg_ctx);
 }
 
 static inline void store_to_addr_n(TCGTemp *ptr, TCGTemp *val, uintptr_t offset, size_t n, TCGOp *op_in, TCGContext *tcg_ctx)
 {
     TCGOpcode opc;
-    switch(n)
+    switch (n)
     {
-        case 8:
-            opc = INDEX_op_st_i64;
-            break;
-        case 4:
-            opc = INDEX_op_st32_i64;
-            break;
-        case 2:
-            opc = INDEX_op_st16_i64;
-            break;
-        case 1:
-            opc = INDEX_op_st8_i64;
-            break;
-        default:
-            tcg_abort();
+    case 8:
+        opc = INDEX_op_st_i64;
+        break;
+    case 4:
+        opc = INDEX_op_st32_i64;
+        break;
+    case 2:
+        opc = INDEX_op_st16_i64;
+        break;
+    case 1:
+        opc = INDEX_op_st8_i64;
+        break;
+    default:
+        tcg_abort();
     }
 
     TCGOp *op = tcg_op_insert_before(tcg_ctx, op_in, opc);
@@ -283,7 +326,7 @@ static inline void clear_temp(size_t idx, TCGOp *op_in, TCGContext *tcg_ctx)
 
 static inline void test_expr(void)
 {
-    Expr * e = next_free_expr - 1;
+    Expr *e = next_free_expr - 1;
     printf("Testing expr\n");
     assert(e->is_symbolic_input == 0);
     printf("Done\n");
@@ -428,7 +471,7 @@ static inline void binary_op(OPKIND opkind, TCGTemp *t_op_out, TCGTemp *t_op_a, 
     opc = INDEX_op_movi_i64; // ToDo: i32
     op = tcg_op_insert_before(tcg_ctx, op_in, opc);
     op->args[0] = temp_arg(t_one);
-    op->args[1] = (uintptr_t) opkind;
+    op->args[1] = (uintptr_t)opkind;
 
     store_to_addr_n(t_out, t_opkind, offsetof(Expr, opkind), 1, op_in, tcg_ctx);
 
@@ -483,6 +526,131 @@ static inline void binary_op(OPKIND opkind, TCGTemp *t_op_out, TCGTemp *t_op_a, 
     tcg_temp_free_internal(t_one);
 }
 
+static inline void allocate_l2_page(uintptr_t l1_entry_idx)
+{
+    assert(l1_entry_idx < 1 << L1_PAGE_BITS);
+
+    printf("Allocating l2 page at idx %lu\n", l1_entry_idx);
+    s_memory.table.entries[l1_entry_idx] = g_malloc0(sizeof(l2_page_t)); // FixMe: get mmap lock
+    printf("Done: l1_entry_idx_addr=%p l2_page_addr=%p\n", &s_memory.table.entries[l1_entry_idx], s_memory.table.entries[l1_entry_idx]);
+}
+
+static inline void allocate_l3_page(uintptr_t l1_entry_idx, uintptr_t l2_entry_idx)
+{
+    assert(l1_entry_idx < 1 << L1_PAGE_BITS);
+    assert(s_memory.table.entries[l1_entry_idx]);
+    assert(l2_entry_idx < 1 << L2_PAGE_BITS);
+
+    printf("Allocating l3 page at idx %lu\n", l2_entry_idx);
+    s_memory.table.entries[l1_entry_idx]->entries[l2_entry_idx] = g_malloc0(sizeof(l3_page_t)); // FixMe: get mmap lock
+    printf("Done: l3_page_addr=%p\n", s_memory.table.entries[l1_entry_idx]->entries[l2_entry_idx]);
+}
+
+static inline void print_t_l1_entry_idx_addr(void * l1_entry_addr)
+{
+    printf("L1 Entry addr: %p\n", l1_entry_addr);
+}
+
+static inline void preserve_temp(TCGOp *op, size_t i)
+{
+    op->life |= SYNC_ARG << i;
+}
+
+static inline void qemu_load(TCGTemp *t_orig_ptr, TCGTemp *t_orig_val, uintptr_t offset, TCGOp *op_in, TCGContext *tcg_ctx)
+{
+    preserve_op_load(t_orig_ptr, op_in, tcg_ctx);
+    preserve_op_load(t_orig_val, op_in, tcg_ctx);
+
+    // compute index for L1 table
+
+    TCGTemp * t_l1_entry_idx = new_non_conflicting_temp(TCG_TYPE_PTR);
+    TCGOpcode opc = INDEX_op_mov_i64; // ToDo: i32
+    TCGOp *op = tcg_op_insert_before(tcg_ctx, op_in, opc);
+    op->args[0] = temp_arg(t_l1_entry_idx);
+    op->args[1] = temp_arg(t_orig_ptr);
+
+    TCGTemp * t_shr_bit = new_non_conflicting_temp(TCG_TYPE_PTR);
+    opc = INDEX_op_movi_i64; // ToDo: i32
+    op = tcg_op_insert_before(tcg_ctx, op_in, opc);
+    op->args[0] = temp_arg(t_shr_bit);
+    op->args[1] = (uintptr_t) L1_PAGE_BITS + L2_PAGE_BITS;
+
+    TCGTemp * t_zero = new_non_conflicting_temp(TCG_TYPE_PTR);
+    opc = INDEX_op_movi_i64; // ToDo: i32
+    op = tcg_op_insert_before(tcg_ctx, op_in, opc);
+    op->args[0] = temp_arg(t_zero);
+    op->args[1] = (uintptr_t) 0;
+
+    opc = INDEX_op_shr_i64; // ToDo: i32
+    op = tcg_op_insert_before(tcg_ctx, op_in, opc);
+    op->args[0] = temp_arg(t_l1_entry_idx);
+    op->args[1] = temp_arg(t_l1_entry_idx);
+    op->args[2] = temp_arg(t_shr_bit);
+
+    preserve_temp(op, 0);
+
+    // check whether L2 page is allocated for that index
+
+    TCGLabel *label_l2_page_is_allocated = gen_new_label();
+
+    TCGTemp * t_s_memory = new_non_conflicting_temp(TCG_TYPE_PTR);
+    opc = INDEX_op_movi_i64; // ToDo: i32
+    op = tcg_op_insert_before(tcg_ctx, op_in, opc);
+    op->args[0] = temp_arg(t_s_memory);
+    op->args[1] = (uintptr_t) &s_memory;
+
+    TCGTemp * t_l1_entry_idx_addr = new_non_conflicting_temp(TCG_TYPE_PTR);
+    opc = INDEX_op_movi_i64; // ToDo: i32
+    op = tcg_op_insert_before(tcg_ctx, op_in, opc);
+    op->args[0] = temp_arg(t_l1_entry_idx_addr);
+    assert(sizeof(l2_page_t *) == 8);
+    op->args[1] = (uintptr_t) 3;
+
+    opc = INDEX_op_shl_i64; // ToDo: i32
+    op = tcg_op_insert_before(tcg_ctx, op_in, opc);
+    op->args[0] = temp_arg(t_l1_entry_idx_addr);
+    op->args[1] = temp_arg(t_l1_entry_idx);
+    op->args[2] = temp_arg(t_l1_entry_idx_addr);
+
+    opc = INDEX_op_add_i64; // ToDo: i32
+    op = tcg_op_insert_before(tcg_ctx, op_in, opc);
+    op->args[0] = temp_arg(t_l1_entry_idx_addr);
+    op->args[1] = temp_arg(t_l1_entry_idx_addr);
+    op->args[2] = temp_arg(t_s_memory);
+
+    //add_void_call_1(print_t_l1_entry_idx_addr, t_l1_entry_idx_addr, op_in, tcg_ctx);
+
+    TCGTemp * t_l1_entry = new_non_conflicting_temp(TCG_TYPE_PTR);
+    load_n_from_addr(t_l1_entry_idx_addr, t_l1_entry, 0, 8, op_in, tcg_ctx);
+
+    label_l2_page_is_allocated->refs++;
+    opc = INDEX_op_brcond_i64; // ToDo: i32
+    op = tcg_op_insert_before(tcg_ctx, op_in, opc);
+    op->args[0] = temp_arg(t_l1_entry);
+    op->args[1] = temp_arg(t_zero);
+    op->args[2] = TCG_COND_NE;
+    op->args[3] = label_arg(label_l2_page_is_allocated);
+
+    // if not, allocate L2 page
+    add_void_call_1(allocate_l2_page, t_l1_entry_idx, op_in, tcg_ctx);
+
+    label_l2_page_is_allocated->present = 1;
+    opc = INDEX_op_set_label;
+    op = tcg_op_insert_before(tcg_ctx, op_in, opc);
+    op->args[0] = label_arg(label_l2_page_is_allocated);
+
+    add_void_call_1(print_t_l1_entry_idx_addr, t_l1_entry_idx, op_in, tcg_ctx);
+#if 0
+    add_void_call_2(allocate_l3_page, t_l1_entry, t_l1_entry, op_in, tcg_ctx);
+#endif
+
+    tcg_temp_free_internal(t_s_memory);
+    tcg_temp_free_internal(t_zero);
+    tcg_temp_free_internal(t_l1_entry_idx_addr);
+    tcg_temp_free_internal(t_shr_bit);
+    tcg_temp_free_internal(t_l1_entry_idx);
+}
+
 static inline void mark_temp_as_in_use(TCGTemp *t)
 {
     size_t idx = temp_idx(t);
@@ -499,7 +667,10 @@ static inline void mark_temp_as_free(TCGTemp *t)
 
 void parse_translation_block(TranslationBlock *tb, uintptr_t pc, uint8_t *tb_code, TCGContext *tcg_ctx)
 {
-    if (pc < 0x40054d || pc > 0x400578) // boundary of foo function 
+
+    return;
+
+    if (pc < 0x40054d || pc > 0x400578) // boundary of foo function
         return;
 
     int instrument = 0;
@@ -520,6 +691,9 @@ void parse_translation_block(TranslationBlock *tb, uintptr_t pc, uint8_t *tb_cod
             printf("Instrumenting %lx\n", op->args[0]);
             if (op->args[0] == 0x40054d)
                 make_reg_symbolic("rdi", op, tcg_ctx);
+            break;
+
+        case INDEX_op_set_label:
             break;
 
         // moving a constant into a temp does not create symbolic exprs
@@ -577,7 +751,6 @@ void parse_translation_block(TranslationBlock *tb, uintptr_t pc, uint8_t *tb_cod
 
             if (instrument)
             {
-#if 1
                 mark_temp_as_in_use(arg_temp(op->args[0]));
                 mark_temp_as_in_use(arg_temp(op->args[1]));
                 mark_temp_as_in_use(arg_temp(op->args[2]));
@@ -585,7 +758,6 @@ void parse_translation_block(TranslationBlock *tb, uintptr_t pc, uint8_t *tb_cod
                 TCGTemp *t_a = arg_temp(op->args[1]);
                 TCGTemp *t_b = arg_temp(op->args[2]);
                 binary_op(bin_opkind, t_out, t_a, t_b, op, tcg_ctx);
-#endif
             }
             break;
 
@@ -595,6 +767,18 @@ void parse_translation_block(TranslationBlock *tb, uintptr_t pc, uint8_t *tb_cod
                 mark_temp_as_in_use(arg_temp(op->args[0]));
                 TCGTemp *t = arg_temp(op->args[0]);
                 clear_temp(temp_idx(t), op, tcg_ctx);
+            }
+            break;
+
+        case INDEX_op_qemu_st_i64:
+            if (instrument)
+            {
+                mark_temp_as_in_use(arg_temp(op->args[0]));
+                mark_temp_as_in_use(arg_temp(op->args[1]));
+                TCGTemp * t_val = arg_temp(op->args[0]);
+                TCGTemp * t_ptr = arg_temp(op->args[1]);
+                uintptr_t offset = (uintptr_t)op->args[3];
+                qemu_load(t_ptr, t_val, offset, op, tcg_ctx);
             }
             break;
 
