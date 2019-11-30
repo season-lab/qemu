@@ -127,6 +127,12 @@ static inline TCGTemp *new_non_conflicting_temp(TCGType type)
     return r;
 }
 
+static inline void mark_insn_as_instrumentation(TCGOp *op)
+{
+    // we use the last op arg, which is usually unused
+    op->args[MAX_OPC_PARAM - 1] = (uint64_t) 1;
+}
+
 static inline void add_void_call_0(void *f, TCGOp *op_in, TCGContext *tcg_ctx)
 {
     TCGOpcode opc = INDEX_op_call;
@@ -135,9 +141,11 @@ static inline void add_void_call_0(void *f, TCGOp *op_in, TCGContext *tcg_ctx)
     op->args[1] = 0;        // flags
     TCGOP_CALLI(op) = 0;    // input args
     TCGOP_CALLO(op) = 0;    // ret args
+
+    //mark_insn_as_instrumentation(op);
 }
 
-static inline void add_void_call_1(void *f, TCGTemp * arg, TCGOp *op_in, TCGContext *tcg_ctx)
+static inline void add_void_call_1(void *f, TCGTemp * arg, TCGOp *op_in, TCGContext *tcg_ctx, uint8_t mark_as_instrumentation)
 {
     // FixMe: check 32 bit, check other archs
     TCGOpcode opc = INDEX_op_call;
@@ -147,6 +155,9 @@ static inline void add_void_call_1(void *f, TCGTemp * arg, TCGOp *op_in, TCGCont
     op->args[2] = 0;        // flags
     TCGOP_CALLI(op) = 1;    // input args
     TCGOP_CALLO(op) = 0;    // ret args
+
+    if (mark_as_instrumentation)
+        mark_insn_as_instrumentation(op);
 }
 
 static inline void add_void_call_2(void *f, TCGTemp * arg0, TCGTemp * arg1, TCGOp *op_in, TCGContext *tcg_ctx)
@@ -160,6 +171,8 @@ static inline void add_void_call_2(void *f, TCGTemp * arg0, TCGTemp * arg1, TCGO
     op->args[3] = 0;        // flags
     TCGOP_CALLI(op) = 2;    // input args
     TCGOP_CALLO(op) = 0;    // ret args
+
+    mark_insn_as_instrumentation(op);
 }
 
 static inline void check_pool_expr_capacity(void)
@@ -556,6 +569,7 @@ static inline void preserve_temp(TCGOp *op, size_t i)
     op->life |= SYNC_ARG << i;
 }
 
+
 static inline void qemu_load(TCGTemp *t_orig_ptr, TCGTemp *t_orig_val, uintptr_t offset, TCGOp *op_in, TCGContext *tcg_ctx)
 {
     preserve_op_load(t_orig_ptr, op_in, tcg_ctx);
@@ -586,8 +600,6 @@ static inline void qemu_load(TCGTemp *t_orig_ptr, TCGTemp *t_orig_val, uintptr_t
     op->args[0] = temp_arg(t_l1_entry_idx);
     op->args[1] = temp_arg(t_l1_entry_idx);
     op->args[2] = temp_arg(t_shr_bit);
-
-    preserve_temp(op, 0);
 
     // check whether L2 page is allocated for that index
 
@@ -632,14 +644,14 @@ static inline void qemu_load(TCGTemp *t_orig_ptr, TCGTemp *t_orig_val, uintptr_t
     op->args[3] = label_arg(label_l2_page_is_allocated);
 
     // if not, allocate L2 page
-    add_void_call_1(allocate_l2_page, t_l1_entry_idx, op_in, tcg_ctx);
+    add_void_call_1(allocate_l2_page, t_l1_entry_idx, op_in, tcg_ctx, 1);
 
     label_l2_page_is_allocated->present = 1;
     opc = INDEX_op_set_label;
     op = tcg_op_insert_before(tcg_ctx, op_in, opc);
     op->args[0] = label_arg(label_l2_page_is_allocated);
 
-    add_void_call_1(print_t_l1_entry_idx_addr, t_l1_entry_idx, op_in, tcg_ctx);
+    add_void_call_1(print_t_l1_entry_idx_addr, t_l1_entry_idx_addr, op_in, tcg_ctx, 0);
 #if 0
     add_void_call_2(allocate_l3_page, t_l1_entry, t_l1_entry, op_in, tcg_ctx);
 #endif
@@ -668,8 +680,6 @@ static inline void mark_temp_as_free(TCGTemp *t)
 void parse_translation_block(TranslationBlock *tb, uintptr_t pc, uint8_t *tb_code, TCGContext *tcg_ctx)
 {
 
-    return;
-
     if (pc < 0x40054d || pc > 0x400578) // boundary of foo function
         return;
 
@@ -678,7 +688,6 @@ void parse_translation_block(TranslationBlock *tb, uintptr_t pc, uint8_t *tb_cod
     TCGOp *op;
     QTAILQ_FOREACH(op, &tcg_ctx->ops, link)
     {
-#if 1
         switch (op->opc)
         {
 
@@ -699,19 +708,16 @@ void parse_translation_block(TranslationBlock *tb, uintptr_t pc, uint8_t *tb_cod
         // moving a constant into a temp does not create symbolic exprs
         case INDEX_op_movi_i64:
         case INDEX_op_movi_i32:
-            if (instrument)
-            {
-                mark_temp_as_in_use(arg_temp(op->args[0]));
-            }
+            mark_temp_as_in_use(arg_temp(op->args[0]));
             break;
 
         // we always move exprs between temps, avoiding any check on the source
         // ToDo: branchless but more expensive?
         case INDEX_op_mov_i64:
-            if (instrument)
+            mark_temp_as_in_use(arg_temp(op->args[0]));
+            mark_temp_as_in_use(arg_temp(op->args[1]));
+            if (instrument && 0)
             {
-                mark_temp_as_in_use(arg_temp(op->args[0]));
-                mark_temp_as_in_use(arg_temp(op->args[1]));
                 TCGTemp *from = arg_temp(op->args[1]);
                 TCGTemp *to = arg_temp(op->args[0]);
                 move_temp(temp_idx(from), temp_idx(to), op, tcg_ctx);
@@ -749,11 +755,11 @@ void parse_translation_block(TranslationBlock *tb, uintptr_t pc, uint8_t *tb_cod
         case INDEX_op_rotr_i64:
             bin_opkind = ROTR;
 
+            mark_temp_as_in_use(arg_temp(op->args[0]));
+            mark_temp_as_in_use(arg_temp(op->args[1]));
+            mark_temp_as_in_use(arg_temp(op->args[2]));
             if (instrument)
             {
-                mark_temp_as_in_use(arg_temp(op->args[0]));
-                mark_temp_as_in_use(arg_temp(op->args[1]));
-                mark_temp_as_in_use(arg_temp(op->args[2]));
                 TCGTemp *t_out = arg_temp(op->args[0]);
                 TCGTemp *t_a = arg_temp(op->args[1]);
                 TCGTemp *t_b = arg_temp(op->args[2]);
@@ -762,9 +768,9 @@ void parse_translation_block(TranslationBlock *tb, uintptr_t pc, uint8_t *tb_cod
             break;
 
         case INDEX_op_discard:
-            if (instrument)
+            mark_temp_as_in_use(arg_temp(op->args[0]));
+            if (instrument && 0)
             {
-                mark_temp_as_in_use(arg_temp(op->args[0]));
                 TCGTemp *t = arg_temp(op->args[0]);
                 clear_temp(temp_idx(t), op, tcg_ctx);
             }
@@ -796,113 +802,5 @@ void parse_translation_block(TranslationBlock *tb, uintptr_t pc, uint8_t *tb_cod
                 if (life & 1)
                     mark_temp_as_free(arg_temp(op->args[i]));
         }
-#endif
-#if 0
-#if 1
-        if (done) return;
-        if (op->opc != INDEX_op_insn_start || op->args[0] != 0x40054d) continue;
-        printf("Instrumenting BB\n");
-        done = 1;
-#if 0
-        TCGLabel *l = gen_new_label();
-        TCGTemp * tt0 = tcg_temp_new_internal(TCG_TYPE_I32, false);
-        TCGTemp * tt1 = tcg_temp_new_internal(TCG_TYPE_I32, false);
-        TCGTemp * tt2 = tcg_temp_new_internal(TCG_TYPE_I64, false);
-        //tcg_gen_br(l);
-        tcg_gen_mov_i64(temp_tcgv_i64(tt2), tcg_const_i64((uintptr_t) &counter));
-        tcg_gen_ld_i32(temp_tcgv_i32(tt0), temp_tcgv_ptr(tt2), 0);
-        tcg_gen_mov_i32(temp_tcgv_i32(tt1), tcg_const_i32(0x2));
-        tcg_gen_brcond_i32(TCG_COND_NE, temp_tcgv_i32(tt0), temp_tcgv_i32(tt1), l);
-        gen_set_label(l);
-#endif
-
-#if 1
-        TCGTemp * ptr2 = tcg_temp_new_internal(TCG_TYPE_PTR, false);
-        TCGOpcode lopc = INDEX_op_movi_i64;
-        TCGOp *lop = tcg_op_insert_after(tcg_ctx, op, lopc);
-        lop->args[0] = temp_arg(ptr2);
-        lop->args[1] = (uintptr_t) &counter;
-
-        TCGTemp * ptr = tcg_temp_new_internal(TCG_TYPE_PTR, false);
-        lopc = INDEX_op_movi_i64;
-        lop = tcg_op_insert_after(tcg_ctx, lop, lopc);
-        lop->args[0] = temp_arg(ptr);
-        lop->args[1] = (uintptr_t) &counter;
-
-        TCGTemp * t4 = tcg_temp_new_internal(TCG_TYPE_I32, false);
-        lopc = INDEX_op_ld_i32;
-        lop = tcg_op_insert_after(tcg_ctx, lop, lopc);
-        lop->args[0] = temp_arg(t4);
-        lop->args[1] = temp_arg(ptr2);
-        lop->args[2] = 0;
-
-        TCGTemp * t3 = tcg_temp_new_internal(TCG_TYPE_I32, false);
-        lopc = INDEX_op_movi_i32;
-        lop = tcg_op_insert_after(tcg_ctx, lop, lopc);
-        lop->args[0] = temp_arg(t3);
-        lop->args[1] = 0x0;
-#endif
-#if 1
-        TCGLabel *l = gen_new_label();
-
-        l->refs++;
-        lopc = INDEX_op_brcond_i32;
-        lop = tcg_op_insert_after(tcg_ctx, lop, lopc);
-        lop->args[0] = temp_arg(t4);
-        lop->args[1] = temp_arg(t3);
-        lop->args[2] = TCG_COND_NE;
-        lop->args[3] = label_arg(l);
-#else
-        TCGLabel *l = gen_new_label();
-        l->refs++;
-        lopc = INDEX_op_br;
-        lop = tcg_op_insert_after(tcg_ctx, lop, lopc);
-        lop->args[0] = label_arg(l);
-#endif
-
-
-
-        TCGTemp * t1 = tcg_temp_new_internal(TCG_TYPE_I32, false);
-        lopc = INDEX_op_ld_i32;
-        lop = tcg_op_insert_after(tcg_ctx, lop, lopc);
-        lop->args[0] = temp_arg(t1);
-        lop->args[1] = temp_arg(ptr);
-        lop->args[2] = 0;
-
-        TCGTemp * t2 = tcg_temp_new_internal(TCG_TYPE_I32, false);
-        lopc = INDEX_op_movi_i32;
-        lop = tcg_op_insert_after(tcg_ctx, lop, lopc);
-        lop->args[0] = temp_arg(t2);
-        lop->args[1] = 0xDEAD;
-
-        lopc = INDEX_op_add_i32;
-        lop = tcg_op_insert_after(tcg_ctx, lop, lopc);
-        lop->args[0] = temp_arg(t1);
-        lop->args[1] = temp_arg(t1);
-        lop->args[2] = temp_arg(t2);
-
-        lopc = INDEX_op_st_i32;
-        lop = tcg_op_insert_after(tcg_ctx, lop, lopc);
-        lop->args[0] = temp_arg(t1);
-        lop->args[1] = temp_arg(ptr);
-        lop->args[2] = 0;
-
-        lopc = INDEX_op_call;
-        lop = tcg_op_insert_after(tcg_ctx, lop, lopc);
-        TCGOP_CALLO(lop) = 0;
-        lop->args[0] = (uintptr_t) helper_pcounter;
-        lop->args[1] = 0; // flags
-        TCGOP_CALLI(lop) = 0;
-#if 1
-        l->present = 1;
-        lopc = INDEX_op_set_label;
-        lop = tcg_op_insert_after(tcg_ctx, lop, lopc);
-        lop->args[0] = label_arg(l);
-#endif
-
-        printf("Instrumenting BB done\n");
-        break;
-#endif
-#endif
     }
 }
