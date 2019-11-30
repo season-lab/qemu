@@ -564,9 +564,14 @@ static inline void print_t_l1_entry_idx_addr(void * l1_entry_addr)
     printf("L1 Entry addr: %p\n", l1_entry_addr);
 }
 
-static inline void preserve_temp(TCGOp *op, size_t i)
+static inline void sync_argo_temp(TCGOp *op, size_t i)
 {
     op->life |= SYNC_ARG << i;
+}
+
+static inline void mark_dead_arg_temp(TCGOp *op, size_t i)
+{
+    op->life |= DEAD_ARG << i;
 }
 
 
@@ -589,17 +594,24 @@ static inline void qemu_load(TCGTemp *t_orig_ptr, TCGTemp *t_orig_val, uintptr_t
     op->args[0] = temp_arg(t_shr_bit);
     op->args[1] = (uintptr_t) L1_PAGE_BITS + L2_PAGE_BITS;
 
+    mark_dead_arg_temp(op, 1);
+
     TCGTemp * t_zero = new_non_conflicting_temp(TCG_TYPE_PTR);
     opc = INDEX_op_movi_i64; // ToDo: i32
     op = tcg_op_insert_before(tcg_ctx, op_in, opc);
     op->args[0] = temp_arg(t_zero);
     op->args[1] = (uintptr_t) 0;
 
+    mark_dead_arg_temp(op, 1);
+
     opc = INDEX_op_shr_i64; // ToDo: i32
     op = tcg_op_insert_before(tcg_ctx, op_in, opc);
     op->args[0] = temp_arg(t_l1_entry_idx);
     op->args[1] = temp_arg(t_l1_entry_idx);
     op->args[2] = temp_arg(t_shr_bit);
+
+    tcg_temp_free_internal(t_shr_bit);
+    mark_dead_arg_temp(op, 2);
 
     // check whether L2 page is allocated for that index
 
@@ -630,6 +642,9 @@ static inline void qemu_load(TCGTemp *t_orig_ptr, TCGTemp *t_orig_val, uintptr_t
     op->args[1] = temp_arg(t_l1_entry_idx_addr);
     op->args[2] = temp_arg(t_s_memory);
 
+    tcg_temp_free_internal(t_s_memory);
+    mark_dead_arg_temp(op, 2);
+
     //add_void_call_1(print_t_l1_entry_idx_addr, t_l1_entry_idx_addr, op_in, tcg_ctx);
 
     TCGTemp * t_l1_entry = new_non_conflicting_temp(TCG_TYPE_PTR);
@@ -651,15 +666,13 @@ static inline void qemu_load(TCGTemp *t_orig_ptr, TCGTemp *t_orig_val, uintptr_t
     op = tcg_op_insert_before(tcg_ctx, op_in, opc);
     op->args[0] = label_arg(label_l2_page_is_allocated);
 
-    add_void_call_1(print_t_l1_entry_idx_addr, t_l1_entry_idx_addr, op_in, tcg_ctx, 0);
+    add_void_call_1(print_t_l1_entry_idx_addr, t_l1_entry, op_in, tcg_ctx, 0);
 #if 0
     add_void_call_2(allocate_l3_page, t_l1_entry, t_l1_entry, op_in, tcg_ctx);
 #endif
 
-    tcg_temp_free_internal(t_s_memory);
     tcg_temp_free_internal(t_zero);
     tcg_temp_free_internal(t_l1_entry_idx_addr);
-    tcg_temp_free_internal(t_shr_bit);
     tcg_temp_free_internal(t_l1_entry_idx);
 }
 

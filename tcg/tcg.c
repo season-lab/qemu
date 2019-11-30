@@ -3981,6 +3981,8 @@ static void tcg_reg_alloc_call(TCGContext *s, TCGOp *op)
     {
         for (size_t i = 0; i < temps_to_restore_count; i++)
         {
+            // skip dead temporaries
+            if (temps_to_restore[i].ts->val_type == TEMP_VAL_DEAD) continue;
             if (temps_to_restore[i].where == TO_REG)
             {
                 tcg_debug_assert(!temps_to_restore[i].ts->fixed_reg);
