@@ -66,6 +66,8 @@
 #include "exec/log.h"
 #include "sysemu/sysemu.h"
 
+// added due to inline functions in symbolic.h
+
 #include "symbolic/symbolic.h"
 
 /* Forward declarations for functions declared in tcg-target.inc.c and
@@ -3081,7 +3083,9 @@ static void temp_allocate_frame(TCGContext *s, TCGTemp *ts)
     s->current_frame_offset += sizeof(tcg_target_long);
 }
 
+#ifndef TCG_INSTRUMENTATION
 static void temp_load(TCGContext *, TCGTemp *, TCGRegSet, TCGRegSet, TCGRegSet);
+#endif
 
 /* Mark a temporary as free or dead.  If 'free_or_dead' is negative,
    mark it free; otherwise mark it dead.  */
@@ -3153,7 +3157,10 @@ static void temp_sync(TCGContext *s, TCGTemp *ts, TCGRegSet allocated_regs,
 }
 
 /* free register 'reg' by spilling the corresponding temporary if necessary */
-static void tcg_reg_free(TCGContext *s, TCGReg reg, TCGRegSet allocated_regs)
+#ifndef TCG_INSTRUMENTATION
+static
+#endif
+void tcg_reg_free(TCGContext *s, TCGReg reg, TCGRegSet allocated_regs)
 {
     TCGTemp *ts = s->reg_to_temp[reg];
     if (ts != NULL) {
@@ -3235,7 +3242,10 @@ static TCGReg tcg_reg_alloc(TCGContext *s, TCGRegSet required_regs,
 
 /* Make sure the temporary is in a register.  If needed, allocate the register
    from DESIRED while avoiding ALLOCATED.  */
-static void temp_load(TCGContext *s, TCGTemp *ts, TCGRegSet desired_regs,
+#ifndef TCG_INSTRUMENTATION
+static
+#endif
+void temp_load(TCGContext *s, TCGTemp *ts, TCGRegSet desired_regs,
                       TCGRegSet allocated_regs, TCGRegSet preferred_regs)
 {
     TCGReg reg;
@@ -3771,13 +3781,8 @@ static void tcg_reg_alloc_call(TCGContext *s, TCGOp *op)
     TCGRegSet allocated_regs;
 
 #ifdef TCG_INSTRUMENTATION
-    temp_to_restore_t temps_to_restore[TCG_MAX_TEMPS];
-    size_t temps_to_restore_count = 0;
-    uint8_t is_instrumentation_helper = 0;
-    if (op->args[MAX_OPC_PARAM - 1] == 1)
-    {
-        is_instrumentation_helper = 1;
-    }
+    DEFINE_TEMPS_TO_RECOVER(temps_to_restore, temps_to_restore_count);
+    uint8_t is_instrumentation_helper = is_instrumentation(op);
 #endif
 
     func_addr = (tcg_insn_unit *)(intptr_t)op->args[nb_oargs + nb_iargs];
@@ -3827,34 +3832,21 @@ static void tcg_reg_alloc_call(TCGContext *s, TCGOp *op)
             if (ts->val_type == TEMP_VAL_REG) {
                 if (ts->reg != reg) {
 #ifdef TCG_INSTRUMENTATION
-                    if (is_instrumentation_helper && s->reg_to_temp[reg])
+                    if (is_instrumentation_helper)
                     {
-                        temps_to_restore[temps_to_restore_count].ts = s->reg_to_temp[reg];
-                        assert(temps_to_restore[temps_to_restore_count].ts->val_type == TEMP_VAL_REG);
-                        temps_to_restore[temps_to_restore_count].ts->mem_coherent = 0;
-                        temps_to_restore[temps_to_restore_count].reg = reg;
-                        temps_to_restore[temps_to_restore_count].where = TO_REG;
-                        temps_to_restore_count++;
-                        assert(temps_to_restore_count < TCG_MAX_TEMPS);
-                        //printf("Tracking temp to recover in REG=%u\n", reg);
-                        //if (temps_to_restore[temps_to_restore_count - 1].ts->val_type == TEMP_VAL_MEM)
-                        //    printf("TS to restore is DEAD\n");
+                        if (s->reg_to_temp[reg])
+                            add_temp_reg_to_restore(s->reg_to_temp[reg], reg, temps_to_restore, &temps_to_restore_count);
 
-                        temps_to_restore[temps_to_restore_count].ts = ts;
-                        assert(temps_to_restore[temps_to_restore_count].ts->val_type == TEMP_VAL_REG);
-                        temps_to_restore[temps_to_restore_count].ts->mem_coherent = 0;
-                        temps_to_restore[temps_to_restore_count].reg = ts->reg;
-                        temps_to_restore[temps_to_restore_count].where = TO_REG;
-                        temps_to_restore_count++;
-                        assert(temps_to_restore_count < TCG_MAX_TEMPS);
-                        //printf("Tracking temp to recover in REG=%u\n", ts->reg);
-                        //if (temps_to_restore[temps_to_restore_count - 1].ts->val_type == TEMP_VAL_MEM)
-                        //    printf("TS to restore is DEAD\n");
+                        add_temp_reg_to_restore(ts, ts->reg, temps_to_restore, &temps_to_restore_count);
                     }
 #endif
                     tcg_reg_free(s, reg, allocated_regs);
                     if (!tcg_out_mov(s, ts->type, reg, ts->reg)) {
-                        assert(0);
+#ifdef TCG_INSTRUMENTATION
+                        // FixMe: handle this scenario
+                        if (is_instrumentation_helper)
+                            assert(0);
+#endif
                         /*
                          * Cross register class move not supported.  Sync the
                          * temp back to its slot and load from there.
@@ -3870,30 +3862,9 @@ static void tcg_reg_alloc_call(TCGContext *s, TCGOp *op)
                     if (is_instrumentation_helper)
                     {
                         if (s->reg_to_temp[reg])
-                        {
-                            temps_to_restore[temps_to_restore_count].ts = s->reg_to_temp[reg];
-                            assert(temps_to_restore[temps_to_restore_count].ts->val_type == TEMP_VAL_REG);
-                            temps_to_restore[temps_to_restore_count].ts->mem_coherent = 1;
-                            temps_to_restore[temps_to_restore_count].reg = reg;
-                            temps_to_restore[temps_to_restore_count].where = TO_REG;
-                            temps_to_restore_count++;
-                            assert(temps_to_restore_count < TCG_MAX_TEMPS);
-                            //printf("Tracking temp to recover in REG=%u\n", reg);
-                            //if (temps_to_restore[temps_to_restore_count - 1].ts->val_type == TEMP_VAL_MEM)
-                            //    printf("TS to restore is DEAD\n");
-                        }
+                            add_temp_reg_to_restore(s->reg_to_temp[reg], reg, temps_to_restore, &temps_to_restore_count);
 
-                        assert(ts->val_type == TEMP_VAL_MEM);
-                        temps_to_restore[temps_to_restore_count].ts = ts;
-                        assert(temps_to_restore[temps_to_restore_count].ts->val_type == TEMP_VAL_MEM);
-                        temps_to_restore[temps_to_restore_count].reg = ts->mem_base->reg;
-                        temps_to_restore[temps_to_restore_count].mem_offset = ts->mem_offset;
-                        temps_to_restore[temps_to_restore_count].where = TO_MEM;
-                        temps_to_restore_count++;
-                        assert(temps_to_restore_count < TCG_MAX_TEMPS);
-                        //printf("Tracking temp to recover in MEM\n");
-                        //if (temps_to_restore[temps_to_restore_count - 1].ts->val_type == TEMP_VAL_MEM)
-                        //    printf("TS to restore is DEAD\n");
+                        add_temp_mem_to_restore(s->reg_to_temp[reg], ts->mem_base->reg, ts->mem_offset, temps_to_restore, &temps_to_restore_count);
                     }
 #endif
                 TCGRegSet arg_set = 0;
@@ -3922,18 +3893,7 @@ static void tcg_reg_alloc_call(TCGContext *s, TCGOp *op)
             if (is_instrumentation_helper)
             {
                 if (s->reg_to_temp[i])
-                {
-                    temps_to_restore[temps_to_restore_count].ts = s->reg_to_temp[i];
-                    assert(temps_to_restore[temps_to_restore_count].ts->val_type == TEMP_VAL_REG);
-                    temps_to_restore[temps_to_restore_count].ts->mem_coherent = 0;
-                    temps_to_restore[temps_to_restore_count].reg = i;
-                    temps_to_restore[temps_to_restore_count].where = TO_REG;
-                    temps_to_restore_count++;
-                    assert(temps_to_restore_count < TCG_MAX_TEMPS);
-                    //printf("Tracking temp to recover in REG=%u\n", i);
-                }
-                //printf("Freeing clobbering REG=%u in_use=%d is_reg=%d\n", 
-                //    i, s->reg_to_temp[i] != 0, s->reg_to_temp[i] && s->reg_to_temp[i]->val_type == TEMP_VAL_REG);
+                    add_temp_reg_to_restore(s->reg_to_temp[i], i, temps_to_restore, &temps_to_restore_count);
             }
 #endif
             tcg_reg_free(s, i, allocated_regs);
@@ -3985,30 +3945,16 @@ static void tcg_reg_alloc_call(TCGContext *s, TCGOp *op)
             if (temps_to_restore[i].ts->val_type == TEMP_VAL_DEAD) continue;
             if (temps_to_restore[i].where == TO_REG)
             {
-                tcg_debug_assert(!temps_to_restore[i].ts->fixed_reg);
-                //printf("Restoring temp to REG=%u\n", temps_to_restore[i].reg);
-                tcg_reg_free(s, temps_to_restore[i].reg, allocated_regs);
-                //printf("Freed used reg\n");
-                tcg_regset_reset_reg(allocated_regs, temps_to_restore[i].reg);
-                TCGRegSet arg_set = 0;
                 assert(nb_oargs <= 0 || tcg_target_call_oarg_regs[i] != temps_to_restore[i].reg);
-                tcg_regset_set_reg(arg_set, temps_to_restore[i].reg);
-                //printf("Loading temp to reg: %p\n", temps_to_restore[i].ts);
-                //if (temps_to_restore[i].ts->val_type == TEMP_VAL_DEAD)
-                //    printf("TS to restore is DEAD\n");
-                temp_load(s, temps_to_restore[i].ts, arg_set, allocated_regs, 0);
-                temps_to_restore[i].ts->mem_coherent = 0;
-                //printf("Done\n");
+                restore_temp_to_reg(i, allocated_regs, s, temps_to_restore, &temps_to_restore_count);
             }
             else
             {
-                assert(0); // Test Me
+                assert(0); // Test this case
                 assert(temps_to_restore[i].where == TO_MEM);
-                //printf("Restoring temp to MEM\n");
                 assert(temps_to_restore[i].reg == temps_to_restore[i].ts->mem_base->reg);
                 assert(temps_to_restore[i].mem_offset == temps_to_restore[i].ts->mem_offset);
                 temp_sync(s, temps_to_restore[i].ts, allocated_regs, 0, -1);
-                //printf("Done\n");
             }
         }
     }
@@ -4224,8 +4170,10 @@ int tcg_gen_code(TCGContext *s, TranslationBlock *tb)
     atomic_set(&prof->la_time, prof->la_time + profile_getclock());
 #endif
 
+#ifdef TCG_INSTRUMENTATION
     if (symbolic_mode)
         parse_translation_block(tb, tb->pc, tb->tc.ptr, tcg_ctx);
+#endif
 
 #ifdef DEBUG_DISAS
     if (unlikely(qemu_loglevel_mask(CPU_LOG_TB_OP_OPT)
