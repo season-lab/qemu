@@ -926,7 +926,7 @@ void parse_translation_block(TranslationBlock *tb, uintptr_t pc, uint8_t *tb_cod
             }
             break;
 
-        case INDEX_op_qemu_st_i64:
+        case INDEX_op_qemu_ld_i64:
             if (instrument)
             {
                 mark_temp_as_in_use(arg_temp(op->args[0]));
