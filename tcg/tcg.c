@@ -3711,11 +3711,27 @@ static void tcg_reg_alloc_op(TCGContext *s, const TCGOp *op)
 
             if ((arg_ct->ct & TCG_CT_ALIAS)
                 && !const_args[arg_ct->alias_index]) {
+
+#ifdef TCG_INSTRUMENTATION
+                assert(!is_instrumentation(op));
+#endif
+
                 reg = new_args[arg_ct->alias_index];
             } else if (arg_ct->ct & TCG_CT_NEWREG) {
+
+#ifdef TCG_INSTRUMENTATION
+                assert(!is_instrumentation(op));
+#endif
+
                 reg = tcg_reg_alloc(s, arg_ct->u.regs,
                                     i_allocated_regs | o_allocated_regs,
                                     op->output_pref[k], ts->indirect_base);
+#ifdef TCG_INSTRUMENTATION
+            } else if (is_instrumentation(op) && ts->val_type == TEMP_VAL_REG) {
+                // if the temp is alive, reuse the same reg
+                // to avoid problems in branching instrumentation
+                reg = ts->reg;
+#endif
             } else {
                 reg = tcg_reg_alloc(s, arg_ct->u.regs, o_allocated_regs,
                                     op->output_pref[k], ts->indirect_base);

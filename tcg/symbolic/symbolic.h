@@ -43,7 +43,7 @@ typedef struct temp_to_restore_t
   temp_to_restore_t temps_to_restore_var[TCG_MAX_TEMPS];                      \
   size_t temp_to_restores_count = 0;
 
-inline uint8_t is_instrumentation(TCGOp *op)
+inline uint8_t is_instrumentation(const TCGOp *op)
 {
   return op->args[MAX_OPC_PARAM - 1] == 1;
 }

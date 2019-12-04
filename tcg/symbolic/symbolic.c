@@ -636,6 +636,8 @@ static inline void print_t_l1_entry_idx_addr(void *l1_entry_addr)
 
 static inline void qemu_load(TCGTemp *t_orig_ptr, TCGTemp *t_orig_val, uintptr_t offset, TCGOp *op_in, TCGContext *tcg_ctx)
 {
+    TCGOp * op;
+
     preserve_op_load(t_orig_ptr, op_in, tcg_ctx);
     preserve_op_load(t_orig_val, op_in, tcg_ctx);
 
@@ -668,27 +670,24 @@ static inline void qemu_load(TCGTemp *t_orig_ptr, TCGTemp *t_orig_val, uintptr_t
     tcg_binop(t_l1_entry_idx_addr, t_l1_entry_idx_addr, t_s_memory, 0, 0, 1, ADD, op_in, NULL, tcg_ctx);
     tcg_temp_free_internal(t_s_memory);
 
-    //add_void_call_1(print_t_l1_entry_idx_addr, t_l1_entry_idx_addr, op_in, NULL, tcg_ctx);
-
     TCGTemp *t_l1_entry = new_non_conflicting_temp(TCG_TYPE_PTR);
-    tcg_load_n(t_l1_entry_idx_addr, t_l1_entry, 0, 0, 0, 1, sizeof(uintptr_t), op_in, NULL, tcg_ctx);
+    tcg_load_n(t_l1_entry_idx_addr, t_l1_entry, 0, 0, 0, 0, sizeof(uintptr_t), op_in, NULL, tcg_ctx);
 
     tcg_brcond(label_l2_page_is_allocated, t_l1_entry, t_zero, TCG_COND_NE, 0, 0, op_in, NULL, tcg_ctx);
 
     // if not, allocate L2 page
-    TCGOp * helper;
-    add_void_call_1(allocate_l2_page, t_l1_entry_idx, op_in, &helper, tcg_ctx);
+    add_void_call_1(allocate_l2_page, t_l1_entry_idx, op_in, &op, tcg_ctx);
     // mark since it will preserve regs, marking temps as TS_VAL_MEM
     // however this is done only when the helper is executed
     // and its execution depends on the branch condiion!
-    mark_insn_as_instrumentation(helper);
+    mark_insn_as_instrumentation(op);
+
+    tcg_load_n(t_l1_entry_idx_addr, t_l1_entry, 0, 0, 0, 1, sizeof(uintptr_t), op_in, &op, tcg_ctx);
+    mark_insn_as_instrumentation(op);
 
     tcg_set_label(label_l2_page_is_allocated, op_in, NULL, tcg_ctx);
 
     add_void_call_1(print_t_l1_entry_idx_addr, t_l1_entry, op_in, NULL, tcg_ctx);
-#if 0
-    add_void_call_2(allocate_l3_page, t_l1_entry, t_l1_entry, op_in, tcg_ctx);
-#endif
 
     tcg_temp_free_internal(t_zero);
     tcg_temp_free_internal(t_l1_entry_idx_addr);
