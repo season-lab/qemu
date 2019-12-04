@@ -4091,7 +4091,6 @@ void enable_symbolic_mode(void)
     symbolic_mode = 1;
 }
 
-
 int tcg_gen_code(TCGContext *s, TranslationBlock *tb)
 {
 #ifdef CONFIG_PROFILER

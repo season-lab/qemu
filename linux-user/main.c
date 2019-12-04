@@ -378,6 +378,17 @@ static void handle_arg_symbolic(const char *arg)
     enable_symbolic_mode();
 }
 
+unsigned long arg_tb_size = 0;
+static void handle_arg_tb_size(const char *arg)
+{
+    unsigned long size;
+    if (qemu_strtoul(arg, NULL, 0, &size) < 0) {
+        error_report("Invalid argument to -tb-size");
+        exit(1);
+    }
+    arg_tb_size = size;
+}
+
 static void handle_arg_strace(const char *arg)
 {
     do_strace = 1;
@@ -448,8 +459,10 @@ static const struct qemu_argument arg_table[] = {
      "",           "Seed for pseudo-random number generator"},
     {"trace",      "QEMU_TRACE",       true,  handle_arg_trace,
      "",           "[[enable=]<pattern>][,events=<file>][,file=<file>]"},
-    {"symbolic",   "",         false,  handle_arg_symbolic,
-     "",     "enable symbolic mode' (default off)"},
+    {"symbolic",   "",                 false,  handle_arg_symbolic,
+     "",     "enable symbolic mode (default off)"},
+    {"tb-size",   "",      true,  handle_arg_tb_size,
+     "1024",     "set TB size (default 0)"},
     {"version",    "QEMU_VERSION",     false, handle_arg_version,
      "",           "display version information and exit"},
     {NULL, NULL, false, NULL, NULL, NULL}
@@ -676,7 +689,8 @@ int main(int argc, char **argv, char **envp)
     cpu_type = parse_cpu_option(cpu_model);
 
     /* init tcg before creating CPUs and to get qemu_host_page_size */
-    tcg_exec_init(0);
+    printf("tb-size=%lu\n", arg_tb_size);
+    tcg_exec_init(arg_tb_size * 1024 * 1024);
 
     /* Reserving *too* much vm space via mmap can run into problems
        with rlimits, oom due to page table creation, etc.  We will still try it,
