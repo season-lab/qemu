@@ -42,39 +42,34 @@ Expr *stemps[TCG_MAX_TEMPS] = {0};
 #define L2_PAGE_BITS 16
 #define L3_PAGE_BITS 16
 
-typedef struct l3_page_t {
-    Expr * entries[1 << L3_PAGE_BITS];
+typedef struct l3_page_t
+{
+    Expr *entries[1 << L3_PAGE_BITS];
 } l3_page_t;
 
-typedef struct l2_page_t {
-    l3_page_t * entries[1 << L2_PAGE_BITS];
+typedef struct l2_page_t
+{
+    l3_page_t *entries[1 << L2_PAGE_BITS];
 } l2_page_t;
 
-typedef struct l1_page_t {
-    l2_page_t * entries[1 << L1_PAGE_BITS];
+typedef struct l1_page_t
+{
+    l2_page_t *entries[1 << L1_PAGE_BITS];
 } l1_page_t;
 
 // up to 48 bits addressing
-typedef struct s_memory_t {
+typedef struct s_memory_t
+{
     l1_page_t table;
 } s_memory_t;
 
-s_memory_t s_memory = { 0 };
+s_memory_t s_memory = {0};
 
 // Expr allocation pool
 #define EXPR_POOL_CAPACITY (256 * 1024)
 Expr pool[EXPR_POOL_CAPACITY] = {0};
 Expr *next_free_expr = &pool[0];
 Expr *last_expr = NULL; // ToDo: unsafe
-
-#if 0
-int counter = 0;
-void helper_pcounter(void);
-void helper_pcounter(void)
-{
-    printf("Counter: %x\n", counter);
-}
-#endif
 
 #if 0
 TCGOp * op_macro;
@@ -130,37 +125,38 @@ static inline TCGTemp *new_non_conflicting_temp(TCGType type)
 static inline void mark_insn_as_instrumentation(TCGOp *op)
 {
     // we use the last op arg, which is usually unused
-    op->args[MAX_OPC_PARAM - 1] = (uint64_t) 1;
+    op->args[MAX_OPC_PARAM - 1] = (uint64_t)1;
 }
 
-static inline void add_void_call_0(void *f, TCGOp *op_in, TCGContext *tcg_ctx)
+static inline void add_void_call_0(void *f, TCGOp *op_in, TCGOp **op_out, TCGContext *tcg_ctx)
 {
     TCGOpcode opc = INDEX_op_call;
     TCGOp *op = tcg_op_insert_before(tcg_ctx, op_in, opc);
     op->args[0] = (uintptr_t)f;
-    op->args[1] = 0;        // flags
-    TCGOP_CALLI(op) = 0;    // input args
-    TCGOP_CALLO(op) = 0;    // ret args
+    op->args[1] = 0;     // flags
+    TCGOP_CALLI(op) = 0; // input args
+    TCGOP_CALLO(op) = 0; // ret args
 
-    //mark_insn_as_instrumentation(op);
+    if (op_out)
+        *op_out = op;
 }
 
-static inline void add_void_call_1(void *f, TCGTemp * arg, TCGOp *op_in, TCGContext *tcg_ctx, uint8_t mark_as_instrumentation)
+static inline void add_void_call_1(void *f, TCGTemp *arg, TCGOp *op_in, TCGOp **op_out, TCGContext *tcg_ctx)
 {
     // FixMe: check 32 bit, check other archs
     TCGOpcode opc = INDEX_op_call;
     TCGOp *op = tcg_op_insert_before(tcg_ctx, op_in, opc);
     op->args[0] = temp_arg(arg);
     op->args[1] = (uintptr_t)f;
-    op->args[2] = 0;        // flags
-    TCGOP_CALLI(op) = 1;    // input args
-    TCGOP_CALLO(op) = 0;    // ret args
+    op->args[2] = 0;     // flags
+    TCGOP_CALLI(op) = 1; // input args
+    TCGOP_CALLO(op) = 0; // ret args
 
-    if (mark_as_instrumentation)
-        mark_insn_as_instrumentation(op);
+    if (op_out)
+        *op_out = op;
 }
 
-static inline void add_void_call_2(void *f, TCGTemp * arg0, TCGTemp * arg1, TCGOp *op_in, TCGContext *tcg_ctx)
+static inline void add_void_call_2(void *f, TCGTemp *arg0, TCGTemp *arg1, TCGOp *op_in, TCGOp **op_out, TCGContext *tcg_ctx)
 {
     // FixMe: check 32 bit, check other archs
     TCGOpcode opc = INDEX_op_call;
@@ -168,11 +164,12 @@ static inline void add_void_call_2(void *f, TCGTemp * arg0, TCGTemp * arg1, TCGO
     op->args[0] = temp_arg(arg0);
     op->args[1] = temp_arg(arg1);
     op->args[2] = (uintptr_t)f;
-    op->args[3] = 0;        // flags
-    TCGOP_CALLI(op) = 2;    // input args
-    TCGOP_CALLO(op) = 0;    // ret args
+    op->args[3] = 0;     // flags
+    TCGOP_CALLI(op) = 2; // input args
+    TCGOP_CALLO(op) = 0; // ret args
 
-    mark_insn_as_instrumentation(op);
+    if (op_out)
+        *op_out = op;
 }
 
 static inline void check_pool_expr_capacity(void)
@@ -206,17 +203,102 @@ static inline void new_symbolic_expr(void)
     printf("Marking expr%lu as symbolic\n", GET_EXPR_IDX(e));
 }
 
-static inline void load_addr(void *addr, TCGTemp **t, TCGOp *op_in, TCGContext *tcg_ctx)
+static inline void sync_argo_temp(TCGOp *op, size_t i)
 {
-    TCGTemp *ptr = new_non_conflicting_temp(TCG_TYPE_PTR);
-    TCGOpcode opc = INDEX_op_movi_i64;
-    TCGOp *op = tcg_op_insert_before(tcg_ctx, op_in, opc);
-    op->args[0] = temp_arg(ptr);
-    op->args[1] = (uintptr_t)addr;
-    *t = ptr;
+    op->life |= SYNC_ARG << i;
 }
 
-static inline void load_n_from_addr(TCGTemp *ptr, TCGTemp *val, uintptr_t offset, size_t n_bytes, TCGOp *op_in, TCGContext *tcg_ctx)
+static inline void mark_dead_arg_temp(TCGOp *op, size_t i)
+{
+    op->life |= DEAD_ARG << i;
+}
+
+// ts <- CONST
+static inline void tcg_movi(TCGTemp *ts, uintptr_t const_val,
+                            uint8_t is_ts_dead, uint8_t is_const_val_dead,
+                            TCGOp *op_in, TCGOp **op_out, TCGContext *tcg_ctx)
+{
+    TCGOpcode opc = INDEX_op_movi_i64;
+    TCGOp *op = tcg_op_insert_before(tcg_ctx, op_in, opc);
+
+    op->args[0] = temp_arg(ts);
+    assert(!is_ts_dead);
+
+    op->args[1] = (uintptr_t)const_val;
+    if (is_const_val_dead)
+        mark_dead_arg_temp(op, 1);
+
+    if (op_out)
+        *op_out = op;
+}
+
+// to <- from
+static inline void tcg_mov(TCGTemp *ts_to, TCGTemp *ts_from,
+                           uint8_t is_ts_to_dead, uint8_t is_ts_from_dead,
+                           TCGOp *op_in, TCGOp **op_out, TCGContext *tcg_ctx)
+{
+    TCGOpcode opc = INDEX_op_mov_i64;
+    TCGOp *op = tcg_op_insert_before(tcg_ctx, op_in, opc);
+
+    op->args[0] = temp_arg(ts_to);
+    assert(!is_ts_to_dead);
+
+    op->args[1] = temp_arg(ts_from);
+    if (is_ts_from_dead)
+        mark_dead_arg_temp(op, 1);
+
+    if (op_out)
+        *op_out = op;
+}
+
+// c <- a op b
+static inline void tcg_binop(TCGTemp *ts_c, TCGTemp *ts_a, TCGTemp *ts_b,
+                             uint8_t is_ts_c_dead, uint8_t is_ts_a_dead, uint8_t is_ts_b_dead,
+                             OPKIND opkind, TCGOp *op_in, TCGOp **op_out, TCGContext *tcg_ctx)
+{
+    TCGOpcode opc;
+    switch (opkind)
+    {
+    case ADD:
+        opc = INDEX_op_add_i64;
+        break;
+    case SUB:
+        opc = INDEX_op_sub_i64;
+        break;
+    case SHR:
+        opc = INDEX_op_shr_i64;
+        break;
+    case SHL:
+        opc = INDEX_op_shl_i64;
+        break;
+    case AND:
+        opc = INDEX_op_and_i64;
+        break;
+    default:
+        tcg_abort();
+        break;
+    }
+
+    TCGOp *op = tcg_op_insert_before(tcg_ctx, op_in, opc);
+
+    op->args[0] = temp_arg(ts_c);
+    assert(!is_ts_c_dead);
+
+    op->args[1] = temp_arg(ts_a);
+    if (is_ts_a_dead)
+        mark_dead_arg_temp(op, 1);
+
+    op->args[2] = temp_arg(ts_b);
+    if (is_ts_b_dead)
+        mark_dead_arg_temp(op, 2);
+
+    if (op_out)
+        *op_out = op;
+}
+
+static inline void tcg_load_n(TCGTemp *ts_from, TCGTemp *ts_to, uintptr_t offset,
+                              uint8_t is_ts_from_dead, uint8_t is_ts_to_dead, uint8_t is_offset_dead,
+                              size_t n_bytes, TCGOp *op_in, TCGOp **op_out, TCGContext *tcg_ctx)
 {
     TCGOpcode opc;
     switch (n_bytes)
@@ -230,20 +312,28 @@ static inline void load_n_from_addr(TCGTemp *ptr, TCGTemp *val, uintptr_t offset
     }
 
     TCGOp *op = tcg_op_insert_before(tcg_ctx, op_in, opc);
-    op->args[0] = temp_arg(val);
-    op->args[1] = temp_arg(ptr);
+
+    op->args[0] = temp_arg(ts_to);
+    assert(!is_ts_from_dead);
+
+    op->args[1] = temp_arg(ts_from);
+    if (is_ts_to_dead)
+        mark_dead_arg_temp(op, 1);
+
     op->args[2] = offset;
+    if (is_offset_dead)
+        mark_dead_arg_temp(op, 2);
+
+    if (op_out)
+        *op_out = op;
 }
 
-static inline void load_from_addr(TCGTemp *ptr, TCGTemp *val, TCGOp *op_in, TCGContext *tcg_ctx) // ToDo: add offset arg
-{
-    load_n_from_addr(ptr, val, 0, sizeof(uintptr_t), op_in, tcg_ctx);
-}
-
-static inline void store_to_addr_n(TCGTemp *ptr, TCGTemp *val, uintptr_t offset, size_t n, TCGOp *op_in, TCGContext *tcg_ctx)
+static inline void tcg_store_n(TCGTemp *ts_to, TCGTemp *ts_val, uintptr_t offset,
+                                uint8_t is_ts_to_dead, uint8_t is_ts_val_dead, uint8_t is_offset_dead,
+                                size_t n_bytes, TCGOp *op_in, TCGOp **op_out, TCGContext *tcg_ctx)
 {
     TCGOpcode opc;
-    switch (n)
+    switch (n_bytes)
     {
     case 8:
         opc = INDEX_op_st_i64;
@@ -262,27 +352,74 @@ static inline void store_to_addr_n(TCGTemp *ptr, TCGTemp *val, uintptr_t offset,
     }
 
     TCGOp *op = tcg_op_insert_before(tcg_ctx, op_in, opc);
-    op->args[0] = temp_arg(val);
-    op->args[1] = temp_arg(ptr);
+
+    op->args[0] = temp_arg(ts_val);
+    if (is_ts_val_dead)
+        mark_dead_arg_temp(op, 0);
+
+    op->args[1] = temp_arg(ts_to);
+    if (is_ts_to_dead)
+        mark_dead_arg_temp(op, 1);
+
     op->args[2] = offset;
+    if (is_offset_dead)
+        mark_dead_arg_temp(op, 2);
+
+    if (op_out)
+        *op_out = op;
 }
 
-static inline void store_to_addr(TCGTemp *ptr, TCGTemp *val, uintptr_t offset, TCGOp *op_in, TCGContext *tcg_ctx)
+// branch to label if a cond b is true
+static inline void tcg_brcond(TCGLabel *label, TCGTemp *ts_a, TCGTemp *ts_b, TCGCond cond,
+                              uint8_t is_ts_a_dead, uint8_t is_ts_b_dead,
+                              TCGOp *op_in, TCGOp **op_out, TCGContext *tcg_ctx)
 {
-    // FixMe: what if val is only 32bit?
-    store_to_addr_n(ptr, val, offset, sizeof(void *), op_in, tcg_ctx);
+    label->refs++;
+    TCGOpcode opc = INDEX_op_brcond_i64; // ToDo: i32
+    TCGOp *op = tcg_op_insert_before(tcg_ctx, op_in, opc);
+
+    op->args[0] = temp_arg(ts_a);
+    if (is_ts_a_dead)
+        mark_dead_arg_temp(op, 0);
+
+    op->args[1] = temp_arg(ts_b);
+    if (is_ts_b_dead)
+        mark_dead_arg_temp(op, 1);
+
+    op->args[2] = cond;
+    op->args[3] = label_arg(label);
+
+    if (op_out)
+        *op_out = op;
+}
+
+// add a goto label (referenced by brcond)
+static inline void tcg_set_label(TCGLabel *label,
+                                TCGOp *op_in, TCGOp **op_out, TCGContext *tcg_ctx)
+{
+
+    label->present = 1;
+    TCGOpcode opc = INDEX_op_set_label;
+    TCGOp *op = tcg_op_insert_before(tcg_ctx, op_in, opc);
+    op->args[0] = label_arg(label);
+
+    if (op_out)
+        *op_out = op;
 }
 
 static inline void init_reg(size_t reg, TCGOp *op_in, TCGContext *tcg_ctx)
 {
     assert(reg < TCG_MAX_TEMPS);
     printf("Setting expr of reg %lu\n", reg);
-    TCGTemp *t_dst;
-    TCGTemp *t_last_expr;
-    load_addr(&last_expr, &t_last_expr, op_in, tcg_ctx);
-    load_from_addr(t_last_expr, t_last_expr, op_in, tcg_ctx);
-    load_addr(&stemps[reg], &t_dst, op_in, tcg_ctx);
-    store_to_addr(t_dst, t_last_expr, 0, op_in, tcg_ctx);
+
+    TCGTemp *t_last_expr = new_non_conflicting_temp(TCG_TYPE_PTR);
+    tcg_movi(t_last_expr, (uintptr_t)&last_expr, 0, 1, op_in, NULL, tcg_ctx);
+    tcg_load_n(t_last_expr, t_last_expr, 0, 0, 0, 1, sizeof(uintptr_t), op_in, NULL, tcg_ctx);
+
+    TCGTemp *t_dst = new_non_conflicting_temp(TCG_TYPE_PTR);
+    tcg_movi(t_dst, (uintptr_t)&stemps[reg], 0, 1, op_in, NULL, tcg_ctx);
+    tcg_store_n(t_dst, t_last_expr, 0, 1, 1, 1, sizeof(uintptr_t), op_in, NULL, tcg_ctx);
+
     tcg_temp_free_internal(t_dst);
     tcg_temp_free_internal(t_last_expr);
 }
@@ -297,9 +434,9 @@ static inline void make_reg_symbolic(const char *reg_name, TCGOp *op, TCGContext
         if (strcmp(t->name, reg_name) == 0)
         {
             printf("Marking %s (id=%d) as symbolic\n", t->name, i);
-            add_void_call_0(new_symbolic_expr, op, tcg_ctx);
+            add_void_call_0(new_symbolic_expr, op, NULL, tcg_ctx);
             init_reg(i, op, tcg_ctx);
-            add_void_call_0(print_reg, op, tcg_ctx);
+            add_void_call_0(print_reg, op, NULL, tcg_ctx);
         }
     }
 }
@@ -309,14 +446,16 @@ static inline void move_temp(size_t from, size_t to, TCGOp *op_in, TCGContext *t
     assert(to < TCG_MAX_TEMPS);
     assert(from < TCG_MAX_TEMPS);
 
-    TCGTemp *t_to;
-    TCGTemp *t_from;
-    load_addr(&stemps[from], &t_from, op_in, tcg_ctx);
-    load_from_addr(t_from, t_from, op_in, tcg_ctx);
-    load_addr(&stemps[to], &t_to, op_in, tcg_ctx);
-    store_to_addr(t_to, t_from, 0, op_in, tcg_ctx);
-    tcg_temp_free_internal(t_to);
+    TCGTemp *t_from = new_non_conflicting_temp(TCG_TYPE_PTR);
+    tcg_movi(t_from, (uintptr_t)&stemps[from], 0, 1, op_in, NULL, tcg_ctx);
+    tcg_load_n(t_from, t_from, 0, 0, 0, 1, sizeof(uintptr_t), op_in, NULL, tcg_ctx);
+
+    TCGTemp *t_to = new_non_conflicting_temp(TCG_TYPE_PTR);
+    tcg_movi(t_to, (uintptr_t)&stemps[to], 0, 1, op_in, NULL, tcg_ctx);
+    tcg_store_n(t_to, t_from, 0, 1, 1, 1, sizeof(void *), op_in, NULL, tcg_ctx);
+
     tcg_temp_free_internal(t_from);
+    tcg_temp_free_internal(t_to);
 }
 
 static inline void clear_temp(size_t idx, TCGOp *op_in, TCGContext *tcg_ctx)
@@ -324,14 +463,11 @@ static inline void clear_temp(size_t idx, TCGOp *op_in, TCGContext *tcg_ctx)
     assert(idx < TCG_MAX_TEMPS);
 
     TCGTemp *t_zero = new_non_conflicting_temp(TCG_TYPE_I64);
-    TCGOpcode opc = INDEX_op_movi_i64; // ToDo: i32
-    TCGOp *op = tcg_op_insert_before(tcg_ctx, op_in, opc);
-    op->args[0] = temp_arg(t_zero);
-    op->args[1] = (uintptr_t)0;
+    tcg_movi(t_zero, 0, 0, 1, op_in, NULL, tcg_ctx);
 
-    TCGTemp *t;
-    load_addr(&stemps[idx], &t, op_in, tcg_ctx);
-    store_to_addr(t, t_zero, 0, op_in, tcg_ctx);
+    TCGTemp *t = new_non_conflicting_temp(TCG_TYPE_I64);
+    tcg_movi(t, (uintptr_t)&stemps[idx], 0, 1, op_in, NULL, tcg_ctx);
+    tcg_store_n(t, t_zero, 0, 1, 1, 1, sizeof(void *), op_in, NULL, tcg_ctx);
 
     tcg_temp_free_internal(t_zero);
     tcg_temp_free_internal(t);
@@ -347,38 +483,28 @@ static inline void test_expr(void)
 
 static inline void allocate_new_expr(TCGTemp *t_out, TCGOp *op_in, TCGContext *tcg_ctx)
 {
-    add_void_call_0(check_pool_expr_capacity, op_in, tcg_ctx); // ToDo: make inline check
+    add_void_call_0(check_pool_expr_capacity, op_in, NULL, tcg_ctx); // ToDo: make inline check
 
-    TCGTemp *t_next_free_expr_addr;
-    load_addr(&next_free_expr, &t_next_free_expr_addr, op_in, tcg_ctx);
+    TCGTemp *t_next_free_expr_addr = new_non_conflicting_temp(TCG_TYPE_PTR);
+    tcg_movi(t_next_free_expr_addr, (uintptr_t)&next_free_expr, 0, 1, op_in, NULL, tcg_ctx);
 
     TCGTemp *t_next_free_expr = new_non_conflicting_temp(TCG_TYPE_PTR);
-    load_from_addr(t_next_free_expr_addr, t_next_free_expr, op_in, tcg_ctx);
+    tcg_load_n(t_next_free_expr_addr, t_next_free_expr, 0, 0, 0, 1, sizeof(uintptr_t), op_in, NULL, tcg_ctx);
 
-    TCGOpcode opc = INDEX_op_mov_i64; // ToDo: i32
-    TCGOp *op = tcg_op_insert_before(tcg_ctx, op_in, opc);
-    op->args[0] = temp_arg(t_out);
-    op->args[1] = temp_arg(t_next_free_expr);
-
-    //add_void_call_0(test_expr, op_in, tcg_ctx); // ToDo: make inline check
+    tcg_mov(t_out, t_next_free_expr, 0, 0, op_in, NULL, tcg_ctx);
 
     TCGTemp *t_expr_size = new_non_conflicting_temp(TCG_TYPE_I64);
-    opc = INDEX_op_movi_i64; // ToDo: i32
-    op = tcg_op_insert_before(tcg_ctx, op_in, opc);
-    op->args[0] = temp_arg(t_expr_size);
-    op->args[1] = (uintptr_t)sizeof(Expr);
+    tcg_movi(t_expr_size, sizeof(Expr), 0, 1, op_in, NULL, tcg_ctx);
 
-    opc = INDEX_op_add_i64; // ToDo: i32
-    op = tcg_op_insert_before(tcg_ctx, op_in, opc);
-    op->args[0] = temp_arg(t_next_free_expr);
-    op->args[1] = temp_arg(t_next_free_expr);
-    op->args[2] = temp_arg(t_expr_size);
+    tcg_binop(t_next_free_expr, t_next_free_expr, t_expr_size, 0, 0, 0, ADD, op_in, NULL, tcg_ctx);
 
     tcg_temp_free_internal(t_expr_size);
 
-    store_to_addr(t_next_free_expr_addr, t_next_free_expr, 0, op_in, tcg_ctx);
+    tcg_store_n(t_next_free_expr_addr, t_next_free_expr, 0, 0, 0, 0, sizeof(void *), op_in, NULL, tcg_ctx);
 
-    //add_void_call_0(check_pool_expr_capacity, op_in, tcg_ctx); // ToDo: make inline check
+    TCGOp * helper;
+    add_void_call_0(check_pool_expr_capacity, op_in, &helper, tcg_ctx); // ToDo: make inline check
+    mark_insn_as_instrumentation(helper);
 
     tcg_temp_free_internal(t_next_free_expr);
     tcg_temp_free_internal(t_next_free_expr_addr);
@@ -393,10 +519,7 @@ static inline void allocate_new_expr(TCGTemp *t_out, TCGOp *op_in, TCGContext *t
 static inline void preserve_op_load(TCGTemp *t, TCGOp *op_in, TCGContext *tcg_ctx)
 {
     TCGTemp *t_dummy = new_non_conflicting_temp(TCG_TYPE_I64);
-    TCGOpcode opc = INDEX_op_mov_i64; // ToDo: i32
-    TCGOp *op = tcg_op_insert_before(tcg_ctx, op_in, opc);
-    op->args[0] = temp_arg(t_dummy);
-    op->args[1] = temp_arg(t);
+    tcg_mov(t_dummy, t, 0, 0, op_in, NULL, tcg_ctx);
     tcg_temp_free_internal(t_dummy);
 }
 
@@ -419,117 +542,64 @@ static inline void binary_op(OPKIND opkind, TCGTemp *t_op_out, TCGTemp *t_op_a, 
 
     TCGLabel *label_both_concrete = gen_new_label();
 
-    TCGTemp *t_a;
-    load_addr(&stemps[a], &t_a, op_in, tcg_ctx);
-    load_from_addr(t_a, t_a, op_in, tcg_ctx);
+    TCGTemp *t_a = new_non_conflicting_temp(TCG_TYPE_PTR);
+    tcg_movi(t_a, (uintptr_t)&stemps[a], 0, 1, op_in, NULL, tcg_ctx);
+    tcg_load_n(t_a, t_a, 0, 0, 0, 1, sizeof(uintptr_t), op_in, NULL, tcg_ctx);
 
-    TCGTemp *t_b;
-    load_addr(&stemps[b], &t_b, op_in, tcg_ctx);
-    load_from_addr(t_b, t_b, op_in, tcg_ctx);
+    TCGTemp *t_b = new_non_conflicting_temp(TCG_TYPE_PTR);
+    tcg_movi(t_b, (uintptr_t)&stemps[b], 0, 1, op_in, NULL, tcg_ctx);
+    tcg_load_n(t_b, t_b, 0, 0, 0, 1, sizeof(uintptr_t), op_in, NULL, tcg_ctx);
 
     TCGTemp *t_a_and_b = new_non_conflicting_temp(TCG_TYPE_PTR);
-    TCGOpcode opc = INDEX_op_and_i64; // ToDo: i32
-    TCGOp *op = tcg_op_insert_before(tcg_ctx, op_in, opc);
-    op->args[0] = temp_arg(t_a_and_b);
-    op->args[1] = temp_arg(t_a);
-    op->args[2] = temp_arg(t_b);
+    tcg_binop(t_a_and_b, t_a, t_b, 0, 0, 0, AND, op_in, NULL, tcg_ctx);
 
-    // ToDo: make this smarter
     TCGTemp *t_zero = new_non_conflicting_temp(TCG_TYPE_I64);
-    opc = INDEX_op_movi_i64; // ToDo: i32
-    op = tcg_op_insert_before(tcg_ctx, op_in, opc);
-    op->args[0] = temp_arg(t_zero);
-    op->args[1] = (uintptr_t)0;
+    tcg_movi(t_zero, 0, 0, 1, op_in, NULL, tcg_ctx); // ToDo: make this smarter
 
-    label_both_concrete->refs++;
-    opc = INDEX_op_brcond_i64; // ToDo: i32
-    op = tcg_op_insert_before(tcg_ctx, op_in, opc);
-    op->args[0] = temp_arg(t_a_and_b);
-    op->args[1] = temp_arg(t_zero);
-    op->args[2] = TCG_COND_EQ;
-    op->args[3] = label_arg(label_both_concrete);
-
+    tcg_brcond(label_both_concrete, t_a_and_b, t_zero, TCG_COND_EQ, 1, 0, op_in, NULL, tcg_ctx);
     tcg_temp_free_internal(t_a_and_b);
 
     // allocate expr for t_out
     TCGTemp *t_out = new_non_conflicting_temp(TCG_TYPE_I64);
-    allocate_new_expr(t_out, op_in, tcg_ctx);
+    allocate_new_expr(t_out, op_in, tcg_ctx); // FixMe: we assume that Expr is zero-initialzed!
 
     // if t_a is concrete, then store its concrete value into t_out expr
 
     TCGTemp *t_one = new_non_conflicting_temp(TCG_TYPE_I64);
-    opc = INDEX_op_movi_i64; // ToDo: i32
-    op = tcg_op_insert_before(tcg_ctx, op_in, opc);
-    op->args[0] = temp_arg(t_one);
-    op->args[1] = (uintptr_t)1;
+    tcg_movi(t_one, 1, 0, 1, op_in, NULL, tcg_ctx);
 
     TCGLabel *label_ta_not_concrete = gen_new_label();
+    tcg_brcond(label_ta_not_concrete, t_a, t_zero, TCG_COND_NE, 0, 0, op_in, NULL, tcg_ctx);
 
-    label_ta_not_concrete->refs++;
-    opc = INDEX_op_brcond_i64; // ToDo: i32
-    op = tcg_op_insert_before(tcg_ctx, op_in, opc);
-    op->args[0] = temp_arg(t_a);
-    op->args[1] = temp_arg(t_zero);
-    op->args[2] = TCG_COND_NE;
-    op->args[3] = label_arg(label_ta_not_concrete);
-
-    opc = INDEX_op_mov_i64; // ToDo: i32
-    op = tcg_op_insert_before(tcg_ctx, op_in, opc);
-    op->args[0] = temp_arg(t_a);
-    op->args[1] = temp_arg(t_op_a);
-
-    store_to_addr_n(t_out, t_one, offsetof(Expr, op1_is_const), 1, op_in, tcg_ctx);
-
+    tcg_mov(t_a, t_op_a, 0, 0, op_in, NULL, tcg_ctx);
+    tcg_store_n(t_out, t_one, offsetof(Expr, op1_is_const), 0, 0, 0, 1, op_in, NULL, tcg_ctx);
     TCGTemp *t_opkind = new_non_conflicting_temp(TCG_TYPE_I64);
-    opc = INDEX_op_movi_i64; // ToDo: i32
-    op = tcg_op_insert_before(tcg_ctx, op_in, opc);
-    op->args[0] = temp_arg(t_one);
-    op->args[1] = (uintptr_t)opkind;
+    tcg_movi(t_opkind, opkind, 0, 1, op_in, NULL, tcg_ctx);
+    tcg_store_n(t_out, t_opkind, offsetof(Expr, opkind), 0, 1, 1, 1, op_in, NULL, tcg_ctx);
+    tcg_temp_free_internal(t_opkind);
 
-    store_to_addr_n(t_out, t_opkind, offsetof(Expr, opkind), 1, op_in, tcg_ctx);
+    tcg_set_label(label_ta_not_concrete, op_in, NULL, tcg_ctx);
 
-    label_ta_not_concrete->present = 1;
-    opc = INDEX_op_set_label;
-    op = tcg_op_insert_before(tcg_ctx, op_in, opc);
-    op->args[0] = label_arg(label_ta_not_concrete);
-
-    store_to_addr(t_out, t_a, offsetof(Expr, op1), op_in, tcg_ctx);
+    tcg_store_n(t_out, t_a, offsetof(Expr, op1), 0, 0, 0, sizeof(uintptr_t), op_in, NULL, tcg_ctx);
 
     // if t_b is concrete, then store its concrete value into t_out expr
 
     TCGLabel *label_tb_not_concrete = gen_new_label();
+    tcg_brcond(label_tb_not_concrete, t_b, t_zero, TCG_COND_NE, 0, 0, op_in, NULL, tcg_ctx);
 
-    label_tb_not_concrete->refs++;
-    opc = INDEX_op_brcond_i64; // ToDo: i32
-    op = tcg_op_insert_before(tcg_ctx, op_in, opc);
-    op->args[0] = temp_arg(t_a);
-    op->args[1] = temp_arg(t_zero);
-    op->args[2] = TCG_COND_NE;
-    op->args[3] = label_arg(label_tb_not_concrete);
+    tcg_mov(t_b, t_op_b, 0, 0, op_in, NULL, tcg_ctx);
+    tcg_store_n(t_out, t_one, offsetof(Expr, op2_is_const), 0, 0, 0, 1, op_in, NULL, tcg_ctx);
 
-    opc = INDEX_op_mov_i64; // ToDo: i32
-    op = tcg_op_insert_before(tcg_ctx, op_in, opc);
-    op->args[0] = temp_arg(t_b);
-    op->args[1] = temp_arg(t_op_b);
+    tcg_set_label(label_tb_not_concrete, op_in, NULL, tcg_ctx);
 
-    store_to_addr_n(t_out, t_one, offsetof(Expr, op2_is_const), 1, op_in, tcg_ctx);
-
-    label_tb_not_concrete->present = 1;
-    opc = INDEX_op_set_label;
-    op = tcg_op_insert_before(tcg_ctx, op_in, opc);
-    op->args[0] = label_arg(label_tb_not_concrete);
-
-    store_to_addr(t_out, t_b, offsetof(Expr, op2), op_in, tcg_ctx);
+    tcg_store_n(t_out, t_b, offsetof(Expr, op2), 0, 0, 0, sizeof(uintptr_t), op_in, NULL, tcg_ctx);
 
     // assign expr to t_out
-    TCGTemp *t_out_expr;
-    load_addr(&stemps[out], &t_out_expr, op_in, tcg_ctx);
-    store_to_addr(t_out_expr, t_out, 0, op_in, tcg_ctx);
+    TCGTemp *t_out_expr = new_non_conflicting_temp(TCG_TYPE_PTR);
+    tcg_movi(t_out_expr, (uintptr_t)&stemps[out], 0, 1, op_in, NULL, tcg_ctx);
+    tcg_store_n(t_out_expr, t_out, 0, 0, 0, 0, sizeof(uintptr_t), op_in, NULL, tcg_ctx);
 
-    label_both_concrete->present = 1;
-    opc = INDEX_op_set_label;
-    op = tcg_op_insert_before(tcg_ctx, op_in, opc);
-    op->args[0] = label_arg(label_both_concrete);
+    tcg_set_label(label_both_concrete, op_in, NULL, tcg_ctx);
 
     tcg_temp_free_internal(t_a);
     tcg_temp_free_internal(t_b);
@@ -559,21 +629,10 @@ static inline void allocate_l3_page(uintptr_t l1_entry_idx, uintptr_t l2_entry_i
     printf("Done: l3_page_addr=%p\n", s_memory.table.entries[l1_entry_idx]->entries[l2_entry_idx]);
 }
 
-static inline void print_t_l1_entry_idx_addr(void * l1_entry_addr)
+static inline void print_t_l1_entry_idx_addr(void *l1_entry_addr)
 {
     printf("L1 Entry addr: %p\n", l1_entry_addr);
 }
-
-static inline void sync_argo_temp(TCGOp *op, size_t i)
-{
-    op->life |= SYNC_ARG << i;
-}
-
-static inline void mark_dead_arg_temp(TCGOp *op, size_t i)
-{
-    op->life |= DEAD_ARG << i;
-}
-
 
 static inline void qemu_load(TCGTemp *t_orig_ptr, TCGTemp *t_orig_val, uintptr_t offset, TCGOp *op_in, TCGContext *tcg_ctx)
 {
@@ -582,91 +641,51 @@ static inline void qemu_load(TCGTemp *t_orig_ptr, TCGTemp *t_orig_val, uintptr_t
 
     // compute index for L1 table
 
-    TCGTemp * t_l1_entry_idx = new_non_conflicting_temp(TCG_TYPE_PTR);
-    TCGOpcode opc = INDEX_op_mov_i64; // ToDo: i32
-    TCGOp *op = tcg_op_insert_before(tcg_ctx, op_in, opc);
-    op->args[0] = temp_arg(t_l1_entry_idx);
-    op->args[1] = temp_arg(t_orig_ptr);
+    TCGTemp *t_l1_entry_idx = new_non_conflicting_temp(TCG_TYPE_PTR);
+    tcg_mov(t_l1_entry_idx, t_orig_ptr, 0, 0, op_in, NULL, tcg_ctx);
 
-    TCGTemp * t_shr_bit = new_non_conflicting_temp(TCG_TYPE_PTR);
-    opc = INDEX_op_movi_i64; // ToDo: i32
-    op = tcg_op_insert_before(tcg_ctx, op_in, opc);
-    op->args[0] = temp_arg(t_shr_bit);
-    op->args[1] = (uintptr_t) L1_PAGE_BITS + L2_PAGE_BITS;
+    TCGTemp *t_shr_bit = new_non_conflicting_temp(TCG_TYPE_PTR);
+    tcg_movi(t_shr_bit, L1_PAGE_BITS + L2_PAGE_BITS, 0, 1, op_in, NULL, tcg_ctx);
 
-    mark_dead_arg_temp(op, 1);
+    TCGTemp *t_zero = new_non_conflicting_temp(TCG_TYPE_PTR);
+    tcg_movi(t_zero, 0, 0, 1, op_in, NULL, tcg_ctx);
 
-    TCGTemp * t_zero = new_non_conflicting_temp(TCG_TYPE_PTR);
-    opc = INDEX_op_movi_i64; // ToDo: i32
-    op = tcg_op_insert_before(tcg_ctx, op_in, opc);
-    op->args[0] = temp_arg(t_zero);
-    op->args[1] = (uintptr_t) 0;
-
-    mark_dead_arg_temp(op, 1);
-
-    opc = INDEX_op_shr_i64; // ToDo: i32
-    op = tcg_op_insert_before(tcg_ctx, op_in, opc);
-    op->args[0] = temp_arg(t_l1_entry_idx);
-    op->args[1] = temp_arg(t_l1_entry_idx);
-    op->args[2] = temp_arg(t_shr_bit);
-
+    tcg_binop(t_l1_entry_idx, t_l1_entry_idx, t_shr_bit, 0, 0, 1, SHR, op_in, NULL, tcg_ctx);
     tcg_temp_free_internal(t_shr_bit);
-    mark_dead_arg_temp(op, 2);
 
     // check whether L2 page is allocated for that index
 
     TCGLabel *label_l2_page_is_allocated = gen_new_label();
 
-    TCGTemp * t_s_memory = new_non_conflicting_temp(TCG_TYPE_PTR);
-    opc = INDEX_op_movi_i64; // ToDo: i32
-    op = tcg_op_insert_before(tcg_ctx, op_in, opc);
-    op->args[0] = temp_arg(t_s_memory);
-    op->args[1] = (uintptr_t) &s_memory;
+    TCGTemp *t_s_memory = new_non_conflicting_temp(TCG_TYPE_PTR);
+    tcg_movi(t_s_memory, (uintptr_t)&s_memory, 0, 1, op_in, NULL, tcg_ctx);
 
-    TCGTemp * t_l1_entry_idx_addr = new_non_conflicting_temp(TCG_TYPE_PTR);
-    opc = INDEX_op_movi_i64; // ToDo: i32
-    op = tcg_op_insert_before(tcg_ctx, op_in, opc);
-    op->args[0] = temp_arg(t_l1_entry_idx_addr);
-    assert(sizeof(l2_page_t *) == 8);
-    op->args[1] = (uintptr_t) 3;
+    TCGTemp *t_l1_entry_idx_addr = new_non_conflicting_temp(TCG_TYPE_PTR);
+    tcg_movi(t_l1_entry_idx_addr, (uintptr_t)3, 0, 1, op_in, NULL, tcg_ctx);
 
-    opc = INDEX_op_shl_i64; // ToDo: i32
-    op = tcg_op_insert_before(tcg_ctx, op_in, opc);
-    op->args[0] = temp_arg(t_l1_entry_idx_addr);
-    op->args[1] = temp_arg(t_l1_entry_idx);
-    op->args[2] = temp_arg(t_l1_entry_idx_addr);
+    tcg_binop(t_l1_entry_idx_addr, t_l1_entry_idx, t_l1_entry_idx_addr, 0, 0, 0, SHL, op_in, NULL, tcg_ctx);
 
-    opc = INDEX_op_add_i64; // ToDo: i32
-    op = tcg_op_insert_before(tcg_ctx, op_in, opc);
-    op->args[0] = temp_arg(t_l1_entry_idx_addr);
-    op->args[1] = temp_arg(t_l1_entry_idx_addr);
-    op->args[2] = temp_arg(t_s_memory);
-
+    tcg_binop(t_l1_entry_idx_addr, t_l1_entry_idx_addr, t_s_memory, 0, 0, 1, ADD, op_in, NULL, tcg_ctx);
     tcg_temp_free_internal(t_s_memory);
-    mark_dead_arg_temp(op, 2);
 
-    //add_void_call_1(print_t_l1_entry_idx_addr, t_l1_entry_idx_addr, op_in, tcg_ctx);
+    //add_void_call_1(print_t_l1_entry_idx_addr, t_l1_entry_idx_addr, op_in, NULL, tcg_ctx);
 
-    TCGTemp * t_l1_entry = new_non_conflicting_temp(TCG_TYPE_PTR);
-    load_n_from_addr(t_l1_entry_idx_addr, t_l1_entry, 0, 8, op_in, tcg_ctx);
+    TCGTemp *t_l1_entry = new_non_conflicting_temp(TCG_TYPE_PTR);
+    tcg_load_n(t_l1_entry_idx_addr, t_l1_entry, 0, 0, 0, 1, sizeof(uintptr_t), op_in, NULL, tcg_ctx);
 
-    label_l2_page_is_allocated->refs++;
-    opc = INDEX_op_brcond_i64; // ToDo: i32
-    op = tcg_op_insert_before(tcg_ctx, op_in, opc);
-    op->args[0] = temp_arg(t_l1_entry);
-    op->args[1] = temp_arg(t_zero);
-    op->args[2] = TCG_COND_NE;
-    op->args[3] = label_arg(label_l2_page_is_allocated);
+    tcg_brcond(label_l2_page_is_allocated, t_l1_entry, t_zero, TCG_COND_NE, 0, 0, op_in, NULL, tcg_ctx);
 
     // if not, allocate L2 page
-    add_void_call_1(allocate_l2_page, t_l1_entry_idx, op_in, tcg_ctx, 1);
+    TCGOp * helper;
+    add_void_call_1(allocate_l2_page, t_l1_entry_idx, op_in, &helper, tcg_ctx);
+    // mark since it will preserve regs, marking temps as TS_VAL_MEM
+    // however this is done only when the helper is executed
+    // and its execution depends on the branch condiion!
+    mark_insn_as_instrumentation(helper);
 
-    label_l2_page_is_allocated->present = 1;
-    opc = INDEX_op_set_label;
-    op = tcg_op_insert_before(tcg_ctx, op_in, opc);
-    op->args[0] = label_arg(label_l2_page_is_allocated);
+    tcg_set_label(label_l2_page_is_allocated, op_in, NULL, tcg_ctx);
 
-    add_void_call_1(print_t_l1_entry_idx_addr, t_l1_entry, op_in, tcg_ctx, 0);
+    add_void_call_1(print_t_l1_entry_idx_addr, t_l1_entry, op_in, NULL, tcg_ctx);
 #if 0
     add_void_call_2(allocate_l3_page, t_l1_entry, t_l1_entry, op_in, tcg_ctx);
 #endif
@@ -729,7 +748,7 @@ void parse_translation_block(TranslationBlock *tb, uintptr_t pc, uint8_t *tb_cod
         case INDEX_op_mov_i64:
             mark_temp_as_in_use(arg_temp(op->args[0]));
             mark_temp_as_in_use(arg_temp(op->args[1]));
-            if (instrument && 0)
+            if (instrument)
             {
                 TCGTemp *from = arg_temp(op->args[1]);
                 TCGTemp *to = arg_temp(op->args[0]);
@@ -794,8 +813,8 @@ void parse_translation_block(TranslationBlock *tb, uintptr_t pc, uint8_t *tb_cod
             {
                 mark_temp_as_in_use(arg_temp(op->args[0]));
                 mark_temp_as_in_use(arg_temp(op->args[1]));
-                TCGTemp * t_val = arg_temp(op->args[0]);
-                TCGTemp * t_ptr = arg_temp(op->args[1]);
+                TCGTemp *t_val = arg_temp(op->args[0]);
+                TCGTemp *t_ptr = arg_temp(op->args[1]);
                 uintptr_t offset = (uintptr_t)op->args[3];
                 qemu_load(t_ptr, t_val, offset, op, tcg_ctx);
             }
