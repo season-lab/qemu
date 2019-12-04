@@ -61,7 +61,6 @@ static void tcg_handle_interrupt(CPUState *cpu, int mask)
 
 static int tcg_init(MachineState *ms)
 {
-    printf("tcg_tb_size=%llu\n", arg_tb_size);
     tcg_exec_init(tcg_tb_size * 1024 * 1024);
     cpu_interrupt_handler = tcg_handle_interrupt;
     return 0;

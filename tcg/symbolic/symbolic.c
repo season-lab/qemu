@@ -508,7 +508,10 @@ static inline void test_expr(void)
 
 static inline void allocate_new_expr(TCGTemp *t_out, TCGOp *op_in, TCGContext *tcg_ctx)
 {
-    add_void_call_0(check_pool_expr_capacity, op_in, NULL, tcg_ctx); // ToDo: make inline check
+    TCGOp * helper;
+
+    add_void_call_0(check_pool_expr_capacity, op_in, &helper, tcg_ctx); // ToDo: make inline check
+    mark_insn_as_instrumentation(helper);
 
     TCGTemp *t_next_free_expr_addr = new_non_conflicting_temp(TCG_TYPE_PTR);
     tcg_movi(t_next_free_expr_addr, (uintptr_t)&next_free_expr, 0, 1, op_in, NULL, tcg_ctx);
@@ -527,7 +530,6 @@ static inline void allocate_new_expr(TCGTemp *t_out, TCGOp *op_in, TCGContext *t
 
     tcg_store_n(t_next_free_expr_addr, t_next_free_expr, 0, 0, 0, 0, sizeof(void *), op_in, NULL, tcg_ctx);
 
-    TCGOp * helper;
     add_void_call_0(check_pool_expr_capacity, op_in, &helper, tcg_ctx); // ToDo: make inline check
     mark_insn_as_instrumentation(helper);
 
@@ -663,12 +665,11 @@ static inline void print_t_l1_entry_idx_addr(void *l1_entry_addr)
     printf("L2 Entry addr: %p\n", l1_entry_addr);
 }
 
-static inline void qemu_load(TCGTemp *t_addr, TCGTemp *t_val, uintptr_t offset, TCGOp *op_in, TCGContext *tcg_ctx)
+static inline void get_expr_addr_for_addr(TCGTemp *t_addr, TCGTemp **t_expr_addr, TCGOp *op_in, TCGContext *tcg_ctx)
 {
-    TCGOp * op;
+    // assumption: 4 byte alignment
 
-    preserve_op_load(t_addr, op_in, tcg_ctx);
-    preserve_op_load(t_val, op_in, tcg_ctx);
+    TCGOp * op;
 
     // compute index for L1 page
 
@@ -757,7 +758,8 @@ static inline void qemu_load(TCGTemp *t_addr, TCGTemp *t_val, uintptr_t offset, 
     tcg_load_n(t_l2_page_idx_addr, t_l3_page, 0, 0, 0, 0, sizeof(uintptr_t), op_in, NULL, tcg_ctx);
 
     TCGLabel *label_l3_page_is_allocated = gen_new_label();
-    tcg_brcond(label_l3_page_is_allocated, t_l3_page, t_zero, TCG_COND_NE, 0, 0, op_in, NULL, tcg_ctx);
+    tcg_brcond(label_l3_page_is_allocated, t_l3_page, t_zero, TCG_COND_NE, 0, 1, op_in, NULL, tcg_ctx);
+    tcg_temp_free_internal(t_zero);
 
     add_void_call_1(allocate_l3_page, t_l2_page_idx_addr, op_in, &op, tcg_ctx);
     mark_insn_as_instrumentation(op);
@@ -792,25 +794,51 @@ static inline void qemu_load(TCGTemp *t_addr, TCGTemp *t_val, uintptr_t offset, 
 
     tcg_binop(t_l3_page_idx_addr, t_l3_page_idx_addr, t_l3_page, 0, 0, 0, ADD, op_in, NULL, tcg_ctx);
 
+    *t_expr_addr = t_l3_page_idx_addr;
+}
+
+static inline void qemu_load(TCGTemp *t_addr, TCGTemp *t_val, uintptr_t offset, TCGOp *op_in, TCGContext *tcg_ctx)
+{
+    // assumption: 4 byte alignment
+
+    if (offset)
+        printf("offset: %lu\n", offset);
+    assert(offset == 0); // ToDo
+
+    TCGOp * op;
+
+    TCGTemp *t_l3_page_idx_addr;
+    get_expr_addr_for_addr(t_addr, &t_l3_page_idx_addr, op_in, tcg_ctx);
+
     // check whether there is an Expr at that address
 
+    add_void_call_1(print_t_l1_entry_idx_addr, t_l3_page_idx_addr, op_in, NULL, tcg_ctx);
+
     TCGTemp *t_expr = new_non_conflicting_temp(TCG_TYPE_PTR);
-    tcg_load_n(t_l3_page_idx_addr, t_expr, 0, 1, 0, 1, sizeof(uintptr_t), op_in, &op, tcg_ctx);
+    tcg_load_n(t_l3_page_idx_addr, t_expr, 0, 1, 0, 1, sizeof(uintptr_t), op_in, NULL, tcg_ctx);
     tcg_temp_free_internal(t_l3_page_idx_addr);
 
+    TCGTemp *t_zero = new_non_conflicting_temp(TCG_TYPE_PTR);
+    tcg_movi(t_zero, 0, 0, 1, op_in, NULL, tcg_ctx);
+
     TCGLabel *label_op_is_const = gen_new_label();
-    tcg_brcond(label_op_is_const, t_expr, t_zero, TCG_COND_EQ, 0, 0, op_in, NULL, tcg_ctx);
+    tcg_brcond(label_op_is_const, t_expr, t_zero, TCG_COND_EQ, 0, 1, op_in, NULL, tcg_ctx);
+    tcg_temp_free_internal(t_zero);
 
     // there is an expression, assign it to the t_dst
     TCGTemp *t_to = new_non_conflicting_temp(TCG_TYPE_PTR);
-    tcg_movi(t_to, (uintptr_t)&stemps[temp_idx(t_val)], 0, 1, op_in, NULL, tcg_ctx);
-    tcg_store_n(t_to, t_expr, 0, 1, 1, 1, sizeof(void *), op_in, NULL, tcg_ctx);
+    tcg_movi(t_to, (uintptr_t)&stemps[temp_idx(t_val)], 0, 1, op_in, &op, tcg_ctx);
+    mark_insn_as_instrumentation(op);
+    tcg_store_n(t_to, t_expr, 0, 1, 1, 1, sizeof(void *), op_in, &op, tcg_ctx);
+    mark_insn_as_instrumentation(op);
     tcg_temp_free_internal(t_to);
 
     tcg_set_label(label_op_is_const, op_in, NULL, tcg_ctx);
+}
 
-    // clean up
-    tcg_temp_free_internal(t_zero);
+static inline void qemu_store(TCGTemp *t_addr, TCGTemp *t_val, uintptr_t offset, TCGOp *op_in, TCGContext *tcg_ctx)
+{
+    // assumption: 4 byte alignment
 }
 
 static inline void mark_temp_as_in_use(TCGTemp *t)
@@ -829,8 +857,7 @@ static inline void mark_temp_as_free(TCGTemp *t)
 
 void parse_translation_block(TranslationBlock *tb, uintptr_t pc, uint8_t *tb_code, TCGContext *tcg_ctx)
 {
-
-    if (pc < 0x40054d || pc > 0x400578) // boundary of foo function
+    if (pc < 0x40054d || pc > 0x400577) // boundary of foo function
         return;
 
     int instrument = 0;
@@ -842,7 +869,7 @@ void parse_translation_block(TranslationBlock *tb, uintptr_t pc, uint8_t *tb_cod
         {
 
         case INDEX_op_insn_start:
-            if (pc < 0x40054d || pc > 0x400578)
+            if (pc < 0x40054d || pc > 0x400577)
                 instrument = 0;
             else
                 instrument = 1;
@@ -933,8 +960,24 @@ void parse_translation_block(TranslationBlock *tb, uintptr_t pc, uint8_t *tb_cod
                 mark_temp_as_in_use(arg_temp(op->args[1]));
                 TCGTemp *t_val = arg_temp(op->args[0]);
                 TCGTemp *t_ptr = arg_temp(op->args[1]);
-                uintptr_t offset = (uintptr_t)op->args[3];
+                // FixMe: LE is little endian, Q is 64bit. Should we swap bytes?
+                //assert(get_memop(op->args[2]) & MO_LEQ);
+                uintptr_t offset = 0; //(uintptr_t) get_mmuidx(op->args[2]);
                 qemu_load(t_ptr, t_val, offset, op, tcg_ctx);
+            }
+            break;
+
+        case INDEX_op_qemu_st_i64:
+            if (instrument && 0)
+            {
+                mark_temp_as_in_use(arg_temp(op->args[0]));
+                mark_temp_as_in_use(arg_temp(op->args[1]));
+                TCGTemp *t_val = arg_temp(op->args[0]);
+                TCGTemp *t_ptr = arg_temp(op->args[1]);
+                // FixMe: LE is little endian, Q is 64bit. Should we swap bytes?
+                assert(get_memop(op->args[2]) & MO_LEQ);
+                uintptr_t offset = (uintptr_t) get_mmuidx(op->args[2]);
+                qemu_store(t_ptr, t_val, offset, op, tcg_ctx);
             }
             break;
 
