@@ -799,7 +799,7 @@ static inline void get_expr_addr_for_addr(TCGTemp *t_addr, TCGTemp **t_expr_addr
 
 static inline void qemu_load(TCGTemp *t_addr, TCGTemp *t_val, uintptr_t offset, TCGOp *op_in, TCGContext *tcg_ctx)
 {
-    // assumption: 4 byte alignment
+    // assumption: 8 byte alignment
 
     if (offset)
         printf("offset: %lu\n", offset);
@@ -838,7 +838,31 @@ static inline void qemu_load(TCGTemp *t_addr, TCGTemp *t_val, uintptr_t offset, 
 
 static inline void qemu_store(TCGTemp *t_addr, TCGTemp *t_val, uintptr_t offset, TCGOp *op_in, TCGContext *tcg_ctx)
 {
-    // assumption: 4 byte alignment
+    // assumption: 8 byte alignment
+
+    if (offset)
+        printf("offset: %lu\n", offset);
+    assert(offset == 0); // ToDo
+
+    TCGOp * op;
+
+    // check whether val is concrete
+    size_t val_idx = temp_idx(t_val);
+    TCGTemp *t_val_expr_addr = new_non_conflicting_temp(TCG_TYPE_PTR);
+    tcg_movi(t_val_expr_addr, (uintptr_t)&stemps[val_idx], 0, 1, op_in, NULL, tcg_ctx);
+
+    TCGTemp *t_val_expr = new_non_conflicting_temp(TCG_TYPE_PTR);
+    tcg_load_n(t_val_expr_addr, t_val_expr, 0, 1, 0, 1, sizeof(uintptr_t), op_in, NULL, tcg_ctx);
+    tcg_temp_free_internal(t_val_expr_addr);
+
+    // get location where to store expression
+    TCGTemp *t_l3_page_idx_addr;
+    get_expr_addr_for_addr(t_addr, &t_l3_page_idx_addr, op_in, tcg_ctx);
+
+    // set Expr (we still need to store NULL if val is concrete!)
+    tcg_store_n(t_l3_page_idx_addr, t_val_expr, 0, 1, 1, 1, sizeof(void *), op_in, &op, tcg_ctx);
+    tcg_temp_free_internal(t_l3_page_idx_addr);
+    tcg_temp_free_internal(t_val_expr);
 }
 
 static inline void mark_temp_as_in_use(TCGTemp *t)
@@ -853,6 +877,45 @@ static inline void mark_temp_as_free(TCGTemp *t)
     size_t idx = temp_idx(t);
     assert(idx < TCG_MAX_TEMPS);
     used_temps_idxs[idx] = 0;
+}
+
+static inline OPKIND get_opkind(TCGOpcode opc)
+{
+    switch (opc)
+    {
+        case INDEX_op_add_i64:;
+            return ADD;
+        case INDEX_op_sub_i64:
+            return SUB;
+        case INDEX_op_mul_i64:
+            return MUL;
+        case INDEX_op_div_i64:
+            return DIV;
+        case INDEX_op_divu_i64:
+            return DIVU;
+        case INDEX_op_rem_i64:
+            return REM;
+        case INDEX_op_remu_i64:
+            return REMU;
+        case INDEX_op_and_i64:
+            return AND;
+        case INDEX_op_or_i64:
+            return OR;
+        case INDEX_op_xor_i64:
+            return XOR;
+        case INDEX_op_shl_i64:
+            return SHL;
+        case INDEX_op_shr_i64:
+            return SHR;
+        case INDEX_op_sar_i64:
+            return SAR;
+        case INDEX_op_rotl_i64:
+            return ROTL;
+        case INDEX_op_rotr_i64:
+            return ROTR;
+        default:
+            tcg_abort();
+    }
 }
 
 void parse_translation_block(TranslationBlock *tb, uintptr_t pc, uint8_t *tb_code, TCGContext *tcg_ctx)
@@ -901,37 +964,23 @@ void parse_translation_block(TranslationBlock *tb, uintptr_t pc, uint8_t *tb_cod
             }
             break;
 
-        case INDEX_op_add_i64:;
-            OPKIND bin_opkind = ADD;
+        case INDEX_op_add_i64:
         case INDEX_op_sub_i64:
-            bin_opkind = SUB;
         case INDEX_op_mul_i64:
-            bin_opkind = MUL;
         case INDEX_op_div_i64:
-            bin_opkind = DIV;
         case INDEX_op_divu_i64:
-            bin_opkind = DIVU;
         case INDEX_op_rem_i64:
-            bin_opkind = REM;
         case INDEX_op_remu_i64:
-            bin_opkind = REMU;
         case INDEX_op_and_i64:
-            bin_opkind = AND;
         case INDEX_op_or_i64:
-            bin_opkind = OR;
         case INDEX_op_xor_i64:
-            bin_opkind = XOR;
         case INDEX_op_shl_i64:
-            bin_opkind = SHL;
         case INDEX_op_shr_i64:
-            bin_opkind = SHR;
         case INDEX_op_sar_i64:
-            bin_opkind = SAR;
         case INDEX_op_rotl_i64:
-            bin_opkind = ROTL;
-        case INDEX_op_rotr_i64:
-            bin_opkind = ROTR;
+        case INDEX_op_rotr_i64:;
 
+            OPKIND bin_opkind = get_opkind(op->opc);
             mark_temp_as_in_use(arg_temp(op->args[0]));
             mark_temp_as_in_use(arg_temp(op->args[1]));
             mark_temp_as_in_use(arg_temp(op->args[2]));
