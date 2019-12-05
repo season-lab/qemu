@@ -1030,6 +1030,19 @@ void parse_translation_block(TranslationBlock *tb, uintptr_t pc, uint8_t *tb_cod
             }
             break;
 
+        case INDEX_op_ld_i32:
+            // ToDo: mark temps as used
+            break;
+
+        case INDEX_op_st_i64:
+            // ToDo: mark temps as used
+            break;
+
+        case INDEX_op_goto_ptr:
+        case INDEX_op_goto_tb:
+        case INDEX_op_exit_tb:
+            break;
+
         default:;
             const TCGOpDef *def = &tcg_op_defs[op->opc];
             printf("Unhandled TCG instruction: %s\n", def->name);
