@@ -20,7 +20,20 @@ typedef enum OPKIND
     SHR,
     SAR,
     ROTL,
-    ROTR
+    ROTR,
+    //
+    EQ,
+    NE,
+    // signed
+    LT,
+    LE,
+    GE,
+    GT,
+    // unsigned
+    LTU,
+    LEU,
+    GEU,
+    GTU,
 } OPKIND;
 
 typedef struct Expr
@@ -64,6 +77,9 @@ typedef struct s_memory_t
 } s_memory_t;
 
 s_memory_t s_memory = {0};
+
+// path constraints
+Expr *path_constraints = NULL;
 
 // Expr allocation pool
 #define EXPR_POOL_CAPACITY (256 * 1024)
@@ -918,6 +934,148 @@ static inline OPKIND get_opkind(TCGOpcode opc)
     }
 }
 
+static inline OPKIND get_opkind_from_cond(TCGCond cond)
+{
+    switch (cond)
+    {
+        case TCG_COND_NEVER:;
+            tcg_abort();
+        case TCG_COND_ALWAYS:
+            tcg_abort();
+
+        case TCG_COND_EQ:
+            return EQ;
+        case TCG_COND_NE:
+            return NE;
+
+        case TCG_COND_LT:
+            return LT;
+        case TCG_COND_LE:
+            return LE;
+        case TCG_COND_GE:
+            return GE;
+        case TCG_COND_GT:
+            return GT;
+
+        case TCG_COND_LTU:
+            return LTU;
+        case TCG_COND_LEU:
+            return LEU;
+        case TCG_COND_GEU:
+            return GEU;
+        case TCG_COND_GTU:
+            return GTU;
+
+        default:
+            tcg_abort();
+    }
+}
+
+static inline void branch(TCGTemp *t_op_a, TCGTemp *t_op_b, TCGCond cond, TCGOp *op_in, TCGContext *tcg_ctx)
+{
+    OPKIND opkind = get_opkind_from_cond(cond);
+
+    // check if both t_op_a and t_op_b are concrete
+    // if this is true, skip any further work
+
+    size_t op_a_idx = temp_idx(t_op_a);
+    size_t op_b_idx = temp_idx(t_op_b);
+
+    TCGTemp *t_a = new_non_conflicting_temp(TCG_TYPE_PTR);
+    tcg_movi(t_a, (uintptr_t)&stemps[op_a_idx], 0, 1, op_in, NULL, tcg_ctx);
+    tcg_load_n(t_a, t_a, 0, 0, 0, 1, sizeof(uintptr_t), op_in, NULL, tcg_ctx);
+
+    TCGTemp *t_b = new_non_conflicting_temp(TCG_TYPE_PTR);
+    tcg_movi(t_b, (uintptr_t)&stemps[op_b_idx], 0, 1, op_in, NULL, tcg_ctx);
+    tcg_load_n(t_b, t_b, 0, 0, 0, 1, sizeof(uintptr_t), op_in, NULL, tcg_ctx);
+
+    TCGTemp *t_a_and_b = new_non_conflicting_temp(TCG_TYPE_PTR);
+    tcg_binop(t_a_and_b, t_a, t_b, 0, 0, 0, AND, op_in, NULL, tcg_ctx);
+
+    TCGTemp *t_zero = new_non_conflicting_temp(TCG_TYPE_I64);
+    tcg_movi(t_zero, 0, 0, 1, op_in, NULL, tcg_ctx); // ToDo: make this smarter
+
+    TCGLabel *label_both_concrete = gen_new_label();
+    tcg_brcond(label_both_concrete, t_a_and_b, t_zero, TCG_COND_EQ, 1, 0, op_in, NULL, tcg_ctx);
+    tcg_temp_free_internal(t_a_and_b);
+
+    // one of them is symbolic, build the expression
+
+    // allocate expr for t_out
+    TCGTemp *t_out = new_non_conflicting_temp(TCG_TYPE_I64);
+    allocate_new_expr(t_out, op_in, tcg_ctx); // FixMe: we assume that Expr is zero-initialzed!
+
+    // if t_a is concrete, then store its concrete value into t_out expr
+
+    TCGTemp *t_one = new_non_conflicting_temp(TCG_TYPE_I64);
+    tcg_movi(t_one, 1, 0, 1, op_in, NULL, tcg_ctx);
+
+    TCGLabel *label_ta_not_concrete = gen_new_label();
+    tcg_brcond(label_ta_not_concrete, t_a, t_zero, TCG_COND_NE, 0, 0, op_in, NULL, tcg_ctx);
+
+    MARK_TEMP_AS_ALLOCATED(t_op_a);
+    tcg_mov(t_a, t_op_a, 0, 0, op_in, NULL, tcg_ctx);
+    MARK_TEMP_AS_NOT_ALLOCATED(t_op_a);
+
+    tcg_store_n(t_out, t_one, offsetof(Expr, op1_is_const), 0, 0, 0, 1, op_in, NULL, tcg_ctx);
+    TCGTemp *t_opkind = new_non_conflicting_temp(TCG_TYPE_I64);
+    tcg_movi(t_opkind, opkind, 0, 1, op_in, NULL, tcg_ctx);
+    tcg_store_n(t_out, t_opkind, offsetof(Expr, opkind), 0, 1, 1, 1, op_in, NULL, tcg_ctx);
+    tcg_temp_free_internal(t_opkind);
+
+    tcg_set_label(label_ta_not_concrete, op_in, NULL, tcg_ctx);
+
+    tcg_store_n(t_out, t_a, offsetof(Expr, op1), 0, 0, 0, sizeof(uintptr_t), op_in, NULL, tcg_ctx);
+
+    // if t_b is concrete, then store its concrete value into t_out expr
+
+    TCGLabel *label_tb_not_concrete = gen_new_label();
+    tcg_brcond(label_tb_not_concrete, t_b, t_zero, TCG_COND_NE, 0, 0, op_in, NULL, tcg_ctx);
+
+    MARK_TEMP_AS_ALLOCATED(t_op_b);
+    tcg_mov(t_b, t_op_b, 0, 0, op_in, NULL, tcg_ctx);
+    MARK_TEMP_AS_NOT_ALLOCATED(t_op_b);
+
+    tcg_store_n(t_out, t_one, offsetof(Expr, op2_is_const), 0, 0, 0, 1, op_in, NULL, tcg_ctx);
+
+    tcg_set_label(label_tb_not_concrete, op_in, NULL, tcg_ctx);
+
+    tcg_store_n(t_out, t_b, offsetof(Expr, op2), 0, 0, 0, sizeof(uintptr_t), op_in, NULL, tcg_ctx);
+
+    // build the new expr for path_constraints: t_out AND path_constraints
+
+    TCGTemp *t_new_pi_expr = new_non_conflicting_temp(TCG_TYPE_I64);
+    allocate_new_expr(t_new_pi_expr, op_in, tcg_ctx); // FixMe: we assume that Expr is zero-initialzed!
+
+    t_opkind = new_non_conflicting_temp(TCG_TYPE_I64);
+    tcg_movi(t_opkind, AND, 0, 1, op_in, NULL, tcg_ctx);
+    tcg_store_n(t_new_pi_expr, t_opkind, offsetof(Expr, opkind), 0, 1, 1, 1, op_in, NULL, tcg_ctx);
+    tcg_temp_free_internal(t_opkind);
+
+    TCGTemp *t_pi_addr = new_non_conflicting_temp(TCG_TYPE_PTR);
+    tcg_movi(t_pi_addr, (uintptr_t)&path_constraints, 0, 1, op_in, NULL, tcg_ctx);
+
+    TCGTemp *t_old_pi_expr = new_non_conflicting_temp(TCG_TYPE_PTR);
+    tcg_load_n(t_old_pi_expr, t_pi_addr, 0, 0, 0, 1, sizeof(uintptr_t), op_in, NULL, tcg_ctx);
+
+    tcg_store_n(t_out, t_new_pi_expr, offsetof(Expr, op1), 1, 0, 1, sizeof(uintptr_t), op_in, NULL, tcg_ctx);
+    tcg_temp_free_internal(t_out);
+    tcg_store_n(t_old_pi_expr, t_new_pi_expr, offsetof(Expr, op1), 1, 0, 1, sizeof(uintptr_t), op_in, NULL, tcg_ctx);
+    tcg_temp_free_internal(t_old_pi_expr);
+
+    tcg_store_n(t_new_pi_expr, t_pi_addr, 0, 1, 1, 1, sizeof(uintptr_t), op_in, NULL, tcg_ctx);
+    tcg_temp_free_internal(t_new_pi_expr);
+    tcg_temp_free_internal(t_pi_addr);
+
+    // ToDo: test this code
+
+    tcg_set_label(label_both_concrete, op_in, NULL, tcg_ctx);
+
+    tcg_temp_free_internal(t_zero);
+    tcg_temp_free_internal(t_a);
+    tcg_temp_free_internal(t_b);
+}
+
 void parse_translation_block(TranslationBlock *tb, uintptr_t pc, uint8_t *tb_code, TCGContext *tcg_ctx)
 {
     if (pc < 0x40054d || pc > 0x400577) // boundary of foo function
@@ -1010,7 +1168,7 @@ void parse_translation_block(TranslationBlock *tb, uintptr_t pc, uint8_t *tb_cod
                 TCGTemp *t_val = arg_temp(op->args[0]);
                 TCGTemp *t_ptr = arg_temp(op->args[1]);
                 // FixMe: LE is little endian, Q is 64bit. Should we swap bytes?
-                //assert(get_memop(op->args[2]) & MO_LEQ);
+                assert(get_memop(op->args[2]) & MO_LEQ);
                 uintptr_t offset = 0; //(uintptr_t) get_mmuidx(op->args[2]);
                 qemu_load(t_ptr, t_val, offset, op, tcg_ctx);
             }
@@ -1031,11 +1189,23 @@ void parse_translation_block(TranslationBlock *tb, uintptr_t pc, uint8_t *tb_cod
             break;
 
         case INDEX_op_ld_i32:
-            // ToDo: mark temps as used
+            // ToDo: mark temps as used?
             break;
 
         case INDEX_op_st_i64:
-            // ToDo: mark temps as used
+            // ToDo: mark temps as used?
+            break;
+
+        case INDEX_op_brcond_i32:
+            mark_temp_as_in_use(arg_temp(op->args[0]));
+            mark_temp_as_in_use(arg_temp(op->args[1]));
+            if (instrument)
+            {
+                TCGTemp *t_a = arg_temp(op->args[0]);
+                TCGTemp *t_b = arg_temp(op->args[1]);
+                TCGCond cond = op->args[2];
+                branch(t_a, t_b, cond, op, tcg_ctx);
+            }
             break;
 
         case INDEX_op_goto_ptr:
