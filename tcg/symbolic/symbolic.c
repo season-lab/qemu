@@ -34,6 +34,9 @@ typedef enum OPKIND
     LEU,
     GEU,
     GTU,
+    //
+    ZEXT, // ZEXT(arg0, n): zero-extend arg0 for the n msb bits
+    SEXT, // ZEXT(arg0, n): sign-extend arg0 for the n msb bits
 } OPKIND;
 
 typedef struct Expr
@@ -681,6 +684,11 @@ static inline void print_t_l1_entry_idx_addr(void *l1_entry_addr)
     printf("L2 Entry addr: %p\n", l1_entry_addr);
 }
 
+static inline void print_t_l3_entry_idx_addr(void *l3_entry_addr)
+{
+    printf("L3 Entry addr: %p\n", l3_entry_addr);
+}
+
 static inline void get_expr_addr_for_addr(TCGTemp *t_addr, TCGTemp **t_expr_addr, TCGOp *op_in, TCGContext *tcg_ctx)
 {
     // assumption: 4 byte alignment
@@ -813,6 +821,16 @@ static inline void get_expr_addr_for_addr(TCGTemp *t_addr, TCGTemp **t_expr_addr
     *t_expr_addr = t_l3_page_idx_addr;
 }
 
+static inline void print_expr(Expr *expr)
+{
+    printf("Expr:");
+    printf(" addr=%p", expr);
+    if (expr) {
+        printf(" is_symbolic_input=%u", expr->is_symbolic_input);
+    }
+    printf("\n");
+}
+
 static inline void qemu_load(TCGTemp *t_addr, TCGTemp *t_val, uintptr_t offset, TCGOp *op_in, TCGContext *tcg_ctx)
 {
     // assumption: 8 byte alignment
@@ -828,12 +846,15 @@ static inline void qemu_load(TCGTemp *t_addr, TCGTemp *t_val, uintptr_t offset, 
 
     // check whether there is an Expr at that address
 
-    add_void_call_1(print_t_l1_entry_idx_addr, t_l3_page_idx_addr, op_in, NULL, tcg_ctx);
+    add_void_call_1(print_t_l3_entry_idx_addr, t_l3_page_idx_addr, op_in, NULL, tcg_ctx);
 
     TCGTemp *t_expr = new_non_conflicting_temp(TCG_TYPE_PTR);
     tcg_load_n(t_l3_page_idx_addr, t_expr, 0, 1, 0, 1, sizeof(uintptr_t), op_in, NULL, tcg_ctx);
     tcg_temp_free_internal(t_l3_page_idx_addr);
 
+    add_void_call_1(print_expr, t_expr, op_in, &op, tcg_ctx);
+
+#if 0
     TCGTemp *t_zero = new_non_conflicting_temp(TCG_TYPE_PTR);
     tcg_movi(t_zero, 0, 0, 1, op_in, NULL, tcg_ctx);
 
@@ -845,11 +866,19 @@ static inline void qemu_load(TCGTemp *t_addr, TCGTemp *t_val, uintptr_t offset, 
     TCGTemp *t_to = new_non_conflicting_temp(TCG_TYPE_PTR);
     tcg_movi(t_to, (uintptr_t)&stemps[temp_idx(t_val)], 0, 1, op_in, &op, tcg_ctx);
     mark_insn_as_instrumentation(op);
+
     tcg_store_n(t_to, t_expr, 0, 1, 1, 1, sizeof(void *), op_in, &op, tcg_ctx);
     mark_insn_as_instrumentation(op);
     tcg_temp_free_internal(t_to);
 
     tcg_set_label(label_op_is_const, op_in, NULL, tcg_ctx);
+#endif
+
+    TCGTemp *t_to = new_non_conflicting_temp(TCG_TYPE_PTR);
+    tcg_movi(t_to, (uintptr_t)&stemps[temp_idx(t_val)], 0, 1, op_in, &op, tcg_ctx);
+
+    tcg_store_n(t_to, t_expr, 0, 1, 1, 1, sizeof(void *), op_in, &op, tcg_ctx);
+    tcg_temp_free_internal(t_to);
 }
 
 static inline void qemu_store(TCGTemp *t_addr, TCGTemp *t_val, uintptr_t offset, TCGOp *op_in, TCGContext *tcg_ctx)
@@ -875,10 +904,48 @@ static inline void qemu_store(TCGTemp *t_addr, TCGTemp *t_val, uintptr_t offset,
     TCGTemp *t_l3_page_idx_addr;
     get_expr_addr_for_addr(t_addr, &t_l3_page_idx_addr, op_in, tcg_ctx);
 
+    add_void_call_1(print_expr, t_val_expr, op_in, &op, tcg_ctx);
+
     // set Expr (we still need to store NULL if val is concrete!)
     tcg_store_n(t_l3_page_idx_addr, t_val_expr, 0, 1, 1, 1, sizeof(void *), op_in, &op, tcg_ctx);
     tcg_temp_free_internal(t_l3_page_idx_addr);
     tcg_temp_free_internal(t_val_expr);
+}
+
+static inline void print_something(char * str)
+{
+    printf("\n%s\n", str);
+}
+
+const char * str = "Zero-extending";
+static inline void zero_extend(TCGTemp *t_op_to, TCGTemp *t_op_from, TCGOp *op_in, TCGContext *tcg_ctx)
+{
+    TCGOp * op;
+
+    //size_t to = temp_idx(t_op_to);
+    size_t from = temp_idx(t_op_from);
+
+    // check whether t_op_from is concrete
+    TCGTemp *t_from = new_non_conflicting_temp(TCG_TYPE_PTR);
+    tcg_movi(t_from, (uintptr_t)&stemps[from], 0, 1, op_in, NULL, tcg_ctx);
+    tcg_load_n(t_from, t_from, 0, 0, 0, 1, sizeof(uintptr_t), op_in, NULL, tcg_ctx);
+
+    TCGTemp *t_zero = new_non_conflicting_temp(TCG_TYPE_PTR);
+    tcg_movi(t_zero, 0, 0, 1, op_in, NULL, tcg_ctx);
+
+    TCGLabel *label_op_is_const = gen_new_label();
+    tcg_brcond(label_op_is_const, t_from, t_zero, TCG_COND_EQ, 0, 1, op_in, NULL, tcg_ctx);
+
+    TCGTemp *t_str = new_non_conflicting_temp(TCG_TYPE_PTR);
+    tcg_movi(t_str, (uintptr_t) 0, 0, 1, op_in, NULL, tcg_ctx);
+    add_void_call_1(print_something, t_str, op_in, &op, tcg_ctx);
+    mark_insn_as_instrumentation(op);
+    tcg_temp_free_internal(t_str);
+
+    tcg_set_label(label_op_is_const, op_in, NULL, tcg_ctx);
+
+    tcg_temp_free_internal(t_from);
+    tcg_temp_free_internal(t_zero);
 }
 
 static inline void mark_temp_as_in_use(TCGTemp *t)
@@ -971,8 +1038,14 @@ static inline OPKIND get_opkind_from_cond(TCGCond cond)
     }
 }
 
+static void print_pi(void)
+{
+    printf("Path constraints: %p\n", path_constraints);
+}
+
 static inline void branch(TCGTemp *t_op_a, TCGTemp *t_op_b, TCGCond cond, TCGOp *op_in, TCGContext *tcg_ctx)
 {
+    TCGOp * op;
     OPKIND opkind = get_opkind_from_cond(cond);
 
     // check if both t_op_a and t_op_b are concrete
@@ -998,6 +1071,9 @@ static inline void branch(TCGTemp *t_op_a, TCGTemp *t_op_b, TCGCond cond, TCGOp 
     TCGLabel *label_both_concrete = gen_new_label();
     tcg_brcond(label_both_concrete, t_a_and_b, t_zero, TCG_COND_EQ, 1, 0, op_in, NULL, tcg_ctx);
     tcg_temp_free_internal(t_a_and_b);
+
+    add_void_call_0(print_pi, op_in, &op, tcg_ctx);
+    mark_insn_as_instrumentation(op);
 
     // one of them is symbolic, build the expression
 
@@ -1068,6 +1144,10 @@ static inline void branch(TCGTemp *t_op_a, TCGTemp *t_op_b, TCGCond cond, TCGOp 
     tcg_temp_free_internal(t_pi_addr);
 
     // ToDo: test this code
+    // ToDo: we should set the path constraint based on the eval of the condition
+
+    add_void_call_0(print_pi, op_in, &op, tcg_ctx);
+    mark_insn_as_instrumentation(op);
 
     tcg_set_label(label_both_concrete, op_in, NULL, tcg_ctx);
 
@@ -1175,7 +1255,7 @@ void parse_translation_block(TranslationBlock *tb, uintptr_t pc, uint8_t *tb_cod
             break;
 
         case INDEX_op_qemu_st_i64:
-            if (instrument && 0)
+            if (instrument)
             {
                 mark_temp_as_in_use(arg_temp(op->args[0]));
                 mark_temp_as_in_use(arg_temp(op->args[1]));
@@ -1196,7 +1276,7 @@ void parse_translation_block(TranslationBlock *tb, uintptr_t pc, uint8_t *tb_cod
             // ToDo: mark temps as used?
             break;
 
-        case INDEX_op_brcond_i32:
+        case INDEX_op_brcond_i64:
             mark_temp_as_in_use(arg_temp(op->args[0]));
             mark_temp_as_in_use(arg_temp(op->args[1]));
             if (instrument)
@@ -1205,6 +1285,17 @@ void parse_translation_block(TranslationBlock *tb, uintptr_t pc, uint8_t *tb_cod
                 TCGTemp *t_b = arg_temp(op->args[1]);
                 TCGCond cond = op->args[2];
                 branch(t_a, t_b, cond, op, tcg_ctx);
+            }
+            break;
+
+        case INDEX_op_ext32u_i64:
+            mark_temp_as_in_use(arg_temp(op->args[0]));
+            mark_temp_as_in_use(arg_temp(op->args[1]));
+            if (instrument)
+            {
+                TCGTemp *t_to = arg_temp(op->args[0]);
+                TCGTemp *t_from = arg_temp(op->args[1]);
+                zero_extend(t_to, t_from, op, tcg_ctx);
             }
             break;
 

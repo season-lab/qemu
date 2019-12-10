@@ -27,7 +27,8 @@ static inline void gen_helper_pcounter(void)
 typedef enum RESTORE_LOC
 {
   TO_REG,
-  TO_MEM
+  TO_MEM,
+  TO_CONST
 } RESTORE_LOC;
 
 typedef struct temp_to_restore_t
@@ -36,6 +37,7 @@ typedef struct temp_to_restore_t
   RESTORE_LOC where;
   TCGReg reg;
   intptr_t mem_offset;
+  tcg_target_long const_val;
 } temp_to_restore_t;
 
 // FixMe: refactor this
@@ -63,6 +65,20 @@ inline void add_temp_reg_to_restore(TCGTemp *ts, TCGReg reg, temp_to_restore_t *
 // from tcg.c
 void tcg_reg_free(TCGContext *s, TCGReg reg, TCGRegSet allocated_regs);
 void temp_load(TCGContext *, TCGTemp *, TCGRegSet, TCGRegSet, TCGRegSet);
+
+static inline void add_temp_const_to_restore(TCGTemp *ts, tcg_target_long const_val, temp_to_restore_t *temps_to_restore, size_t *temps_to_restore_count)
+{
+  size_t i = *temps_to_restore_count;
+  (*temps_to_restore_count)++;
+  assert(*temps_to_restore_count < TCG_MAX_TEMPS);
+  assert(ts->val_type == TEMP_VAL_CONST);
+  temps_to_restore[i].ts = ts;
+  temps_to_restore[i].where = TO_CONST;
+  temps_to_restore[i].const_val = const_val;
+
+  // it does not make sense to mark it as not mem coherent... right?
+  // temps_to_restore[i].ts->mem_coherent = 0;
+}
 
 static inline void add_temp_mem_to_restore(TCGTemp *ts, TCGReg reg, intptr_t mem_offset, temp_to_restore_t *temps_to_restore, size_t *temps_to_restore_count)
 {

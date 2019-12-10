@@ -3880,7 +3880,10 @@ static void tcg_reg_alloc_call(TCGContext *s, TCGOp *op)
                         if (s->reg_to_temp[reg])
                             add_temp_reg_to_restore(s->reg_to_temp[reg], reg, temps_to_restore, &temps_to_restore_count);
 
-                        add_temp_mem_to_restore(s->reg_to_temp[reg], ts->mem_base->reg, ts->mem_offset, temps_to_restore, &temps_to_restore_count);
+                        if (ts->val_type == TEMP_VAL_CONST)
+                            add_temp_const_to_restore(ts, ts->val, temps_to_restore, &temps_to_restore_count);
+                        else
+                            add_temp_mem_to_restore(ts, ts->mem_base->reg, ts->mem_offset, temps_to_restore, &temps_to_restore_count);
                     }
 #endif
                 TCGRegSet arg_set = 0;
@@ -3964,13 +3967,29 @@ static void tcg_reg_alloc_call(TCGContext *s, TCGOp *op)
                 assert(nb_oargs <= 0 || tcg_target_call_oarg_regs[i] != temps_to_restore[i].reg);
                 restore_temp_to_reg(i, allocated_regs, s, temps_to_restore, &temps_to_restore_count);
             }
-            else
+            else if (temps_to_restore[i].where == TO_MEM)
             {
                 assert(0); // Test this case
                 assert(temps_to_restore[i].where == TO_MEM);
                 assert(temps_to_restore[i].reg == temps_to_restore[i].ts->mem_base->reg);
                 assert(temps_to_restore[i].mem_offset == temps_to_restore[i].ts->mem_offset);
                 temp_sync(s, temps_to_restore[i].ts, allocated_regs, 0, -1);
+            }
+            else
+            {
+                assert(temps_to_restore[i].where == TO_CONST);
+                if (temps_to_restore[i].ts->val_type == TEMP_VAL_REG)
+                {
+                    tcg_reg_free(s, temps_to_restore[i].ts->reg, allocated_regs);
+                    temps_to_restore[i].ts->val_type = TEMP_VAL_CONST;
+                    temps_to_restore[i].ts->val = temps_to_restore[i].const_val;
+                }
+                else
+                {
+                    assert(temps_to_restore[i].ts->val_type == TEMP_VAL_MEM);
+                    temps_to_restore[i].ts->val_type = TEMP_VAL_CONST;
+                    temps_to_restore[i].ts->val = temps_to_restore[i].const_val;
+                }
             }
         }
     }
