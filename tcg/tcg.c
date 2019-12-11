@@ -3969,11 +3969,18 @@ static void tcg_reg_alloc_call(TCGContext *s, TCGOp *op)
             }
             else if (temps_to_restore[i].where == TO_MEM)
             {
-                assert(0); // Test this case
-                assert(temps_to_restore[i].where == TO_MEM);
-                assert(temps_to_restore[i].reg == temps_to_restore[i].ts->mem_base->reg);
-                assert(temps_to_restore[i].mem_offset == temps_to_restore[i].ts->mem_offset);
-                temp_sync(s, temps_to_restore[i].ts, allocated_regs, 0, -1);
+                if (temps_to_restore[i].ts->val_type == TEMP_VAL_MEM)
+                {
+                    assert(temps_to_restore[i].reg == temps_to_restore[i].ts->mem_base->reg);
+                    assert(temps_to_restore[i].mem_offset == temps_to_restore[i].ts->mem_offset);
+                }
+                else
+                {
+                    assert(0); // Test this case
+                    assert(temps_to_restore[i].reg == temps_to_restore[i].ts->mem_base->reg);
+                    assert(temps_to_restore[i].mem_offset == temps_to_restore[i].ts->mem_offset);
+                    temp_sync(s, temps_to_restore[i].ts, allocated_regs, 0, -1);
+                }
             }
             else
             {
