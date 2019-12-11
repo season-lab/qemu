@@ -4,6 +4,8 @@
 #include "qemu-common.h"
 #include "symbolic.h"
 
+//#define SYMBOLIC_DEBUG
+
 typedef enum OPKIND
 {
     ADD,
@@ -104,6 +106,12 @@ TCGOp * op_macro;
 
 #define MARK_TEMP_AS_ALLOCATED(t) do { t->temp_allocated = 1; } while(0)
 #define MARK_TEMP_AS_NOT_ALLOCATED(t) do { t->temp_allocated = 0; } while(0)
+
+#ifdef SYMBOLIC_DEBUG
+#define debug_printf(...) do { printf(__VA_ARGS__); } while(0);
+#else
+#define debug_printf(...) do {} while(0);
+#endif
 
 // since we are asking for new temps after generating and analyzing TCG,
 // tcg_temp_new_internal may returns temps that are in use in the TB
@@ -218,16 +226,15 @@ static inline Expr *new_expr(void)
 
 static inline void print_reg(void)
 {
-    size_t r = 12; // RDI
     //printf("RDI is at %p\n", &stemps[r]);
-    printf("RDI is %ssymbolic\n", stemps[r]->is_symbolic_input ? "" : "not ");
+    debug_printf("RDI is %ssymbolic\n", stemps[12]->is_symbolic_input ? "" : "not ");
 }
 
 static inline void new_symbolic_expr(void)
 {
     Expr *e = new_expr();
     e->is_symbolic_input = 1;
-    printf("Marking expr%lu as symbolic\n", GET_EXPR_IDX(e));
+    debug_printf("Marking expr%lu as symbolic\n", GET_EXPR_IDX(e));
 }
 
 static inline void sync_argo_temp(TCGOp *op, size_t i)
@@ -456,7 +463,7 @@ static inline void tcg_set_label(TCGLabel *label,
 
 static inline void print_something(char * str)
 {
-    printf("%s\n", str);
+    debug_printf("%s\n", str);
 }
 
 // the string has to be statically allocated, otherwise it will crash!
@@ -471,7 +478,7 @@ static inline void tcg_print_const_str(const char * str, TCGOp *op_in, TCGOp **o
 static inline void init_reg(size_t reg, TCGOp *op_in, TCGContext *tcg_ctx)
 {
     assert(reg < TCG_MAX_TEMPS);
-    printf("Setting expr of reg %lu\n", reg);
+    debug_printf("Setting expr of reg %lu\n", reg);
 
     TCGTemp *t_last_expr = new_non_conflicting_temp(TCG_TYPE_PTR);
     tcg_movi(t_last_expr, (uintptr_t)&last_expr, 0, 1, op_in, NULL, tcg_ctx);
@@ -494,7 +501,7 @@ static inline void make_reg_symbolic(const char *reg_name, TCGOp *op, TCGContext
             continue; // not a register
         if (strcmp(t->name, reg_name) == 0)
         {
-            printf("Marking %s (id=%d) as symbolic\n", t->name, i);
+            debug_printf("Marking %s (id=%d) as symbolic\n", t->name, i);
             add_void_call_0(new_symbolic_expr, op, NULL, tcg_ctx);
             init_reg(i, op, tcg_ctx);
             add_void_call_0(print_reg, op, NULL, tcg_ctx);
@@ -675,7 +682,7 @@ static inline void preserve_op_load(TCGTemp *t, TCGOp *op_in, TCGContext *tcg_ct
 // Binary operation: t_out = t_a opkind t_b
 static inline void binary_op(OPKIND opkind, TCGTemp *t_op_out, TCGTemp *t_op_a, TCGTemp *t_op_b, TCGOp *op_in, TCGContext *tcg_ctx)
 {
-    TCGOp * op;
+    //TCGOp * op;
 
     size_t out = temp_idx(t_op_out);
     size_t a = temp_idx(t_op_a);
@@ -770,12 +777,14 @@ static inline void binary_op(OPKIND opkind, TCGTemp *t_op_out, TCGTemp *t_op_a, 
     tcg_movi(t_out_expr, (uintptr_t)&stemps[out], 0, 1, op_in, NULL, tcg_ctx);
     tcg_store_n(t_out_expr, t_out, 0, 0, 0, 0, sizeof(uintptr_t), op_in, NULL, tcg_ctx);
 
+#if 0
     tcg_print_const_str("Binary op:", op_in, &op, tcg_ctx);
     mark_insn_as_instrumentation(op);
     add_void_call_1(print_expr, t_out, op_in, &op, tcg_ctx);
     mark_insn_as_instrumentation(op);
     tcg_print_const_str("Binary op: DONE", op_in, &op, tcg_ctx);
     mark_insn_as_instrumentation(op);
+#endif
 
     tcg_set_label(label_both_concrete, op_in, NULL, tcg_ctx);
 
@@ -791,26 +800,26 @@ static inline void allocate_l2_page(uintptr_t l1_entry_idx)
 {
     assert(l1_entry_idx < 1 << L1_PAGE_BITS);
 
-    printf("Allocating l2 page at idx %lu\n", l1_entry_idx);
+    debug_printf("Allocating l2 page at idx %lu\n", l1_entry_idx);
     s_memory.table.entries[l1_entry_idx] = g_malloc0(sizeof(l2_page_t)); // FixMe: get mmap lock
-    printf("Done: l1_entry_idx_addr=%p l2_page_addr=%p\n", &s_memory.table.entries[l1_entry_idx], s_memory.table.entries[l1_entry_idx]);
+    debug_printf("Done: l1_entry_idx_addr=%p l2_page_addr=%p\n", &s_memory.table.entries[l1_entry_idx], s_memory.table.entries[l1_entry_idx]);
 }
 
 static inline void allocate_l3_page(void ** l2_page_idx_addr)
 {
-    printf("Allocating l3 page at l2_page_idx_addr=%p\n", l2_page_idx_addr);
+    debug_printf("Allocating l3 page at l2_page_idx_addr=%p\n", l2_page_idx_addr);
     *l2_page_idx_addr = g_malloc0(sizeof(l3_page_t)); // FixMe: get mmap lock
-    printf("Done: l3_page_addr=%p\n", *l2_page_idx_addr);
+    debug_printf("Done: l3_page_addr=%p\n", *l2_page_idx_addr);
 }
 
 static inline void print_t_l1_entry_idx_addr(void *l1_entry_addr)
 {
-    printf("L2 Entry addr: %p\n", l1_entry_addr);
+    debug_printf("L2 Entry addr: %p\n", l1_entry_addr);
 }
 
 static inline void print_t_l3_entry_idx_addr(void *l3_entry_addr)
 {
-    printf("L3 Entry addr: %p\n", l3_entry_addr);
+    debug_printf("L3 Entry addr: %p\n", l3_entry_addr);
 }
 
 static inline void get_expr_addr_for_addr(TCGTemp *t_addr, TCGTemp **t_expr_addr, TCGOp *op_in, TCGContext *tcg_ctx)
@@ -950,7 +959,7 @@ static inline void qemu_load(TCGTemp *t_addr, TCGTemp *t_val, uintptr_t offset, 
     // assumption: 8 byte alignment
 
     if (offset)
-        printf("offset: %lu\n", offset);
+        debug_printf("offset: %lu\n", offset);
     assert(offset == 0); // ToDo
 
     TCGOp * op;
@@ -966,7 +975,7 @@ static inline void qemu_load(TCGTemp *t_addr, TCGTemp *t_val, uintptr_t offset, 
     tcg_load_n(t_l3_page_idx_addr, t_expr, 0, 1, 0, 1, sizeof(uintptr_t), op_in, NULL, tcg_ctx);
     tcg_temp_free_internal(t_l3_page_idx_addr);
 
-    add_void_call_1(print_expr, t_expr, op_in, &op, tcg_ctx);
+    //add_void_call_1(print_expr, t_expr, op_in, &op, tcg_ctx);
 
 #if 0
     TCGTemp *t_zero = new_non_conflicting_temp(TCG_TYPE_PTR);
@@ -1000,7 +1009,7 @@ static inline void qemu_store(TCGTemp *t_addr, TCGTemp *t_val, uintptr_t offset,
     // assumption: 8 byte alignment
 
     if (offset)
-        printf("offset: %lu\n", offset);
+        debug_printf("offset: %lu\n", offset);
     assert(offset == 0); // ToDo
 
     TCGOp * op;
@@ -1018,7 +1027,7 @@ static inline void qemu_store(TCGTemp *t_addr, TCGTemp *t_val, uintptr_t offset,
     TCGTemp *t_l3_page_idx_addr;
     get_expr_addr_for_addr(t_addr, &t_l3_page_idx_addr, op_in, tcg_ctx);
 
-    add_void_call_1(print_expr, t_val_expr, op_in, &op, tcg_ctx);
+    //add_void_call_1(print_expr, t_val_expr, op_in, &op, tcg_ctx);
 
     // set Expr (we still need to store NULL if val is concrete!)
     tcg_store_n(t_l3_page_idx_addr, t_val_expr, 0, 1, 1, 1, sizeof(void *), op_in, &op, tcg_ctx);
@@ -1175,11 +1184,12 @@ static inline OPKIND get_opkind_from_cond(TCGCond cond)
 static void print_pi(void)
 {
     if (!path_constraints)
-        printf("Path constraints: true\n");
+        printf("\nPath constraints: true\n\n");
     else
     {
-        printf("Path constraints:\n\t");
+        printf("\nPath constraints:\n");
         print_expr(path_constraints);
+        printf("\n");
     }
 }
 
@@ -1212,8 +1222,10 @@ static inline void branch(TCGTemp *t_op_a, TCGTemp *t_op_b, TCGCond cond, TCGOp 
     tcg_brcond(label_both_concrete, t_a_or_b, t_zero, TCG_COND_EQ, 1, 0, op_in, NULL, tcg_ctx);
     tcg_temp_free_internal(t_a_or_b);
 
+#if 0
     add_void_call_0(print_pi, op_in, &op, tcg_ctx);
     mark_insn_as_instrumentation(op);
+#endif
 
     // one of them is symbolic, build the expression
 
@@ -1264,12 +1276,14 @@ static inline void branch(TCGTemp *t_op_a, TCGTemp *t_op_b, TCGCond cond, TCGOp 
     tcg_store_n(t_out, t_b, offsetof(Expr, op2), 0, 1, 1, sizeof(uintptr_t), op_in, NULL, tcg_ctx);
     tcg_temp_free_internal(t_b);
 
+#if 0
     tcg_print_const_str("Branch cond expr", op_in, &op, tcg_ctx);
     mark_insn_as_instrumentation(op);
     add_void_call_1(print_expr, t_out, op_in, &op, tcg_ctx);
     mark_insn_as_instrumentation(op);
     tcg_print_const_str("Branch cond DONE", op_in, &op, tcg_ctx);
     mark_insn_as_instrumentation(op);
+#endif
 
     // build the new expr for path_constraints: t_out AND path_constraints
 
@@ -1299,8 +1313,10 @@ static inline void branch(TCGTemp *t_op_a, TCGTemp *t_op_b, TCGCond cond, TCGOp 
     // ToDo: test this code
     // ToDo: we should set the path constraint based on the eval of the condition
 
+#if 1
     add_void_call_0(print_pi, op_in, &op, tcg_ctx);
     mark_insn_as_instrumentation(op);
+#endif
 
     tcg_set_label(label_both_concrete, op_in, NULL, tcg_ctx);
 }
@@ -1324,7 +1340,7 @@ void parse_translation_block(TranslationBlock *tb, uintptr_t pc, uint8_t *tb_cod
             else
                 instrument = 1;
 
-            printf("Instrumenting %lx\n", op->args[0]);
+            debug_printf("Instrumenting %lx\n", op->args[0]);
             if (op->args[0] == 0x40054d)
                 make_reg_symbolic("rdi", op, tcg_ctx);
             break;
@@ -1454,8 +1470,8 @@ void parse_translation_block(TranslationBlock *tb, uintptr_t pc, uint8_t *tb_cod
             break;
 
         default:;
-            const TCGOpDef *def = &tcg_op_defs[op->opc];
-            printf("Unhandled TCG instruction: %s\n", def->name);
+            const TCGOpDef *def __attribute__((unused)) = &tcg_op_defs[op->opc];
+            debug_printf("Unhandled TCG instruction: %s\n", def->name);
         }
 
         // mark as free any temp that was dead at this instruction
