@@ -148,7 +148,6 @@ static inline TCGTemp *new_non_conflicting_temp(TCGType type)
         TCGTemp *current = tcg_temp_new_internal(type, false);
         size_t idx = temp_idx(current);
         assert(idx < TCG_MAX_TEMPS);
-        printf("Allocated tmp%lu\n", idx);
         if (used_temps_idxs[idx] != 0) // temp is in use
         {
             conflicting_temps[conflicting_temps_count++] = current;
@@ -162,7 +161,6 @@ static inline TCGTemp *new_non_conflicting_temp(TCGType type)
     // deallocate any temp that is in conflict
     while (conflicting_temps_count > 0)
     {
-        printf("Deallocated in-use tmp%lu\n", temp_idx(conflicting_temps[conflicting_temps_count - 1]));
         tcg_temp_free_internal(conflicting_temps[conflicting_temps_count - 1]);
         conflicting_temps_count--;
     }
