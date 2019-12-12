@@ -3,8 +3,9 @@
 #include "qemu/osdep.h"
 #include "qemu-common.h"
 #include "symbolic.h"
+#include "qemu/bitops.h"
 
-//#define SYMBOLIC_DEBUG
+#define SYMBOLIC_DEBUG
 
 typedef enum OPKIND
 {
@@ -38,7 +39,7 @@ typedef enum OPKIND
     GTU,
     //
     ZEXT, // ZEXT(arg0, n): zero-extend arg0 for the n msb bits
-    SEXT, // ZEXT(arg0, n): sign-extend arg0 for the n msb bits
+    SEXT, // SEXT(arg0, n): sign-extend arg0 for the n msb bits
 } OPKIND;
 
 typedef struct Expr
@@ -113,6 +114,20 @@ TCGOp * op_macro;
 #define debug_printf(...) do {} while(0);
 #endif
 
+static inline int count_free_temps(TCGContext *tcg_ctx)
+{
+    int count = 0;
+    for (size_t j = 0; j < BITS_TO_LONGS(TCG_MAX_TEMPS); j++)
+        for(size_t i = 0; i < BITS_PER_LONG; i++)
+            count += test_bit(i, &tcg_ctx->free_temps[TCG_TYPE_I64].l[j]);
+    return count;
+}
+
+// FixMe: shitty way to hide the variable...
+#define SAVE_TEMPS_COUNT(s) int temps_initial_count = s->nb_temps - count_free_temps(s);
+#define CHECK_TEMPS_COUNT_WITH_DELTA(s, delta) assert(temps_initial_count == s->nb_temps - count_free_temps(s) + delta);
+#define CHECK_TEMPS_COUNT(s) assert(temps_initial_count == s->nb_temps - count_free_temps(s));
+
 // since we are asking for new temps after generating and analyzing TCG,
 // tcg_temp_new_internal may returns temps that are in use in the TB
 // (but are dead at the end of the TB). To avoid conflicts, we call
@@ -124,7 +139,7 @@ TCGOp * op_macro;
 static uint8_t used_temps_idxs[TCG_MAX_TEMPS] = {0};
 static inline TCGTemp *new_non_conflicting_temp(TCGType type)
 {
-
+    assert(type == TCG_TYPE_I64); // ToDo: validate other types
     TCGTemp *r = NULL;
     TCGTemp *conflicting_temps[TCG_MAX_TEMPS];
     size_t conflicting_temps_count = 0;
@@ -132,6 +147,8 @@ static inline TCGTemp *new_non_conflicting_temp(TCGType type)
     {
         TCGTemp *current = tcg_temp_new_internal(type, false);
         size_t idx = temp_idx(current);
+        assert(idx < TCG_MAX_TEMPS);
+        printf("Allocated tmp%lu\n", idx);
         if (used_temps_idxs[idx] != 0) // temp is in use
         {
             conflicting_temps[conflicting_temps_count++] = current;
@@ -145,6 +162,7 @@ static inline TCGTemp *new_non_conflicting_temp(TCGType type)
     // deallocate any temp that is in conflict
     while (conflicting_temps_count > 0)
     {
+        printf("Deallocated in-use tmp%lu\n", temp_idx(conflicting_temps[conflicting_temps_count - 1]));
         tcg_temp_free_internal(conflicting_temps[conflicting_temps_count - 1]);
         conflicting_temps_count--;
     }
@@ -477,6 +495,8 @@ static inline void tcg_print_const_str(const char * str, TCGOp *op_in, TCGOp **o
 
 static inline void init_reg(size_t reg, TCGOp *op_in, TCGContext *tcg_ctx)
 {
+    SAVE_TEMPS_COUNT(tcg_ctx);
+
     assert(reg < TCG_MAX_TEMPS);
     debug_printf("Setting expr of reg %lu\n", reg);
 
@@ -490,10 +510,13 @@ static inline void init_reg(size_t reg, TCGOp *op_in, TCGContext *tcg_ctx)
 
     tcg_temp_free_internal(t_dst);
     tcg_temp_free_internal(t_last_expr);
+
+    CHECK_TEMPS_COUNT(tcg_ctx);
 }
 
 static inline void make_reg_symbolic(const char *reg_name, TCGOp *op, TCGContext *tcg_ctx)
 {
+    SAVE_TEMPS_COUNT(tcg_ctx);
     for (int i = 0; i < TCG_TARGET_NB_REGS; i++)
     {
         TCGTemp *t = &tcg_ctx->temps[i];
@@ -507,10 +530,12 @@ static inline void make_reg_symbolic(const char *reg_name, TCGOp *op, TCGContext
             add_void_call_0(print_reg, op, NULL, tcg_ctx);
         }
     }
+    CHECK_TEMPS_COUNT(tcg_ctx);
 }
 
 static inline void move_temp(size_t from, size_t to, TCGOp *op_in, TCGContext *tcg_ctx)
 {
+    SAVE_TEMPS_COUNT(tcg_ctx);
     assert(to < TCG_MAX_TEMPS);
     assert(from < TCG_MAX_TEMPS);
 
@@ -524,10 +549,12 @@ static inline void move_temp(size_t from, size_t to, TCGOp *op_in, TCGContext *t
 
     tcg_temp_free_internal(t_from);
     tcg_temp_free_internal(t_to);
+    CHECK_TEMPS_COUNT(tcg_ctx);
 }
 
 static inline void clear_temp(size_t idx, TCGOp *op_in, TCGContext *tcg_ctx)
 {
+    SAVE_TEMPS_COUNT(tcg_ctx);
     assert(idx < TCG_MAX_TEMPS);
 
     TCGTemp *t_zero = new_non_conflicting_temp(TCG_TYPE_I64);
@@ -539,6 +566,7 @@ static inline void clear_temp(size_t idx, TCGOp *op_in, TCGContext *tcg_ctx)
 
     tcg_temp_free_internal(t_zero);
     tcg_temp_free_internal(t);
+    CHECK_TEMPS_COUNT(tcg_ctx);
 }
 
 static inline void test_expr(void)
@@ -551,6 +579,7 @@ static inline void test_expr(void)
 
 static inline void allocate_new_expr(TCGTemp *t_out, TCGOp *op_in, TCGContext *tcg_ctx)
 {
+    SAVE_TEMPS_COUNT(tcg_ctx);
     TCGOp * op;
 
     add_void_call_0(check_pool_expr_capacity, op_in, &op, tcg_ctx); // ToDo: make inline check
@@ -576,6 +605,7 @@ static inline void allocate_new_expr(TCGTemp *t_out, TCGOp *op_in, TCGContext *t
 
     tcg_temp_free_internal(t_next_free_expr);
     tcg_temp_free_internal(t_next_free_expr_addr);
+    CHECK_TEMPS_COUNT(tcg_ctx);
 }
 
 static inline const char * opkind_to_str(uint8_t opkind)
@@ -672,16 +702,19 @@ static inline void print_expr(Expr *expr)
 // before any branching code, to make temp loads branchless.
 static inline void preserve_op_load(TCGTemp *t, TCGOp *op_in, TCGContext *tcg_ctx)
 {
+    SAVE_TEMPS_COUNT(tcg_ctx);
     TCGTemp *t_dummy = new_non_conflicting_temp(TCG_TYPE_I64);
     MARK_TEMP_AS_ALLOCATED(t);
     tcg_mov(t_dummy, t, 0, 0, op_in, NULL, tcg_ctx);
     MARK_TEMP_AS_NOT_ALLOCATED(t);
     tcg_temp_free_internal(t_dummy);
+    CHECK_TEMPS_COUNT(tcg_ctx);
 }
 
 // Binary operation: t_out = t_a opkind t_b
 static inline void binary_op(OPKIND opkind, TCGTemp *t_op_out, TCGTemp *t_op_a, TCGTemp *t_op_b, TCGOp *op_in, TCGContext *tcg_ctx)
 {
+    SAVE_TEMPS_COUNT(tcg_ctx);
     //TCGOp * op;
 
     size_t out = temp_idx(t_op_out);
@@ -794,6 +827,7 @@ static inline void binary_op(OPKIND opkind, TCGTemp *t_op_out, TCGTemp *t_op_a, 
     tcg_temp_free_internal(t_out_expr);
     tcg_temp_free_internal(t_zero);
     tcg_temp_free_internal(t_one);
+    CHECK_TEMPS_COUNT(tcg_ctx);
 }
 
 static inline void allocate_l2_page(uintptr_t l1_entry_idx)
@@ -824,6 +858,7 @@ static inline void print_t_l3_entry_idx_addr(void *l3_entry_addr)
 
 static inline void get_expr_addr_for_addr(TCGTemp *t_addr, TCGTemp **t_expr_addr, TCGOp *op_in, TCGContext *tcg_ctx)
 {
+    SAVE_TEMPS_COUNT(tcg_ctx);
     // assumption: 4 byte alignment
 
     TCGOp * op;
@@ -907,9 +942,8 @@ static inline void get_expr_addr_for_addr(TCGTemp *t_addr, TCGTemp **t_expr_addr
     tcg_binop(t_l2_page_idx_addr, t_l2_page_idx, t_l2_page_idx_addr, 0, 1, 0, SHL, op_in, NULL, tcg_ctx);
     tcg_temp_free_internal(t_l2_page_idx);
 
-    tcg_binop(t_l2_page_idx_addr, t_l2_page_idx_addr, t_l2_page, 0, 0, 0, ADD, op_in, NULL, tcg_ctx);
-
-    //add_void_call_1(print_t_l1_entry_idx_addr, t_l2_page, op_in, NULL, tcg_ctx);
+    tcg_binop(t_l2_page_idx_addr, t_l2_page_idx_addr, t_l2_page, 0, 0, 1, ADD, op_in, NULL, tcg_ctx);
+    tcg_temp_free_internal(t_l2_page);
 
     TCGTemp *t_l3_page = new_non_conflicting_temp(TCG_TYPE_PTR);
     tcg_load_n(t_l2_page_idx_addr, t_l3_page, 0, 0, 0, 0, sizeof(uintptr_t), op_in, NULL, tcg_ctx);
@@ -949,13 +983,17 @@ static inline void get_expr_addr_for_addr(TCGTemp *t_addr, TCGTemp **t_expr_addr
     tcg_binop(t_l3_page_idx_addr, t_l3_page_idx, t_l3_page_idx_addr, 0, 1, 0, SHL, op_in, NULL, tcg_ctx);
     tcg_temp_free_internal(t_l3_page_idx);
 
-    tcg_binop(t_l3_page_idx_addr, t_l3_page_idx_addr, t_l3_page, 0, 0, 0, ADD, op_in, NULL, tcg_ctx);
+    tcg_binop(t_l3_page_idx_addr, t_l3_page_idx_addr, t_l3_page, 0, 0, 1, ADD, op_in, NULL, tcg_ctx);
+    tcg_temp_free_internal(t_l3_page);
 
     *t_expr_addr = t_l3_page_idx_addr;
+
+    CHECK_TEMPS_COUNT_WITH_DELTA(tcg_ctx, -1); // t_expr_addr is allocated here, but freed by the caller!
 }
 
 static inline void qemu_load(TCGTemp *t_addr, TCGTemp *t_val, uintptr_t offset, TCGOp *op_in, TCGContext *tcg_ctx)
 {
+    SAVE_TEMPS_COUNT(tcg_ctx);
     // assumption: 8 byte alignment
 
     if (offset)
@@ -977,35 +1015,21 @@ static inline void qemu_load(TCGTemp *t_addr, TCGTemp *t_val, uintptr_t offset, 
 
     //add_void_call_1(print_expr, t_expr, op_in, &op, tcg_ctx);
 
-#if 0
-    TCGTemp *t_zero = new_non_conflicting_temp(TCG_TYPE_PTR);
-    tcg_movi(t_zero, 0, 0, 1, op_in, NULL, tcg_ctx);
-
-    TCGLabel *label_op_is_const = gen_new_label();
-    tcg_brcond(label_op_is_const, t_expr, t_zero, TCG_COND_EQ, 0, 1, op_in, NULL, tcg_ctx);
-    tcg_temp_free_internal(t_zero);
-
-    // there is an expression, assign it to the t_dst
-    TCGTemp *t_to = new_non_conflicting_temp(TCG_TYPE_PTR);
-    tcg_movi(t_to, (uintptr_t)&stemps[temp_idx(t_val)], 0, 1, op_in, &op, tcg_ctx);
-    mark_insn_as_instrumentation(op);
-
-    tcg_store_n(t_to, t_expr, 0, 1, 1, 1, sizeof(void *), op_in, &op, tcg_ctx);
-    mark_insn_as_instrumentation(op);
-    tcg_temp_free_internal(t_to);
-
-    tcg_set_label(label_op_is_const, op_in, NULL, tcg_ctx);
-#endif
+    // write it to t_to (even when concrete to clear it)
 
     TCGTemp *t_to = new_non_conflicting_temp(TCG_TYPE_PTR);
     tcg_movi(t_to, (uintptr_t)&stemps[temp_idx(t_val)], 0, 1, op_in, &op, tcg_ctx);
 
     tcg_store_n(t_to, t_expr, 0, 1, 1, 1, sizeof(void *), op_in, &op, tcg_ctx);
     tcg_temp_free_internal(t_to);
+    tcg_temp_free_internal(t_expr);
+
+    CHECK_TEMPS_COUNT(tcg_ctx);
 }
 
 static inline void qemu_store(TCGTemp *t_addr, TCGTemp *t_val, uintptr_t offset, TCGOp *op_in, TCGContext *tcg_ctx)
 {
+    SAVE_TEMPS_COUNT(tcg_ctx);
     // assumption: 8 byte alignment
 
     if (offset)
@@ -1033,10 +1057,14 @@ static inline void qemu_store(TCGTemp *t_addr, TCGTemp *t_val, uintptr_t offset,
     tcg_store_n(t_l3_page_idx_addr, t_val_expr, 0, 1, 1, 1, sizeof(void *), op_in, &op, tcg_ctx);
     tcg_temp_free_internal(t_l3_page_idx_addr);
     tcg_temp_free_internal(t_val_expr);
+
+    CHECK_TEMPS_COUNT(tcg_ctx);
 }
 
 static inline void zero_extend(TCGTemp *t_op_to, TCGTemp *t_op_from, TCGOp *op_in, TCGContext *tcg_ctx)
 {
+    SAVE_TEMPS_COUNT(tcg_ctx);
+
     size_t to = temp_idx(t_op_to);
     size_t from = temp_idx(t_op_from);
 
@@ -1089,10 +1117,13 @@ static inline void zero_extend(TCGTemp *t_op_to, TCGTemp *t_op_from, TCGOp *op_i
     tcg_store_n(t_to, t_out, 0, 1, 1, 1, sizeof(uintptr_t), op_in, NULL, tcg_ctx);
     tcg_temp_free_internal(t_out);
     tcg_temp_free_internal(t_to);
+
+    CHECK_TEMPS_COUNT(tcg_ctx);
 }
 
 static inline void mark_temp_as_in_use(TCGTemp *t)
 {
+    debug_printf("Marking tmp%lu as in use\n", temp_idx(t));
     size_t idx = temp_idx(t);
     assert(idx < TCG_MAX_TEMPS);
     used_temps_idxs[idx] = 1;
@@ -1100,6 +1131,7 @@ static inline void mark_temp_as_in_use(TCGTemp *t)
 
 static inline void mark_temp_as_free(TCGTemp *t)
 {
+    debug_printf("Marking tmp%lu as NOT in use\n", temp_idx(t));
     size_t idx = temp_idx(t);
     assert(idx < TCG_MAX_TEMPS);
     used_temps_idxs[idx] = 0;
