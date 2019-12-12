@@ -1121,7 +1121,6 @@ static inline void zero_extend(TCGTemp *t_op_to, TCGTemp *t_op_from, TCGOp *op_i
 
 static inline void mark_temp_as_in_use(TCGTemp *t)
 {
-    debug_printf("Marking tmp%lu as in use\n", temp_idx(t));
     size_t idx = temp_idx(t);
     assert(idx < TCG_MAX_TEMPS);
     used_temps_idxs[idx] = 1;
@@ -1129,7 +1128,6 @@ static inline void mark_temp_as_in_use(TCGTemp *t)
 
 static inline void mark_temp_as_free(TCGTemp *t)
 {
-    debug_printf("Marking tmp%lu as NOT in use\n", temp_idx(t));
     size_t idx = temp_idx(t);
     assert(idx < TCG_MAX_TEMPS);
     used_temps_idxs[idx] = 0;
