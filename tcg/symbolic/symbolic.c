@@ -46,7 +46,7 @@ typedef enum OPKIND
     SEXT, // SEXT(arg0, n): sign-extend arg0 for the n msb bits
     //
     CONCAT,
-    EXTRACT,
+    EXTRACT, // EXTRACT(arg0, i): extract i-th byte from arg0
 } OPKIND;
 
 typedef struct Expr
@@ -111,20 +111,35 @@ TCGOp * op_macro;
 } while (0); op_macro; })
 #endif
 
-#define MARK_TEMP_AS_ALLOCATED(t) do { t->temp_allocated = 1; } while(0)
-#define MARK_TEMP_AS_NOT_ALLOCATED(t) do { t->temp_allocated = 0; } while(0)
+#define MARK_TEMP_AS_ALLOCATED(t) \
+    do                            \
+    {                             \
+        t->temp_allocated = 1;    \
+    } while (0)
+#define MARK_TEMP_AS_NOT_ALLOCATED(t) \
+    do                                \
+    {                                 \
+        t->temp_allocated = 0;        \
+    } while (0)
 
 #ifdef SYMBOLIC_DEBUG
-#define debug_printf(...) do { printf(__VA_ARGS__); } while(0);
+#define debug_printf(...)    \
+    do                       \
+    {                        \
+        printf(__VA_ARGS__); \
+    } while (0);
 #else
-#define debug_printf(...) do {} while(0);
+#define debug_printf(...) \
+    do                    \
+    {                     \
+    } while (0);
 #endif
 
 static inline int count_free_temps(TCGContext *tcg_ctx)
 {
     int count = 0;
     for (size_t j = 0; j < BITS_TO_LONGS(TCG_MAX_TEMPS); j++)
-        for(size_t i = 0; i < BITS_PER_LONG; i++)
+        for (size_t i = 0; i < BITS_PER_LONG; i++)
             count += test_bit(i, &tcg_ctx->free_temps[TCG_TYPE_I64].l[j]);
     return count;
 }
@@ -304,7 +319,8 @@ static inline void tcg_mov(TCGTemp *ts_to, TCGTemp *ts_from,
     assert(!is_ts_to_dead);
 
     op->args[1] = temp_arg(ts_from);
-    if (is_ts_from_dead) {
+    if (is_ts_from_dead)
+    {
         mark_dead_arg_temp(op, 1);
         tcg_temp_free_internal(ts_from);
     }
@@ -354,13 +370,15 @@ static inline void tcg_binop(TCGTemp *ts_c, TCGTemp *ts_a, TCGTemp *ts_b,
     assert(!is_ts_c_dead);
 
     op->args[1] = temp_arg(ts_a);
-    if (is_ts_a_dead) {
+    if (is_ts_a_dead)
+    {
         mark_dead_arg_temp(op, 1);
         tcg_temp_free_internal(ts_a);
     }
 
     op->args[2] = temp_arg(ts_b);
-    if (is_ts_b_dead) {
+    if (is_ts_b_dead)
+    {
         mark_dead_arg_temp(op, 2);
         tcg_temp_free_internal(ts_b);
     }
@@ -393,7 +411,8 @@ static inline void tcg_load_n(TCGTemp *ts_from, TCGTemp *ts_to, uintptr_t offset
     assert(!is_ts_to_dead);
 
     op->args[1] = temp_arg(ts_from);
-    if (is_ts_from_dead) {
+    if (is_ts_from_dead)
+    {
         mark_dead_arg_temp(op, 1);
         tcg_temp_free_internal(ts_from);
     }
@@ -405,8 +424,8 @@ static inline void tcg_load_n(TCGTemp *ts_from, TCGTemp *ts_to, uintptr_t offset
 }
 
 static inline void tcg_store_n(TCGTemp *ts_to, TCGTemp *ts_val, uintptr_t offset,
-                                uint8_t is_ts_to_dead, uint8_t is_ts_val_dead,
-                                size_t n_bytes, TCGOp *op_in, TCGOp **op_out, TCGContext *tcg_ctx)
+                               uint8_t is_ts_to_dead, uint8_t is_ts_val_dead,
+                               size_t n_bytes, TCGOp *op_in, TCGOp **op_out, TCGContext *tcg_ctx)
 {
     assert(ts_to->temp_allocated);
     assert(ts_val->temp_allocated);
@@ -433,13 +452,15 @@ static inline void tcg_store_n(TCGTemp *ts_to, TCGTemp *ts_val, uintptr_t offset
     TCGOp *op = tcg_op_insert_before(tcg_ctx, op_in, opc);
 
     op->args[0] = temp_arg(ts_val);
-    if (is_ts_val_dead) {
+    if (is_ts_val_dead)
+    {
         mark_dead_arg_temp(op, 0);
         tcg_temp_free_internal(ts_val);
     }
 
     op->args[1] = temp_arg(ts_to);
-    if (is_ts_to_dead) {
+    if (is_ts_to_dead)
+    {
         mark_dead_arg_temp(op, 1);
         tcg_temp_free_internal(ts_to);
     }
@@ -463,13 +484,15 @@ static inline void tcg_brcond(TCGLabel *label, TCGTemp *ts_a, TCGTemp *ts_b, TCG
     TCGOp *op = tcg_op_insert_before(tcg_ctx, op_in, opc);
 
     op->args[0] = temp_arg(ts_a);
-    if (is_ts_a_dead) {
+    if (is_ts_a_dead)
+    {
         mark_dead_arg_temp(op, 0);
         tcg_temp_free_internal(ts_a);
     }
 
     op->args[1] = temp_arg(ts_b);
-    if (is_ts_b_dead) {
+    if (is_ts_b_dead)
+    {
         mark_dead_arg_temp(op, 1);
         tcg_temp_free_internal(ts_b);
     }
@@ -481,9 +504,22 @@ static inline void tcg_brcond(TCGLabel *label, TCGTemp *ts_a, TCGTemp *ts_b, TCG
         *op_out = op;
 }
 
+// branch to label (always)
+static inline void tcg_br(TCGLabel *label,
+                              TCGOp *op_in, TCGOp **op_out, TCGContext *tcg_ctx)
+{
+    label->refs++;
+    TCGOpcode opc = INDEX_op_br;
+    TCGOp *op = tcg_op_insert_before(tcg_ctx, op_in, opc);
+    op->args[0] = label_arg(label);
+
+    if (op_out)
+        *op_out = op;
+}
+
 // add a goto label (referenced by brcond)
 static inline void tcg_set_label(TCGLabel *label,
-                                TCGOp *op_in, TCGOp **op_out, TCGContext *tcg_ctx)
+                                 TCGOp *op_in, TCGOp **op_out, TCGContext *tcg_ctx)
 {
     label->present = 1;
     TCGOpcode opc = INDEX_op_set_label;
@@ -494,16 +530,16 @@ static inline void tcg_set_label(TCGLabel *label,
         *op_out = op;
 }
 
-static inline void print_something(char * str)
+static inline void print_something(char *str)
 {
     debug_printf("%s\n", str);
 }
 
 // the string has to be statically allocated, otherwise it will crash!
-static inline void tcg_print_const_str(const char * str, TCGOp *op_in, TCGOp **op, TCGContext *tcg_ctx)
+static inline void tcg_print_const_str(const char *str, TCGOp *op_in, TCGOp **op, TCGContext *tcg_ctx)
 {
     TCGTemp *t_str = new_non_conflicting_temp(TCG_TYPE_PTR);
-    tcg_movi(t_str, (uintptr_t) str, 0, op_in, NULL, tcg_ctx);
+    tcg_movi(t_str, (uintptr_t)str, 0, op_in, NULL, tcg_ctx);
     add_void_call_1(print_something, t_str, op_in, op, tcg_ctx);
     tcg_temp_free_internal(t_str);
 }
@@ -583,7 +619,7 @@ static inline void clear_temp(size_t idx, TCGOp *op_in, TCGContext *tcg_ctx)
 static inline void allocate_new_expr(TCGTemp *t_out, TCGOp *op_in, TCGContext *tcg_ctx)
 {
     SAVE_TEMPS_COUNT(tcg_ctx);
-    TCGOp * op;
+    TCGOp *op;
 
     add_void_call_0(check_pool_expr_capacity, op_in, &op, tcg_ctx); // ToDo: make inline check
     mark_insn_as_instrumentation(op);
@@ -609,34 +645,34 @@ static inline void allocate_new_expr(TCGTemp *t_out, TCGOp *op_in, TCGContext *t
     CHECK_TEMPS_COUNT(tcg_ctx);
 }
 
-static inline const char * opkind_to_str(uint8_t opkind)
+static inline const char *opkind_to_str(uint8_t opkind)
 {
     switch (opkind)
     {
     case ADD:
         return "+";
-        break;
     case SUB:
         return "-";
-        break;
 
     case AND:
         return "&";
-        break;
     case OR:
         return "|";
-        break;
 
     case EQ:
         return "==";
-        break;
     case NE:
         return "!=";
-        break;
 
     case ZEXT:
-        return "ZEXT";
-        break;
+        return "ZERO-EXTEND";
+    case SEXT:
+        return "SIGN-EXTEND";
+
+    case EXTRACT:
+        return "EXTRACT";
+    case CONCAT:
+        return "CONCAT";
 
     default:
         printf("\nstr(opkind=%u) is unknown\n", opkind);
@@ -648,44 +684,56 @@ static inline void print_expr_internal(Expr *expr, uint32_t next_expr_id)
 {
     printf("expr:");
     printf(" addr=%p", expr);
-    if (expr) {
+    if (expr)
+    {
         printf(" is_symbolic_input=%u", expr->opkind == IS_SYMBOLIC);
         printf(" op1_is_const=%u", expr->op1_is_const);
         printf(" op2_is_const=%u", expr->op2_is_const);
         if (expr->opkind == IS_SYMBOLIC)
-            printf(" INPUT_%lu\n", (uintptr_t) expr->op1);
-        else {
+            printf(" INPUT_%lu\n", (uintptr_t)expr->op1);
+        else if (expr->opkind == IS_CONST)
+            printf(" 0x%lu\n", (uintptr_t)expr->op1);
+        else
+        {
 
             uint32_t expr_id_a = next_expr_id++;
-            if (expr->op1_is_const) {
-                printf(" 0x%lx", (uintptr_t) expr->op1);
+            if (expr->op1_is_const)
+            {
+                printf(" 0x%lx", (uintptr_t)expr->op1);
                 next_expr_id--;
-            } else
+            }
+            else
                 printf(" E_%u", expr_id_a);
 
             printf(" %s", opkind_to_str(expr->opkind));
 
             uint32_t expr_id_b = next_expr_id++;
-            if (expr->op2_is_const){
-                printf(" 0x%lx", (uintptr_t) expr->op2);
+            if (expr->op2_is_const || expr->opkind == EXTRACT)
+            {
+                printf(" 0x%lx", (uintptr_t)expr->op2);
                 next_expr_id--;
-            } else
+            }
+            else
                 printf(" E_%u", expr_id_b); // ToDo: expr ID should be dynamically computed based on the nesting
             printf("\n");
 
             // FixMe: this makes a mess
 
-            if (!expr->op1_is_const) {
+            if (!expr->op1_is_const)
+            {
                 printf("E_%u:: ", expr_id_a);
                 print_expr_internal(expr->op1, next_expr_id);
             }
 
-            if (!expr->op2_is_const) {
+            if (!expr->op2_is_const && expr->opkind != EXTRACT)
+            {
                 printf("E_%u:: ", expr_id_b);
                 print_expr_internal(expr->op2, next_expr_id);
             }
         }
-    } else {
+    }
+    else
+    {
         printf("\n");
     }
 }
@@ -835,7 +883,7 @@ static inline void allocate_l2_page(uintptr_t l1_entry_idx)
     debug_printf("Done: l1_entry_idx_addr=%p l2_page_addr=%p\n", &s_memory.table.entries[l1_entry_idx], s_memory.table.entries[l1_entry_idx]);
 }
 
-static inline void allocate_l3_page(void ** l2_page_idx_addr)
+static inline void allocate_l3_page(void **l2_page_idx_addr)
 {
     debug_printf("Allocating l3 page at l2_page_idx_addr=%p\n", l2_page_idx_addr);
     *l2_page_idx_addr = g_malloc0(sizeof(l3_page_t)); // FixMe: get mmap lock
@@ -862,7 +910,7 @@ static inline void get_expr_addr_for_addr(TCGTemp *t_addr, TCGTemp **t_expr_addr
 {
     SAVE_TEMPS_COUNT(tcg_ctx);
 
-    TCGOp * op;
+    TCGOp *op;
 
     // compute index for L1 page
 
@@ -997,12 +1045,18 @@ static inline void get_expr_addr_for_addr(TCGTemp *t_addr, TCGTemp **t_expr_addr
 
 static inline size_t get_mem_op_size(TCGMemOp mem_op)
 {
-    if (mem_op & MO_8) return 1;
-    if (mem_op & MO_16) return 2;
-    if (mem_op & MO_32) return 4;
-    if (mem_op & MO_64) return 8;
-
-    tcg_abort();
+    switch (mem_op & MO_SIZE) {
+        case MO_8:
+            return 1;
+        case MO_16:
+            return 2;
+        case MO_32:
+            return 4;
+        case MO_64:
+            return 8;
+        default:
+            tcg_abort();
+    }
 }
 
 static inline void qemu_load(TCGTemp *t_addr, TCGTemp *t_val, uintptr_t offset, TCGMemOp mem_op, TCGOp *op_in, TCGContext *tcg_ctx)
@@ -1011,13 +1065,13 @@ static inline void qemu_load(TCGTemp *t_addr, TCGTemp *t_val, uintptr_t offset, 
 
     if (offset)
         debug_printf("offset: %lu\n", offset);
-    assert(offset == 0); // ToDo
+    assert(offset == 0);           // ToDo
     assert((mem_op & MO_BE) == 0); // FixMe: extend to BE
 
     // number of bytes to store
     size_t size = get_mem_op_size(mem_op);
 
-    TCGOp * op;
+    TCGOp *op;
 
     TCGTemp *t_l3_page_idx_addr;
     get_expr_addr_for_addr(t_addr, &t_l3_page_idx_addr, size, op_in, tcg_ctx);
@@ -1048,13 +1102,12 @@ static inline void qemu_store(TCGTemp *t_addr, TCGTemp *t_val, uintptr_t offset,
     if (offset)
         debug_printf("offset: %lu\n", offset);
     assert(offset == 0); // ToDo
-    printf("mem_op: %u\n", mem_op);
     assert((mem_op & MO_BE) == 0); // FixMe: extend to BE
 
     // number of bytes to store
     size_t size = get_mem_op_size(mem_op);
 
-    TCGOp * op;
+    TCGOp *op;
 
     // check whether val is concrete
     size_t val_idx = temp_idx(t_val);
@@ -1070,8 +1123,51 @@ static inline void qemu_store(TCGTemp *t_addr, TCGTemp *t_val, uintptr_t offset,
 
     //add_void_call_1(print_expr, t_val_expr, op_in, &op, tcg_ctx);
 
-    // set Expr (we still need to store NULL if val is concrete!)
-    tcg_store_n(t_l3_page_idx_addr, t_val_expr, 0, 1, 1, sizeof(void *), op_in, &op, tcg_ctx);
+    TCGTemp *t_zero = new_non_conflicting_temp(TCG_TYPE_PTR);
+    tcg_movi(t_zero, 0, 0, op_in, NULL, tcg_ctx);
+
+    TCGLabel *label_expr_is_not_concrete = gen_new_label();
+    tcg_brcond(label_expr_is_not_concrete, t_val_expr, t_zero, TCG_COND_NE, 0, 1, op_in, NULL, tcg_ctx);
+
+    // write NULL expr for each byte to store
+    for (size_t i = 0; i < size; i++)
+    {
+        // set Expr
+        tcg_store_n(t_l3_page_idx_addr, t_val_expr, sizeof(Expr *) * i,
+            0, 0,
+            sizeof(void *), op_in, &op, tcg_ctx);
+    }
+
+    TCGLabel *label_end = gen_new_label();
+    tcg_br(label_end, op_in, NULL, tcg_ctx);
+
+    tcg_set_label(label_expr_is_not_concrete, op_in, NULL, tcg_ctx);
+
+    // write EXT(expr, index) for each byte to store
+    for (size_t i = 0; i < size; i++)
+    {
+        // build EXTRACT expr
+        TCGTemp *t_new_expr = new_non_conflicting_temp(TCG_TYPE_PTR);
+        // FixMe: pre-allocate size exprs outside the loop
+        allocate_new_expr(t_new_expr, op_in, tcg_ctx);
+
+        TCGTemp *t_opkind = new_non_conflicting_temp(TCG_TYPE_I64);
+        tcg_movi(t_opkind, EXTRACT, 0, op_in, NULL, tcg_ctx);
+        tcg_store_n(t_new_expr, t_opkind, offsetof(Expr, opkind), 0, 1, sizeof(uint8_t), op_in, NULL, tcg_ctx);
+
+        tcg_store_n(t_new_expr, t_val_expr, offsetof(Expr, op1), 0, i == size - 1, sizeof(Expr *), op_in, NULL, tcg_ctx);
+
+        TCGTemp *t_index = new_non_conflicting_temp(TCG_TYPE_I64);
+        tcg_movi(t_index, i, 0, op_in, NULL, tcg_ctx);
+        tcg_store_n(t_new_expr, t_index, offsetof(Expr, op2), 0, 1, sizeof(Expr *), op_in, NULL, tcg_ctx);
+
+        // set Expr
+        tcg_store_n(t_l3_page_idx_addr, t_new_expr, sizeof(Expr *) * i,
+            i == size - 1, 1,
+            sizeof(void *), op_in, &op, tcg_ctx);
+    }
+
+    tcg_set_label(label_end, op_in, NULL, tcg_ctx);
 
     CHECK_TEMPS_COUNT(tcg_ctx);
 }
@@ -1099,7 +1195,7 @@ static inline void zero_extend(TCGTemp *t_op_to, TCGTemp *t_op_from, TCGOp *op_i
 
     // create a ZEXT 32 expr
 
-    TCGOp * op;
+    TCGOp *op;
     tcg_print_const_str("Zero-extending", op_in, &op, tcg_ctx);
     mark_insn_as_instrumentation(op);
 
@@ -1147,38 +1243,38 @@ static inline OPKIND get_opkind(TCGOpcode opc)
 {
     switch (opc)
     {
-        case INDEX_op_add_i64:;
-            return ADD;
-        case INDEX_op_sub_i64:
-            return SUB;
-        case INDEX_op_mul_i64:
-            return MUL;
-        case INDEX_op_div_i64:
-            return DIV;
-        case INDEX_op_divu_i64:
-            return DIVU;
-        case INDEX_op_rem_i64:
-            return REM;
-        case INDEX_op_remu_i64:
-            return REMU;
-        case INDEX_op_and_i64:
-            return AND;
-        case INDEX_op_or_i64:
-            return OR;
-        case INDEX_op_xor_i64:
-            return XOR;
-        case INDEX_op_shl_i64:
-            return SHL;
-        case INDEX_op_shr_i64:
-            return SHR;
-        case INDEX_op_sar_i64:
-            return SAR;
-        case INDEX_op_rotl_i64:
-            return ROTL;
-        case INDEX_op_rotr_i64:
-            return ROTR;
-        default:
-            tcg_abort();
+    case INDEX_op_add_i64:;
+        return ADD;
+    case INDEX_op_sub_i64:
+        return SUB;
+    case INDEX_op_mul_i64:
+        return MUL;
+    case INDEX_op_div_i64:
+        return DIV;
+    case INDEX_op_divu_i64:
+        return DIVU;
+    case INDEX_op_rem_i64:
+        return REM;
+    case INDEX_op_remu_i64:
+        return REMU;
+    case INDEX_op_and_i64:
+        return AND;
+    case INDEX_op_or_i64:
+        return OR;
+    case INDEX_op_xor_i64:
+        return XOR;
+    case INDEX_op_shl_i64:
+        return SHL;
+    case INDEX_op_shr_i64:
+        return SHR;
+    case INDEX_op_sar_i64:
+        return SAR;
+    case INDEX_op_rotl_i64:
+        return ROTL;
+    case INDEX_op_rotr_i64:
+        return ROTR;
+    default:
+        tcg_abort();
     }
 }
 
@@ -1186,36 +1282,36 @@ static inline OPKIND get_opkind_from_cond(TCGCond cond)
 {
     switch (cond)
     {
-        case TCG_COND_NEVER:;
-            tcg_abort();
-        case TCG_COND_ALWAYS:
-            tcg_abort();
+    case TCG_COND_NEVER:;
+        tcg_abort();
+    case TCG_COND_ALWAYS:
+        tcg_abort();
 
-        case TCG_COND_EQ:
-            return EQ;
-        case TCG_COND_NE:
-            return NE;
+    case TCG_COND_EQ:
+        return EQ;
+    case TCG_COND_NE:
+        return NE;
 
-        case TCG_COND_LT:
-            return LT;
-        case TCG_COND_LE:
-            return LE;
-        case TCG_COND_GE:
-            return GE;
-        case TCG_COND_GT:
-            return GT;
+    case TCG_COND_LT:
+        return LT;
+    case TCG_COND_LE:
+        return LE;
+    case TCG_COND_GE:
+        return GE;
+    case TCG_COND_GT:
+        return GT;
 
-        case TCG_COND_LTU:
-            return LTU;
-        case TCG_COND_LEU:
-            return LEU;
-        case TCG_COND_GEU:
-            return GEU;
-        case TCG_COND_GTU:
-            return GTU;
+    case TCG_COND_LTU:
+        return LTU;
+    case TCG_COND_LEU:
+        return LEU;
+    case TCG_COND_GEU:
+        return GEU;
+    case TCG_COND_GTU:
+        return GTU;
 
-        default:
-            tcg_abort();
+    default:
+        tcg_abort();
     }
 }
 
@@ -1233,7 +1329,7 @@ static void print_pi(void)
 
 static inline void branch(TCGTemp *t_op_a, TCGTemp *t_op_b, TCGCond cond, TCGOp *op_in, TCGContext *tcg_ctx)
 {
-    TCGOp * op;
+    TCGOp *op;
     OPKIND opkind = get_opkind_from_cond(cond);
 
     // check if both t_op_a and t_op_b are concrete
@@ -1451,7 +1547,7 @@ void parse_translation_block(TranslationBlock *tb, uintptr_t pc, uint8_t *tb_cod
                 TCGTemp *t_val = arg_temp(op->args[0]);
                 TCGTemp *t_ptr = arg_temp(op->args[1]);
                 TCGMemOp mem_op = get_memop(op->args[2]);
-                uintptr_t offset = (uintptr_t) get_mmuidx(op->args[2]);
+                uintptr_t offset = (uintptr_t)get_mmuidx(op->args[2]);
                 qemu_load(t_ptr, t_val, offset, mem_op, op, tcg_ctx);
             }
             break;
@@ -1464,7 +1560,7 @@ void parse_translation_block(TranslationBlock *tb, uintptr_t pc, uint8_t *tb_cod
                 TCGTemp *t_val = arg_temp(op->args[0]);
                 TCGTemp *t_ptr = arg_temp(op->args[1]);
                 TCGMemOp mem_op = get_memop(op->args[2]);
-                uintptr_t offset = (uintptr_t) get_mmuidx(op->args[2]);
+                uintptr_t offset = (uintptr_t)get_mmuidx(op->args[2]);
                 qemu_store(t_ptr, t_val, offset, mem_op, op, tcg_ctx);
             }
             break;
