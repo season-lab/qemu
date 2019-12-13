@@ -731,7 +731,7 @@ static inline void binary_op(OPKIND opkind, TCGTemp *t_op_out, TCGTemp *t_op_a, 
     preserve_op_load(t_op_b, op_in, tcg_ctx);
 
     // check if both t_a and t_b are concrete
-    // if this is the case, then skip any further work
+    // if this is the case, then mark dest as concrete
 
     TCGLabel *label_both_concrete = gen_new_label();
 
@@ -759,10 +759,12 @@ static inline void binary_op(OPKIND opkind, TCGTemp *t_op_out, TCGTemp *t_op_a, 
     TCGTemp *t_zero = new_non_conflicting_temp(TCG_TYPE_I64);
     tcg_movi(t_zero, 0, 0, op_in, NULL, tcg_ctx); // ToDo: make this smarter
 
-    tcg_brcond(label_both_concrete, t_a_or_b, t_zero, TCG_COND_EQ, 1, 0, op_in, NULL, tcg_ctx);
-
     // allocate expr for t_out
     TCGTemp *t_out = new_non_conflicting_temp(TCG_TYPE_I64);
+    tcg_mov(t_out, t_zero, 0, 0, op_in, NULL, tcg_ctx);
+
+    tcg_brcond(label_both_concrete, t_a_or_b, t_zero, TCG_COND_EQ, 1, 0, op_in, NULL, tcg_ctx);
+
     allocate_new_expr(t_out, op_in, tcg_ctx); // FixMe: we assume that Expr is zero-initialzed!
 
     TCGTemp *t_opkind = new_non_conflicting_temp(TCG_TYPE_I64);
@@ -805,11 +807,6 @@ static inline void binary_op(OPKIND opkind, TCGTemp *t_op_out, TCGTemp *t_op_a, 
 
     tcg_store_n(t_out, t_b, offsetof(Expr, op2), 0, 1, sizeof(uintptr_t), op_in, NULL, tcg_ctx);
 
-    // assign expr to t_out
-    TCGTemp *t_out_expr = new_non_conflicting_temp(TCG_TYPE_PTR);
-    tcg_movi(t_out_expr, (uintptr_t)&stemps[out], 0, op_in, NULL, tcg_ctx);
-    tcg_store_n(t_out_expr, t_out, 0, 1, 1, sizeof(uintptr_t), op_in, NULL, tcg_ctx);
-
 #if 0
     tcg_print_const_str("Binary op:", op_in, &op, tcg_ctx);
     mark_insn_as_instrumentation(op);
@@ -820,6 +817,11 @@ static inline void binary_op(OPKIND opkind, TCGTemp *t_op_out, TCGTemp *t_op_a, 
 #endif
 
     tcg_set_label(label_both_concrete, op_in, NULL, tcg_ctx);
+
+    // assign expr to t_out
+    TCGTemp *t_out_expr = new_non_conflicting_temp(TCG_TYPE_PTR);
+    tcg_movi(t_out_expr, (uintptr_t)&stemps[out], 0, op_in, NULL, tcg_ctx);
+    tcg_store_n(t_out_expr, t_out, 0, 1, 1, sizeof(uintptr_t), op_in, NULL, tcg_ctx);
 
     CHECK_TEMPS_COUNT(tcg_ctx);
 }
