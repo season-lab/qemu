@@ -9,6 +9,10 @@
 
 typedef enum OPKIND
 {
+    // op1 is used to store the value or id
+    IS_CONST, // constants could also be embedded within an operand
+    IS_SYMBOLIC,
+    //
     ADD,
     SUB,
     MUL,
@@ -40,6 +44,9 @@ typedef enum OPKIND
     //
     ZEXT, // ZEXT(arg0, n): zero-extend arg0 for the n msb bits
     SEXT, // SEXT(arg0, n): sign-extend arg0 for the n msb bits
+    //
+    CONCAT,
+    EXTRACT,
 } OPKIND;
 
 typedef struct Expr
@@ -50,7 +57,6 @@ typedef struct Expr
     uint8_t opkind;
     uint8_t op1_is_const;
     uint8_t op2_is_const;
-    uint8_t is_symbolic_input;
 } Expr;
 
 // symbolic temps
@@ -243,13 +249,14 @@ static inline Expr *new_expr(void)
 static inline void print_reg(void)
 {
     //printf("RDI is at %p\n", &stemps[r]);
-    debug_printf("RDI is %ssymbolic\n", stemps[12]->is_symbolic_input ? "" : "not ");
+    debug_printf("RDI is %ssymbolic\n", stemps[12]->opkind == IS_SYMBOLIC ? "" : "not ");
 }
 
 static inline void new_symbolic_expr(void)
 {
     Expr *e = new_expr();
-    e->is_symbolic_input = 1;
+    e->opkind = IS_SYMBOLIC;
+    e->op1 = 0; // FixMe: assign id based on the specific symbolic input
     debug_printf("Marking expr%lu as symbolic\n", GET_EXPR_IDX(e));
 }
 
@@ -567,14 +574,6 @@ static inline void clear_temp(size_t idx, TCGOp *op_in, TCGContext *tcg_ctx)
     CHECK_TEMPS_COUNT(tcg_ctx);
 }
 
-static inline void test_expr(void)
-{
-    Expr *e = next_free_expr - 1;
-    printf("Testing expr\n");
-    assert(e->is_symbolic_input == 0);
-    printf("Done\n");
-}
-
 static inline void allocate_new_expr(TCGTemp *t_out, TCGOp *op_in, TCGContext *tcg_ctx)
 {
     SAVE_TEMPS_COUNT(tcg_ctx);
@@ -646,11 +645,11 @@ static inline void print_expr_internal(Expr *expr, uint32_t next_expr_id)
     printf("expr:");
     printf(" addr=%p", expr);
     if (expr) {
-        printf(" is_symbolic_input=%u", expr->is_symbolic_input);
+        printf(" is_symbolic_input=%u", expr->opkind == IS_SYMBOLIC);
         printf(" op1_is_const=%u", expr->op1_is_const);
         printf(" op2_is_const=%u", expr->op2_is_const);
-        if (expr->is_symbolic_input)
-            printf(" INPUT_0\n"); // ToDo: input ID should be embeded into the expr
+        if (expr->opkind == IS_SYMBOLIC)
+            printf(" INPUT_%lu\n", (uintptr_t) expr->op1);
         else {
 
             uint32_t expr_id_a = next_expr_id++;
