@@ -852,10 +852,15 @@ static inline void print_t_l3_entry_idx_addr(void *l3_entry_addr)
     debug_printf("L3 Entry addr: %p\n", l3_entry_addr);
 }
 
-static inline void get_expr_addr_for_addr(TCGTemp *t_addr, TCGTemp **t_expr_addr, TCGOp *op_in, TCGContext *tcg_ctx)
+static inline void failure_cross_page_access(void)
+{
+    printf("A memory access is crossing a L3 page: not yet supported.\n");
+    tcg_abort();
+}
+
+static inline void get_expr_addr_for_addr(TCGTemp *t_addr, TCGTemp **t_expr_addr, size_t size, TCGOp *op_in, TCGContext *tcg_ctx)
 {
     SAVE_TEMPS_COUNT(tcg_ctx);
-    // assumption: 4 byte alignment
 
     TCGOp * op;
 
@@ -967,28 +972,55 @@ static inline void get_expr_addr_for_addr(TCGTemp *t_addr, TCGTemp **t_expr_addr
     assert(sizeof(void *) == 8); // 2^3 = 8
     tcg_movi(t_l3_page_idx_addr, (uintptr_t)3, 0, op_in, NULL, tcg_ctx);
 
-    tcg_binop(t_l3_page_idx_addr, t_l3_page_idx, t_l3_page_idx_addr, 0, 1, 0, SHL, op_in, NULL, tcg_ctx);
+    tcg_binop(t_l3_page_idx_addr, t_l3_page_idx, t_l3_page_idx_addr, 0, 0, 0, SHL, op_in, NULL, tcg_ctx);
 
     tcg_binop(t_l3_page_idx_addr, t_l3_page_idx_addr, t_l3_page, 0, 0, 1, ADD, op_in, NULL, tcg_ctx);
 
     *t_expr_addr = t_l3_page_idx_addr;
 
+    // check that t_l3_page_idx_addr + size is still within the L3 page, otherwise fail
+    // FixMe: handle cross page store/loading
+
+    TCGTemp *t_size = new_non_conflicting_temp(TCG_TYPE_PTR);
+    tcg_movi(t_size, size, 0, op_in, NULL, tcg_ctx);
+    tcg_binop(t_l3_page_idx, t_l3_page_idx, t_size, 0, 0, 1, ADD, op_in, NULL, tcg_ctx);
+    TCGTemp *t_max_l3_page_idx = new_non_conflicting_temp(TCG_TYPE_PTR);
+    tcg_movi(t_max_l3_page_idx, 1 << L3_PAGE_BITS, 0, op_in, NULL, tcg_ctx);
+    TCGLabel *label_no_cross_page_access = gen_new_label();
+    tcg_brcond(label_no_cross_page_access, t_l3_page_idx, t_max_l3_page_idx, TCG_COND_LT, 1, 1, op_in, NULL, tcg_ctx);
+    add_void_call_0(failure_cross_page_access, op_in, &op, tcg_ctx);
+    mark_insn_as_instrumentation(op);
+    tcg_set_label(label_no_cross_page_access, op_in, NULL, tcg_ctx);
+
     CHECK_TEMPS_COUNT_WITH_DELTA(tcg_ctx, -1); // t_expr_addr is allocated here, but freed by the caller!
 }
 
-static inline void qemu_load(TCGTemp *t_addr, TCGTemp *t_val, uintptr_t offset, TCGOp *op_in, TCGContext *tcg_ctx)
+static inline size_t get_mem_op_size(TCGMemOp mem_op)
+{
+    if (mem_op & MO_8) return 1;
+    if (mem_op & MO_16) return 2;
+    if (mem_op & MO_32) return 4;
+    if (mem_op & MO_64) return 8;
+
+    tcg_abort();
+}
+
+static inline void qemu_load(TCGTemp *t_addr, TCGTemp *t_val, uintptr_t offset, TCGMemOp mem_op, TCGOp *op_in, TCGContext *tcg_ctx)
 {
     SAVE_TEMPS_COUNT(tcg_ctx);
-    // assumption: 8 byte alignment
 
     if (offset)
         debug_printf("offset: %lu\n", offset);
     assert(offset == 0); // ToDo
+    assert((mem_op & MO_BE) == 0); // FixMe: extend to BE
+
+    // number of bytes to store
+    size_t size = get_mem_op_size(mem_op);
 
     TCGOp * op;
 
     TCGTemp *t_l3_page_idx_addr;
-    get_expr_addr_for_addr(t_addr, &t_l3_page_idx_addr, op_in, tcg_ctx);
+    get_expr_addr_for_addr(t_addr, &t_l3_page_idx_addr, size, op_in, tcg_ctx);
 
     // check whether there is an Expr at that address
 
@@ -1009,14 +1041,18 @@ static inline void qemu_load(TCGTemp *t_addr, TCGTemp *t_val, uintptr_t offset, 
     CHECK_TEMPS_COUNT(tcg_ctx);
 }
 
-static inline void qemu_store(TCGTemp *t_addr, TCGTemp *t_val, uintptr_t offset, TCGOp *op_in, TCGContext *tcg_ctx)
+static inline void qemu_store(TCGTemp *t_addr, TCGTemp *t_val, uintptr_t offset, TCGMemOp mem_op, TCGOp *op_in, TCGContext *tcg_ctx)
 {
     SAVE_TEMPS_COUNT(tcg_ctx);
-    // assumption: 8 byte alignment
 
     if (offset)
         debug_printf("offset: %lu\n", offset);
     assert(offset == 0); // ToDo
+    printf("mem_op: %u\n", mem_op);
+    assert((mem_op & MO_BE) == 0); // FixMe: extend to BE
+
+    // number of bytes to store
+    size_t size = get_mem_op_size(mem_op);
 
     TCGOp * op;
 
@@ -1030,7 +1066,7 @@ static inline void qemu_store(TCGTemp *t_addr, TCGTemp *t_val, uintptr_t offset,
 
     // get location where to store expression
     TCGTemp *t_l3_page_idx_addr;
-    get_expr_addr_for_addr(t_addr, &t_l3_page_idx_addr, op_in, tcg_ctx);
+    get_expr_addr_for_addr(t_addr, &t_l3_page_idx_addr, size, op_in, tcg_ctx);
 
     //add_void_call_1(print_expr, t_val_expr, op_in, &op, tcg_ctx);
 
@@ -1414,10 +1450,9 @@ void parse_translation_block(TranslationBlock *tb, uintptr_t pc, uint8_t *tb_cod
                 mark_temp_as_in_use(arg_temp(op->args[1]));
                 TCGTemp *t_val = arg_temp(op->args[0]);
                 TCGTemp *t_ptr = arg_temp(op->args[1]);
-                // FixMe: LE is little endian, Q is 64bit. Should we swap bytes?
-                assert(get_memop(op->args[2]) & MO_LEQ);
-                uintptr_t offset = 0; //(uintptr_t) get_mmuidx(op->args[2]);
-                qemu_load(t_ptr, t_val, offset, op, tcg_ctx);
+                TCGMemOp mem_op = get_memop(op->args[2]);
+                uintptr_t offset = (uintptr_t) get_mmuidx(op->args[2]);
+                qemu_load(t_ptr, t_val, offset, mem_op, op, tcg_ctx);
             }
             break;
 
@@ -1428,10 +1463,9 @@ void parse_translation_block(TranslationBlock *tb, uintptr_t pc, uint8_t *tb_cod
                 mark_temp_as_in_use(arg_temp(op->args[1]));
                 TCGTemp *t_val = arg_temp(op->args[0]);
                 TCGTemp *t_ptr = arg_temp(op->args[1]);
-                // FixMe: LE is little endian, Q is 64bit. Should we swap bytes?
-                assert(get_memop(op->args[2]) & MO_LEQ);
+                TCGMemOp mem_op = get_memop(op->args[2]);
                 uintptr_t offset = (uintptr_t) get_mmuidx(op->args[2]);
-                qemu_store(t_ptr, t_val, offset, op, tcg_ctx);
+                qemu_store(t_ptr, t_val, offset, mem_op, op, tcg_ctx);
             }
             break;
 
