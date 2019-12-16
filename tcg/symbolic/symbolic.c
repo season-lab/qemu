@@ -906,18 +906,23 @@ static inline void failure_cross_page_access(void)
     tcg_abort();
 }
 
-static inline void get_expr_addr_for_addr(TCGTemp *t_addr, TCGTemp **t_expr_addr, size_t size, TCGOp *op_in, TCGContext *tcg_ctx)
+static inline void get_expr_addr_for_addr(TCGTemp *t_addr, TCGTemp **t_expr_addr, uintptr_t offset, size_t size, TCGOp *op_in, TCGContext *tcg_ctx)
 {
     SAVE_TEMPS_COUNT(tcg_ctx);
 
     TCGOp *op;
 
+    TCGTemp *t_addr_with_offset = new_non_conflicting_temp(TCG_TYPE_PTR);
+    tcg_movi(t_addr_with_offset, offset, 0, op_in, NULL, tcg_ctx);
+
+    MARK_TEMP_AS_ALLOCATED(t_addr);
+    tcg_binop(t_addr_with_offset, t_addr, t_addr_with_offset, 0, 0, 0, ADD, op_in, NULL, tcg_ctx);
+    MARK_TEMP_AS_NOT_ALLOCATED(t_addr);
+
     // compute index for L1 page
 
     TCGTemp *t_l1_page_idx = new_non_conflicting_temp(TCG_TYPE_PTR);
-    MARK_TEMP_AS_ALLOCATED(t_addr);
-    tcg_mov(t_l1_page_idx, t_addr, 0, 0, op_in, NULL, tcg_ctx);
-    MARK_TEMP_AS_NOT_ALLOCATED(t_addr);
+    tcg_mov(t_l1_page_idx, t_addr_with_offset, 0, 0, op_in, NULL, tcg_ctx);
 
     TCGTemp *t_l1_shr_bit = new_non_conflicting_temp(TCG_TYPE_PTR);
     tcg_movi(t_l1_shr_bit, L1_PAGE_BITS + L2_PAGE_BITS, 0, op_in, NULL, tcg_ctx);
@@ -964,9 +969,7 @@ static inline void get_expr_addr_for_addr(TCGTemp *t_addr, TCGTemp **t_expr_addr
 
     // compute index for L2 page
     TCGTemp *t_l2_page_idx = new_non_conflicting_temp(TCG_TYPE_PTR);
-    MARK_TEMP_AS_ALLOCATED(t_addr);
-    tcg_mov(t_l2_page_idx, t_addr, 0, 0, op_in, NULL, tcg_ctx);
-    MARK_TEMP_AS_NOT_ALLOCATED(t_addr);
+    tcg_mov(t_l2_page_idx, t_addr_with_offset, 0, 0, op_in, NULL, tcg_ctx);
 
     TCGTemp *t_l2_shr_bit = new_non_conflicting_temp(TCG_TYPE_PTR);
     tcg_movi(t_l2_shr_bit, L2_PAGE_BITS, 0, op_in, NULL, tcg_ctx);
@@ -1005,9 +1008,7 @@ static inline void get_expr_addr_for_addr(TCGTemp *t_addr, TCGTemp **t_expr_addr
     // compute index for L3 page
 
     TCGTemp *t_l3_page_idx = new_non_conflicting_temp(TCG_TYPE_PTR);
-    MARK_TEMP_AS_ALLOCATED(t_addr);
-    tcg_mov(t_l3_page_idx, t_addr, 0, 0, op_in, NULL, tcg_ctx);
-    MARK_TEMP_AS_NOT_ALLOCATED(t_addr);
+    tcg_mov(t_l3_page_idx, t_addr_with_offset, 0, 1, op_in, NULL, tcg_ctx);
 
     TCGTemp *t_l3_and_bit = new_non_conflicting_temp(TCG_TYPE_PTR);
     tcg_movi(t_l3_and_bit, 0xFFFF, 0, op_in, NULL, tcg_ctx);
@@ -1063,9 +1064,6 @@ static inline void qemu_load(TCGTemp *t_addr, TCGTemp *t_val, uintptr_t offset, 
 {
     SAVE_TEMPS_COUNT(tcg_ctx);
 
-    if (offset)
-        debug_printf("offset: %lu\n", offset);
-    assert(offset == 0);           // ToDo
     assert((mem_op & MO_BE) == 0); // FixMe: extend to BE
 
     // number of bytes to store
@@ -1074,7 +1072,7 @@ static inline void qemu_load(TCGTemp *t_addr, TCGTemp *t_val, uintptr_t offset, 
     TCGOp *op;
 
     TCGTemp *t_l3_page_idx_addr;
-    get_expr_addr_for_addr(t_addr, &t_l3_page_idx_addr, size, op_in, tcg_ctx);
+    get_expr_addr_for_addr(t_addr, &t_l3_page_idx_addr, offset, size, op_in, tcg_ctx);
 
     // check whether there is an Expr at that address
 
@@ -1099,9 +1097,6 @@ static inline void qemu_store(TCGTemp *t_addr, TCGTemp *t_val, uintptr_t offset,
 {
     SAVE_TEMPS_COUNT(tcg_ctx);
 
-    if (offset)
-        debug_printf("offset: %lu\n", offset);
-    assert(offset == 0); // ToDo
     assert((mem_op & MO_BE) == 0); // FixMe: extend to BE
 
     // number of bytes to store
@@ -1119,7 +1114,7 @@ static inline void qemu_store(TCGTemp *t_addr, TCGTemp *t_val, uintptr_t offset,
 
     // get location where to store expression
     TCGTemp *t_l3_page_idx_addr;
-    get_expr_addr_for_addr(t_addr, &t_l3_page_idx_addr, size, op_in, tcg_ctx);
+    get_expr_addr_for_addr(t_addr, &t_l3_page_idx_addr, offset, size, op_in, tcg_ctx);
 
     //add_void_call_1(print_expr, t_val_expr, op_in, &op, tcg_ctx);
 
