@@ -931,8 +931,9 @@ static inline void get_expr_addr_for_addr(TCGTemp *t_addr, TCGTemp **t_expr_addr
 
     TCGTemp *t_l3_page_idx_addr = new_non_conflicting_temp(TCG_TYPE_PTR);
     if (early_exit) {
-        tcg_movi(t_l3_page_idx_addr, (uintptr_t)0, 0, op_in, NULL, tcg_ctx);
-        tcg_binop(t_l3_page_idx_addr, t_l3_page_idx_addr, t_l3_page_idx_addr, 0, 0, 0, XOR, op_in, NULL, tcg_ctx); // force TCG to allocate the temp into a reg
+        TCGTemp *t_null = new_non_conflicting_temp(TCG_TYPE_PTR);
+        tcg_movi(t_null, (uintptr_t) 0, 0, op_in, NULL, tcg_ctx);
+        tcg_binop(t_l3_page_idx_addr, t_null, t_null, 0, 1, 0, XOR, op_in, &op, tcg_ctx); // force TCG to allocate the temp into a reg
         //add_void_call_1(print_value, t_l3_page_idx_addr, op_in, NULL, tcg_ctx);
     }
     *t_expr_addr = t_l3_page_idx_addr;
@@ -1057,13 +1058,15 @@ static inline void get_expr_addr_for_addr(TCGTemp *t_addr, TCGTemp **t_expr_addr
     assert(sizeof(void *) == 8); // 2^3 = 8
     TCGTemp *t_three = new_non_conflicting_temp(TCG_TYPE_PTR);
     tcg_movi(t_three, (uintptr_t)3, 0, op_in, &op, tcg_ctx);
-    tcg_binop(t_l3_page_idx_addr, t_l3_page_idx, t_three, 0, 0, 1, SHL, op_in, NULL, tcg_ctx);
+    tcg_binop(t_l3_page_idx_addr, t_l3_page_idx, t_three, 0, 0, 1, SHL, op_in, &op, tcg_ctx);
+    mark_insn_as_instrumentation(op);
 
     //tcg_movi(t_l3_page_idx_addr, (uintptr_t)3, 0, op_in, &op, tcg_ctx);
     //mark_insn_as_instrumentation(op);
     //tcg_binop(t_l3_page_idx_addr, t_l3_page_idx, t_l3_page_idx_addr, 0, 0, 0, SHL, op_in, NULL, tcg_ctx);
 
-    tcg_binop(t_l3_page_idx_addr, t_l3_page_idx_addr, t_l3_page, 0, 0, 1, ADD, op_in, NULL, tcg_ctx);
+    tcg_binop(t_l3_page_idx_addr, t_l3_page_idx_addr, t_l3_page, 0, 0, 1, ADD, op_in, &op, tcg_ctx);
+    mark_insn_as_instrumentation(op);
 
     // check that t_l3_page_idx_addr + size is still within the L3 page, otherwise fail
     // FixMe: handle cross page store/loading
@@ -1121,24 +1124,71 @@ static inline void qemu_load(TCGTemp *t_addr, TCGTemp *t_val, uintptr_t offset, 
     tcg_movi(t_zero, 0, 0, op_in, NULL, tcg_ctx);
 
     TCGLabel *label_end = gen_new_label();
+
     // early exit
-    tcg_brcond(label_end, t_l3_page_idx_addr, t_zero, TCG_COND_EQ, 0, 1, op_in, NULL, tcg_ctx);
+    TCGLabel *label_write_null = gen_new_label();
+    tcg_brcond(label_write_null, t_l3_page_idx_addr, t_zero, TCG_COND_EQ, 0, 0, op_in, NULL, tcg_ctx);
 
-    // check whether there is an Expr at that address
+    // build expr, if all bytes are concrete goto to label_write_null
 
-    add_void_call_1(print_t_l3_entry_idx_addr, t_l3_page_idx_addr, op_in, NULL, tcg_ctx);
+    TCGTemp *t_expr_is_null = new_non_conflicting_temp(TCG_TYPE_PTR);
+    tcg_movi(t_expr_is_null, 0, 0, op_in, NULL, tcg_ctx);
 
-    TCGTemp *t_expr = new_non_conflicting_temp(TCG_TYPE_PTR);
-    tcg_load_n(t_l3_page_idx_addr, t_expr, 0, 1, 0, sizeof(uintptr_t), op_in, NULL, tcg_ctx);
+    assert(size <= 8);
+    TCGTemp *t_exprs[8] = { NULL };
+
+    for (size_t i = 0; i < size; i++)
+    {
+        t_exprs[i] = new_non_conflicting_temp(TCG_TYPE_PTR);
+        tcg_load_n(t_l3_page_idx_addr, t_exprs[i], sizeof(Expr *) * i,
+            i == size - 1, 0, sizeof(uintptr_t), op_in, NULL, tcg_ctx);
+        tcg_binop(t_expr_is_null, t_expr_is_null, t_exprs[i], 0, 0, 0, OR, op_in, NULL, tcg_ctx);
+    }
+
+    tcg_brcond(label_write_null, t_expr_is_null, t_zero, TCG_COND_EQ, 1, 0, op_in, NULL, tcg_ctx);
+
+    TCGTemp *t_expr = NULL;
+    for (size_t i = 0; i < size; i++)
+    {
+        if (i == 0)
+        {
+            t_expr = t_exprs[i];
+            t_exprs[i] = NULL;
+        }
+        else
+        {
+            TCGTemp *t_new_expr = new_non_conflicting_temp(TCG_TYPE_PTR);
+            // FixMe: pre-allocate size exprs outside the loop
+            allocate_new_expr(t_new_expr, op_in, tcg_ctx);
+
+            TCGTemp *t_opkind = new_non_conflicting_temp(TCG_TYPE_I64);
+            tcg_movi(t_opkind, CONCAT, 0, op_in, NULL, tcg_ctx);
+            tcg_store_n(t_new_expr, t_opkind, offsetof(Expr, opkind), 0, 1, sizeof(uint8_t), op_in, NULL, tcg_ctx);
+
+            tcg_store_n(t_new_expr, t_expr, offsetof(Expr, op1), 0, 1, sizeof(Expr *), op_in, NULL, tcg_ctx);
+            tcg_store_n(t_new_expr, t_exprs[i], offsetof(Expr, op2), 0, 1, sizeof(Expr *), op_in, NULL, tcg_ctx);
+
+            t_expr = t_new_expr;
+            t_exprs[i] = NULL;
+        }
+    }
 
     //add_void_call_1(print_expr, t_expr, op_in, &op, tcg_ctx);
 
-    // write it to t_to (even when concrete to clear it)
-
+    // write expr to destination temp
     TCGTemp *t_to = new_non_conflicting_temp(TCG_TYPE_PTR);
     tcg_movi(t_to, (uintptr_t)&stemps[temp_idx(t_val)], 0, op_in, &op, tcg_ctx);
-
     tcg_store_n(t_to, t_expr, 0, 1, 1, sizeof(void *), op_in, &op, tcg_ctx);
+    tcg_br(label_end, op_in, NULL, tcg_ctx);
+
+    // store NULL into destination temp
+    tcg_set_label(label_write_null, op_in, NULL, tcg_ctx);
+    for (size_t i = 0; i < size; i++)
+        if (t_exprs[i])
+            tcg_temp_free_internal(t_exprs[i]);
+    t_to = new_non_conflicting_temp(TCG_TYPE_PTR);
+    tcg_movi(t_to, (uintptr_t)&stemps[temp_idx(t_val)], 0, op_in, &op, tcg_ctx);
+    tcg_store_n(t_to, t_zero, 0, 1, 1, sizeof(void *), op_in, &op, tcg_ctx);
 
     tcg_set_label(label_end, op_in, NULL, tcg_ctx);
 
