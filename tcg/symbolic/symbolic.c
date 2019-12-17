@@ -359,6 +359,9 @@ static inline void tcg_binop(TCGTemp *ts_c, TCGTemp *ts_a, TCGTemp *ts_b,
     case OR:
         opc = INDEX_op_or_i64;
         break;
+    case XOR:
+        opc = INDEX_op_xor_i64;
+        break;
     default:
         tcg_abort();
         break;
@@ -890,6 +893,11 @@ static inline void allocate_l3_page(void **l2_page_idx_addr)
     debug_printf("Done: l3_page_addr=%p\n", *l2_page_idx_addr);
 }
 
+static inline void print_value(uintptr_t value)
+{
+    debug_printf("V: %lx\n", value);
+}
+
 static inline void print_t_l1_entry_idx_addr(void *l1_entry_addr)
 {
     debug_printf("L2 Entry addr: %p\n", l1_entry_addr);
@@ -906,7 +914,7 @@ static inline void failure_cross_page_access(void)
     tcg_abort();
 }
 
-static inline void get_expr_addr_for_addr(TCGTemp *t_addr, TCGTemp **t_expr_addr, uintptr_t offset, size_t size, TCGOp *op_in, TCGContext *tcg_ctx)
+static inline void get_expr_addr_for_addr(TCGTemp *t_addr, TCGTemp **t_expr_addr, uintptr_t offset, size_t size, TCGTemp *early_exit, TCGOp *op_in, TCGContext *tcg_ctx)
 {
     SAVE_TEMPS_COUNT(tcg_ctx);
 
@@ -918,6 +926,14 @@ static inline void get_expr_addr_for_addr(TCGTemp *t_addr, TCGTemp **t_expr_addr
     MARK_TEMP_AS_ALLOCATED(t_addr);
     tcg_binop(t_addr_with_offset, t_addr, t_addr_with_offset, 0, 0, 0, ADD, op_in, NULL, tcg_ctx);
     MARK_TEMP_AS_NOT_ALLOCATED(t_addr);
+
+    TCGTemp *t_l3_page_idx_addr = new_non_conflicting_temp(TCG_TYPE_PTR);
+    if (early_exit) {
+        tcg_movi(t_l3_page_idx_addr, (uintptr_t)0, 0, op_in, NULL, tcg_ctx);
+        tcg_binop(t_l3_page_idx_addr, t_l3_page_idx_addr, t_l3_page_idx_addr, 0, 0, 0, XOR, op_in, NULL, tcg_ctx); // force TCG to allocate the temp into a reg
+        add_void_call_1(print_value, t_l3_page_idx_addr, op_in, NULL, tcg_ctx);
+    }
+    *t_expr_addr = t_l3_page_idx_addr;
 
     // compute index for L1 page
 
@@ -951,6 +967,13 @@ static inline void get_expr_addr_for_addr(TCGTemp *t_addr, TCGTemp **t_expr_addr
 
     TCGLabel *label_l2_page_is_allocated = gen_new_label();
     tcg_brcond(label_l2_page_is_allocated, t_l2_page, t_zero, TCG_COND_NE, 0, 0, op_in, NULL, tcg_ctx);
+
+    // early_exit?
+    TCGLabel *label_early_exit = NULL;
+    if (early_exit) {
+        label_early_exit = gen_new_label();
+        tcg_brcond(label_early_exit, early_exit, t_zero, TCG_COND_EQ, 0, 0, op_in, NULL, tcg_ctx);
+    }
 
     // if not, allocate L2 page
     add_void_call_1(allocate_l2_page, t_l1_page_idx, op_in, &op, tcg_ctx);
@@ -995,7 +1018,13 @@ static inline void get_expr_addr_for_addr(TCGTemp *t_addr, TCGTemp **t_expr_addr
     tcg_load_n(t_l2_page_idx_addr, t_l3_page, 0, 0, 0, sizeof(uintptr_t), op_in, NULL, tcg_ctx);
 
     TCGLabel *label_l3_page_is_allocated = gen_new_label();
-    tcg_brcond(label_l3_page_is_allocated, t_l3_page, t_zero, TCG_COND_NE, 0, 1, op_in, NULL, tcg_ctx);
+    tcg_brcond(label_l3_page_is_allocated, t_l3_page, t_zero, TCG_COND_NE, 0, 0, op_in, NULL, tcg_ctx);
+
+    // early_exit?
+    if (early_exit)
+        tcg_brcond(label_early_exit, early_exit, t_zero, TCG_COND_EQ, 0, 1, op_in, NULL, tcg_ctx);
+    else
+        tcg_temp_free_internal(t_zero);
 
     add_void_call_1(allocate_l3_page, t_l2_page_idx_addr, op_in, &op, tcg_ctx);
     mark_insn_as_instrumentation(op);
@@ -1017,15 +1046,15 @@ static inline void get_expr_addr_for_addr(TCGTemp *t_addr, TCGTemp **t_expr_addr
 
     // compute the address of the Expr in the page
 
-    TCGTemp *t_l3_page_idx_addr = new_non_conflicting_temp(TCG_TYPE_PTR);
     assert(sizeof(void *) == 8); // 2^3 = 8
-    tcg_movi(t_l3_page_idx_addr, (uintptr_t)3, 0, op_in, NULL, tcg_ctx);
-
-    tcg_binop(t_l3_page_idx_addr, t_l3_page_idx, t_l3_page_idx_addr, 0, 0, 0, SHL, op_in, NULL, tcg_ctx);
+    TCGTemp *t_three = new_non_conflicting_temp(TCG_TYPE_PTR);
+    tcg_movi(t_three, (uintptr_t)3, 0, op_in, &op, tcg_ctx);
+    tcg_binop(t_l3_page_idx_addr, t_l3_page_idx, t_three, 0, 0, 1, SHL, op_in, NULL, tcg_ctx);
+    //tcg_movi(t_l3_page_idx_addr, (uintptr_t)3, 0, op_in, &op, tcg_ctx);
+    //mark_insn_as_instrumentation(op);
+    //tcg_binop(t_l3_page_idx_addr, t_l3_page_idx, t_l3_page_idx_addr, 0, 0, 0, SHL, op_in, NULL, tcg_ctx);
 
     tcg_binop(t_l3_page_idx_addr, t_l3_page_idx_addr, t_l3_page, 0, 0, 1, ADD, op_in, NULL, tcg_ctx);
-
-    *t_expr_addr = t_l3_page_idx_addr;
 
     // check that t_l3_page_idx_addr + size is still within the L3 page, otherwise fail
     // FixMe: handle cross page store/loading
@@ -1040,6 +1069,11 @@ static inline void get_expr_addr_for_addr(TCGTemp *t_addr, TCGTemp **t_expr_addr
     add_void_call_0(failure_cross_page_access, op_in, &op, tcg_ctx);
     mark_insn_as_instrumentation(op);
     tcg_set_label(label_no_cross_page_access, op_in, NULL, tcg_ctx);
+
+    if (early_exit) {
+        tcg_set_label(label_early_exit, op_in, NULL, tcg_ctx);
+        add_void_call_1(print_value, t_l3_page_idx_addr, op_in, NULL, tcg_ctx);
+    }
 
     CHECK_TEMPS_COUNT_WITH_DELTA(tcg_ctx, -1); // t_expr_addr is allocated here, but freed by the caller!
 }
@@ -1072,7 +1106,7 @@ static inline void qemu_load(TCGTemp *t_addr, TCGTemp *t_val, uintptr_t offset, 
     TCGOp *op;
 
     TCGTemp *t_l3_page_idx_addr;
-    get_expr_addr_for_addr(t_addr, &t_l3_page_idx_addr, offset, size, op_in, tcg_ctx);
+    get_expr_addr_for_addr(t_addr, &t_l3_page_idx_addr, offset, size, NULL, op_in, tcg_ctx);
 
     // check whether there is an Expr at that address
 
@@ -1114,12 +1148,16 @@ static inline void qemu_store(TCGTemp *t_addr, TCGTemp *t_val, uintptr_t offset,
 
     // get location where to store expression
     TCGTemp *t_l3_page_idx_addr;
-    get_expr_addr_for_addr(t_addr, &t_l3_page_idx_addr, offset, size, op_in, tcg_ctx);
+    get_expr_addr_for_addr(t_addr, &t_l3_page_idx_addr, offset, size, t_val_expr, op_in, tcg_ctx);
 
     //add_void_call_1(print_expr, t_val_expr, op_in, &op, tcg_ctx);
 
     TCGTemp *t_zero = new_non_conflicting_temp(TCG_TYPE_PTR);
     tcg_movi(t_zero, 0, 0, op_in, NULL, tcg_ctx);
+
+    TCGLabel *label_end = gen_new_label();
+    // early exit
+    tcg_brcond(label_end, t_l3_page_idx_addr, t_zero, TCG_COND_EQ, 0, 0, op_in, NULL, tcg_ctx);
 
     TCGLabel *label_expr_is_not_concrete = gen_new_label();
     tcg_brcond(label_expr_is_not_concrete, t_val_expr, t_zero, TCG_COND_NE, 0, 1, op_in, NULL, tcg_ctx);
@@ -1133,7 +1171,6 @@ static inline void qemu_store(TCGTemp *t_addr, TCGTemp *t_val, uintptr_t offset,
             sizeof(void *), op_in, &op, tcg_ctx);
     }
 
-    TCGLabel *label_end = gen_new_label();
     tcg_br(label_end, op_in, NULL, tcg_ctx);
 
     tcg_set_label(label_expr_is_not_concrete, op_in, NULL, tcg_ctx);
