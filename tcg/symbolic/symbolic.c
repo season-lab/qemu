@@ -933,7 +933,7 @@ static inline void get_expr_addr_for_addr(TCGTemp *t_addr, TCGTemp **t_expr_addr
     if (early_exit) {
         tcg_movi(t_l3_page_idx_addr, (uintptr_t)0, 0, op_in, NULL, tcg_ctx);
         tcg_binop(t_l3_page_idx_addr, t_l3_page_idx_addr, t_l3_page_idx_addr, 0, 0, 0, XOR, op_in, NULL, tcg_ctx); // force TCG to allocate the temp into a reg
-        add_void_call_1(print_value, t_l3_page_idx_addr, op_in, NULL, tcg_ctx);
+        //add_void_call_1(print_value, t_l3_page_idx_addr, op_in, NULL, tcg_ctx);
     }
     *t_expr_addr = t_l3_page_idx_addr;
 
@@ -1081,7 +1081,7 @@ static inline void get_expr_addr_for_addr(TCGTemp *t_addr, TCGTemp **t_expr_addr
 
     if (early_exit) {
         tcg_set_label(label_early_exit, op_in, NULL, tcg_ctx);
-        add_void_call_1(print_value, t_l3_page_idx_addr, op_in, NULL, tcg_ctx);
+        //add_void_call_1(print_value, t_l3_page_idx_addr, op_in, NULL, tcg_ctx);
     }
 
     CHECK_TEMPS_COUNT_WITH_DELTA(tcg_ctx, -1); // t_expr_addr is allocated here, but freed by the caller!
