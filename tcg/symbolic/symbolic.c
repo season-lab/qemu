@@ -1731,9 +1731,6 @@ static inline void branch(TCGTemp *t_op_a, TCGTemp *t_op_b, TCGCond cond, TCGOp 
     tcg_temp_free_internal(t_new_pi_expr);
     tcg_temp_free_internal(t_pi_addr);
 
-    // ToDo: test this code
-    // ToDo: we should set the path constraint based on the eval of the condition
-
 #ifdef SYMBOLIC_DEBUG
     TCGOp *op;
     add_void_call_0(print_pi, op_in, &op, tcg_ctx);
