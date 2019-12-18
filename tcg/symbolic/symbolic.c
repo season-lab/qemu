@@ -1106,10 +1106,17 @@ static inline size_t get_mem_op_size(TCGMemOp mem_op)
     }
 }
 
+static inline size_t get_mem_op_signextend(TCGMemOp mem_op)
+{
+    return mem_op & MO_SIGN;
+}
+
 static inline void qemu_load(TCGTemp *t_addr, TCGTemp *t_val, uintptr_t offset, TCGMemOp mem_op, TCGOp *op_in, TCGContext *tcg_ctx)
 {
     SAVE_TEMPS_COUNT(tcg_ctx);
 
+    assert(t_val->base_type == TCG_TYPE_TL);
+    assert(t_val->base_type == TCG_TYPE_I64); // FixMe: support other types
     assert((mem_op & MO_BE) == 0); // FixMe: extend to BE
 
     // number of bytes to store
@@ -1171,6 +1178,31 @@ static inline void qemu_load(TCGTemp *t_addr, TCGTemp *t_val, uintptr_t offset, 
             t_expr = t_new_expr;
             t_exprs[i] = NULL;
         }
+    }
+
+    // if size is less than sizeof(TCG_TYPE_TL), we may have to
+    // zero-extend or sign-extend
+    if (size < 8) // FixMe: other archs
+    {
+        TCGTemp *t_new_expr = new_non_conflicting_temp(TCG_TYPE_PTR);
+        allocate_new_expr(t_new_expr, op_in, tcg_ctx);
+
+        TCGTemp *t_opkind = new_non_conflicting_temp(TCG_TYPE_I64);
+        uintptr_t opkind = get_mem_op_signextend(mem_op) ? SEXT : ZEXT;
+        tcg_movi(t_opkind, opkind, 0, op_in, NULL, tcg_ctx);
+        tcg_store_n(t_new_expr, t_opkind, offsetof(Expr, opkind), 0, 1, sizeof(uint8_t), op_in, NULL, tcg_ctx);
+
+        tcg_store_n(t_new_expr, t_expr, offsetof(Expr, op1), 0, 1, sizeof(Expr *), op_in, NULL, tcg_ctx);
+
+        TCGTemp *t_extend_bit = new_non_conflicting_temp(TCG_TYPE_I64);
+        tcg_movi(t_extend_bit, 8 * size, 0, op_in, NULL, tcg_ctx);
+        tcg_store_n(t_new_expr, t_extend_bit, offsetof(Expr, op2), 0, 1, sizeof(Expr *), op_in, NULL, tcg_ctx);
+
+        TCGTemp *t_one = new_non_conflicting_temp(TCG_TYPE_PTR);
+        tcg_movi(t_one, 1, 0, op_in, NULL, tcg_ctx);
+        tcg_store_n(t_new_expr, t_one, offsetof(Expr, op2_is_const), 0, 1, sizeof(uint8_t), op_in, NULL, tcg_ctx);
+
+        t_expr = t_new_expr;
     }
 
     //add_void_call_1(print_expr, t_expr, op_in, &op, tcg_ctx);
