@@ -5,7 +5,7 @@
 #include "symbolic.h"
 #include "qemu/bitops.h"
 
-#define SYMBOLIC_DEBUG
+//#define SYMBOLIC_DEBUG
 
 typedef enum OPKIND
 {
@@ -324,6 +324,61 @@ static inline void tcg_mov(TCGTemp *ts_to, TCGTemp *ts_from,
         mark_dead_arg_temp(op, 1);
         tcg_temp_free_internal(ts_from);
     }
+
+    if (op_out)
+        *op_out = op;
+}
+
+static inline void tcg_cmov(TCGTemp *ts_out,
+                            TCGTemp *ts_a, TCGTemp *ts_b,
+                            TCGTemp *ts_true, TCGTemp *ts_false, TCGCond cond,
+                            uint8_t is_ts_out_dead, uint8_t is_ts_a_dead, uint8_t is_ts_b_dead,
+                            uint8_t is_ts_true_dead, uint8_t is_ts_false_dead,
+                            TCGOp *op_in, TCGOp **op_out, TCGContext *tcg_ctx)
+{
+    assert(ts_out->temp_allocated);
+    assert(ts_a->temp_allocated);
+    assert(ts_b->temp_allocated);
+    assert(ts_true->temp_allocated);
+    assert(ts_false->temp_allocated);
+
+    TCGOpcode opc = INDEX_op_movcond_i64;
+    TCGOp *op = tcg_op_insert_before(tcg_ctx, op_in, opc);
+
+    // ret, c1, c2, v1, v2, cond
+
+    op->args[0] = temp_arg(ts_out);
+    assert(!is_ts_out_dead);
+
+    op->args[1] = temp_arg(ts_a);
+    if (is_ts_a_dead)
+    {
+        mark_dead_arg_temp(op, 1);
+        tcg_temp_free_internal(ts_a);
+    }
+
+    op->args[2] = temp_arg(ts_b);
+    if (is_ts_a_dead)
+    {
+        mark_dead_arg_temp(op, 2);
+        tcg_temp_free_internal(ts_b);
+    }
+
+    op->args[3] = temp_arg(ts_true);
+    if (is_ts_true_dead)
+    {
+        mark_dead_arg_temp(op, 3);
+        tcg_temp_free_internal(ts_true);
+    }
+
+    op->args[4] = temp_arg(ts_false);
+    if (is_ts_false_dead)
+    {
+        mark_dead_arg_temp(op, 4);
+        tcg_temp_free_internal(ts_false);
+    }
+
+    op->args[5] = cond;
 
     if (op_out)
         *op_out = op;
@@ -667,6 +722,24 @@ static inline const char *opkind_to_str(uint8_t opkind)
     case NE:
         return "!=";
 
+    case LT:
+        return "<";
+    case LE:
+        return "<=";
+    case GE:
+        return ">=";
+    case GT:
+        return ">";
+
+    case LTU:
+        return "<u";
+    case LEU:
+        return "<=u";
+    case GEU:
+        return ">=u";
+    case GTU:
+        return ">u";
+
     case ZEXT:
         return "ZERO-EXTEND";
     case SEXT:
@@ -683,12 +756,24 @@ static inline const char *opkind_to_str(uint8_t opkind)
     }
 }
 
+#define MAX_PRINT_CHECK 1024
+static uint8_t printed[MAX_PRINT_CHECK];
 static inline void print_expr_internal(Expr *expr, uint32_t next_expr_id)
 {
+    if (next_expr_id == 0)
+        for (size_t i = 0; i < MAX_PRINT_CHECK; i++)
+            printed[i] = 0;
+
     printf("expr:");
     printf(" addr=%p", expr);
     if (expr)
     {
+        if (expr->opkind == IS_CONST) 
+        {
+            printf("\n");
+            assert(expr->opkind != IS_CONST);
+        }
+
         printf(" is_symbolic_input=%u", expr->opkind == IS_SYMBOLIC);
         printf(" op1_is_const=%u", expr->op1_is_const);
         printf(" op2_is_const=%u", expr->op2_is_const);
@@ -724,14 +809,26 @@ static inline void print_expr_internal(Expr *expr, uint32_t next_expr_id)
 
             if (!expr->op1_is_const)
             {
-                printf("E_%u:: ", expr_id_a);
-                print_expr_internal(expr->op1, next_expr_id);
+                if (!printed[expr_id_a])
+                {
+                    printf("E_%u:: ", expr_id_a);
+                    print_expr_internal(expr->op1, next_expr_id);
+                    printed[expr_id_a] = 1;
+                }
+                if (expr->op1 == NULL)
+                    assert(expr->op2);
             }
 
             if (!expr->op2_is_const && expr->opkind != EXTRACT)
             {
-                printf("E_%u:: ", expr_id_b);
-                print_expr_internal(expr->op2, next_expr_id);
+                if (!printed[expr_id_b])
+                {
+                    printf("E_%u:: ", expr_id_b);
+                    print_expr_internal(expr->op2, next_expr_id);
+                    printed[expr_id_b] = 1;
+                }
+                if (expr->op2 == NULL)
+                    assert(expr->op1);
             }
         }
     }
@@ -768,7 +865,8 @@ static inline void preserve_op_load(TCGTemp *t, TCGOp *op_in, TCGContext *tcg_ct
 static inline void binary_op(OPKIND opkind, TCGTemp *t_op_out, TCGTemp *t_op_a, TCGTemp *t_op_b, TCGOp *op_in, TCGContext *tcg_ctx)
 {
     SAVE_TEMPS_COUNT(tcg_ctx);
-    //TCGOp * op;
+
+    //TCGOp *op;
 
     size_t out = temp_idx(t_op_out);
     size_t a = temp_idx(t_op_a);
@@ -812,7 +910,8 @@ static inline void binary_op(OPKIND opkind, TCGTemp *t_op_out, TCGTemp *t_op_a, 
 
     // allocate expr for t_out
     TCGTemp *t_out = new_non_conflicting_temp(TCG_TYPE_I64);
-    tcg_mov(t_out, t_zero, 0, 0, op_in, NULL, tcg_ctx);
+
+    tcg_binop(t_out, t_zero, t_zero, 0, 0, 0, XOR, op_in, NULL, tcg_ctx); // force TCG to allocate the temp into a reg
 
     tcg_brcond(label_both_concrete, t_a_or_b, t_zero, TCG_COND_EQ, 1, 0, op_in, NULL, tcg_ctx);
 
@@ -821,9 +920,6 @@ static inline void binary_op(OPKIND opkind, TCGTemp *t_op_out, TCGTemp *t_op_a, 
     TCGTemp *t_opkind = new_non_conflicting_temp(TCG_TYPE_I64);
     tcg_movi(t_opkind, opkind, 0, op_in, NULL, tcg_ctx);
     tcg_store_n(t_out, t_opkind, offsetof(Expr, opkind), 0, 1, sizeof(uint8_t), op_in, NULL, tcg_ctx);
-
-    //add_void_call_1(print_expr, t_out, op_in, &op, tcg_ctx);
-    //mark_insn_as_instrumentation(op);
 
     // if t_a is concrete, then store its concrete value into t_out expr
 
@@ -866,6 +962,9 @@ static inline void binary_op(OPKIND opkind, TCGTemp *t_op_out, TCGTemp *t_op_a, 
     tcg_print_const_str("Binary op: DONE", op_in, &op, tcg_ctx);
     mark_insn_as_instrumentation(op);
 #endif
+
+    //add_void_call_1(print_expr, t_out, op_in, &op, tcg_ctx);
+    //mark_insn_as_instrumentation(op);
 
     tcg_set_label(label_both_concrete, op_in, NULL, tcg_ctx);
 
@@ -1175,6 +1274,9 @@ static inline void qemu_load(TCGTemp *t_addr, TCGTemp *t_val, uintptr_t offset, 
             tcg_store_n(t_new_expr, t_expr, offsetof(Expr, op1), 0, 1, sizeof(Expr *), op_in, NULL, tcg_ctx);
             tcg_store_n(t_new_expr, t_exprs[i], offsetof(Expr, op2), 0, 1, sizeof(Expr *), op_in, NULL, tcg_ctx);
 
+            //add_void_call_1(print_expr, t_new_expr, op_in, &op, tcg_ctx);
+            //mark_insn_as_instrumentation(op);
+
             t_expr = t_new_expr;
             t_exprs[i] = NULL;
         }
@@ -1201,6 +1303,9 @@ static inline void qemu_load(TCGTemp *t_addr, TCGTemp *t_val, uintptr_t offset, 
         TCGTemp *t_one = new_non_conflicting_temp(TCG_TYPE_PTR);
         tcg_movi(t_one, 1, 0, op_in, NULL, tcg_ctx);
         tcg_store_n(t_new_expr, t_one, offsetof(Expr, op2_is_const), 0, 1, sizeof(uint8_t), op_in, NULL, tcg_ctx);
+
+        //add_void_call_1(print_expr, t_new_expr, op_in, &op, tcg_ctx);
+        //mark_insn_as_instrumentation(op);
 
         t_expr = t_new_expr;
     }
@@ -1236,7 +1341,7 @@ static inline void qemu_store(TCGTemp *t_addr, TCGTemp *t_val, uintptr_t offset,
     // number of bytes to store
     size_t size = get_mem_op_size(mem_op);
 
-    TCGOp *op;
+    //TCGOp *op;
 
     // check whether val is concrete
     size_t val_idx = temp_idx(t_val);
@@ -1268,7 +1373,7 @@ static inline void qemu_store(TCGTemp *t_addr, TCGTemp *t_val, uintptr_t offset,
         // set Expr
         tcg_store_n(t_l3_page_idx_addr, t_val_expr, sizeof(Expr *) * i,
             0, 0,
-            sizeof(void *), op_in, &op, tcg_ctx);
+            sizeof(void *), op_in, NULL, tcg_ctx);
     }
 
     tcg_br(label_end, op_in, NULL, tcg_ctx);
@@ -1293,10 +1398,13 @@ static inline void qemu_store(TCGTemp *t_addr, TCGTemp *t_val, uintptr_t offset,
         tcg_movi(t_index, i, 0, op_in, NULL, tcg_ctx);
         tcg_store_n(t_new_expr, t_index, offsetof(Expr, op2), 0, 1, sizeof(Expr *), op_in, NULL, tcg_ctx);
 
+        //add_void_call_1(print_expr, t_new_expr, op_in, &op, tcg_ctx);
+        //mark_insn_as_instrumentation(op);
+
         // set Expr
         tcg_store_n(t_l3_page_idx_addr, t_new_expr, sizeof(Expr *) * i,
             i == size - 1, 1,
-            sizeof(void *), op_in, &op, tcg_ctx);
+            sizeof(void *), op_in, NULL, tcg_ctx);
     }
 
     tcg_set_label(label_end, op_in, NULL, tcg_ctx);
@@ -1327,9 +1435,9 @@ static inline void zero_extend(TCGTemp *t_op_to, TCGTemp *t_op_from, TCGOp *op_i
 
     // create a ZEXT 32 expr
 
-    TCGOp *op;
-    tcg_print_const_str("Zero-extending", op_in, &op, tcg_ctx);
-    mark_insn_as_instrumentation(op);
+    //TCGOp *op;
+    //tcg_print_const_str("Zero-extending", op_in, &op, tcg_ctx);
+    //mark_insn_as_instrumentation(op);
 
     allocate_new_expr(t_out, op_in, tcg_ctx); // FixMe: we assume that Expr is zero-initialzed!
 
@@ -1346,6 +1454,9 @@ static inline void zero_extend(TCGTemp *t_op_to, TCGTemp *t_op_from, TCGOp *op_i
     TCGTemp *t_one = new_non_conflicting_temp(TCG_TYPE_PTR);
     tcg_movi(t_one, 1, 0, op_in, NULL, tcg_ctx);
     tcg_store_n(t_out, t_one, offsetof(Expr, op2_is_const), 0, 1, sizeof(uint8_t), op_in, NULL, tcg_ctx);
+
+    //add_void_call_1(print_expr, t_out, op_in, &op, tcg_ctx);
+    //mark_insn_as_instrumentation(op);
 
     tcg_set_label(label_op_is_const, op_in, NULL, tcg_ctx);
 
@@ -1447,7 +1558,44 @@ static inline OPKIND get_opkind_from_cond(TCGCond cond)
     }
 }
 
-static void print_pi(void)
+static inline OPKIND get_opkind_from_neg_cond(TCGCond cond)
+{
+    switch (cond)
+    {
+    case TCG_COND_NEVER:;
+        tcg_abort();
+    case TCG_COND_ALWAYS:
+        tcg_abort();
+
+    case TCG_COND_EQ:
+        return NE;
+    case TCG_COND_NE:
+        return EQ;
+
+    case TCG_COND_LT:
+        return GE;
+    case TCG_COND_LE:
+        return GT;
+    case TCG_COND_GE:
+        return LT;
+    case TCG_COND_GT:
+        return LE;
+
+    case TCG_COND_LTU:
+        return GEU;
+    case TCG_COND_LEU:
+        return GTU;
+    case TCG_COND_GEU:
+        return LTU;
+    case TCG_COND_GTU:
+        return LEU;
+
+    default:
+        tcg_abort();
+    }
+}
+
+static inline void print_pi(void)
 {
     if (!path_constraints)
         printf("\nPath constraints: true\n\n");
@@ -1461,9 +1609,6 @@ static void print_pi(void)
 
 static inline void branch(TCGTemp *t_op_a, TCGTemp *t_op_b, TCGCond cond, TCGOp *op_in, TCGContext *tcg_ctx)
 {
-    TCGOp *op;
-    OPKIND opkind = get_opkind_from_cond(cond);
-
     // check if both t_op_a and t_op_b are concrete
     // if this is true, skip any further work
 
@@ -1501,8 +1646,18 @@ static inline void branch(TCGTemp *t_op_a, TCGTemp *t_op_b, TCGCond cond, TCGOp 
 
     // set expr opkind
     TCGTemp *t_opkind = new_non_conflicting_temp(TCG_TYPE_I64);
+    OPKIND opkind = get_opkind_from_cond(cond);
     tcg_movi(t_opkind, opkind, 0, op_in, NULL, tcg_ctx);
-    tcg_store_n(t_out, t_opkind, offsetof(Expr, opkind), 0, 1, sizeof(uint8_t), op_in, NULL, tcg_ctx);
+    OPKIND opkind_neg = get_opkind_from_neg_cond(cond);
+    TCGTemp *t_opkind_neg = new_non_conflicting_temp(TCG_TYPE_I64);
+    tcg_movi(t_opkind_neg, opkind_neg, 0, op_in, NULL, tcg_ctx);
+    TCGTemp *t_opkind_actual = new_non_conflicting_temp(TCG_TYPE_I64);
+    MARK_TEMP_AS_ALLOCATED(t_op_a);
+    MARK_TEMP_AS_ALLOCATED(t_op_b);
+    tcg_cmov(t_opkind_actual, t_op_a, t_op_b, t_opkind, t_opkind_neg, cond, 0, 0, 0, 1, 1, op_in, NULL, tcg_ctx);
+    MARK_TEMP_AS_NOT_ALLOCATED(t_op_a);
+    MARK_TEMP_AS_NOT_ALLOCATED(t_op_b);
+    tcg_store_n(t_out, t_opkind_actual, offsetof(Expr, opkind), 0, 1, sizeof(uint8_t), op_in, NULL, tcg_ctx);
     tcg_temp_free_internal(t_opkind);
 
     // if t_a is concrete, then store its concrete value into t_out expr
@@ -1579,7 +1734,8 @@ static inline void branch(TCGTemp *t_op_a, TCGTemp *t_op_b, TCGCond cond, TCGOp 
     // ToDo: test this code
     // ToDo: we should set the path constraint based on the eval of the condition
 
-#if 1
+#ifdef SYMBOLIC_DEBUG
+    TCGOp *op;
     add_void_call_0(print_pi, op_in, &op, tcg_ctx);
     mark_insn_as_instrumentation(op);
 #endif
@@ -1587,12 +1743,16 @@ static inline void branch(TCGTemp *t_op_a, TCGTemp *t_op_b, TCGCond cond, TCGOp 
     tcg_set_label(label_both_concrete, op_in, NULL, tcg_ctx);
 }
 
+#define START   0x40054d
+#define STOP    0x400578
+#define REG     "rdi"
+#define REG_AT  0x40054d
+
+static int instrument = 0;
 void parse_translation_block(TranslationBlock *tb, uintptr_t pc, uint8_t *tb_code, TCGContext *tcg_ctx)
 {
-    if (pc < 0x40054d || pc > 0x400577) // boundary of foo function
-        return;
-
-    int instrument = 0;
+    //if (pc < 0x40054d || pc > 0x400577) // boundary of foo function
+    //    return;
 
     TCGOp *op;
     QTAILQ_FOREACH(op, &tcg_ctx->ops, link)
@@ -1601,14 +1761,17 @@ void parse_translation_block(TranslationBlock *tb, uintptr_t pc, uint8_t *tb_cod
         {
 
         case INDEX_op_insn_start:
-            if (pc < 0x40054d || pc > 0x400577)
-                instrument = 0;
-            else
+            if (instrument == 0 && pc == START)
                 instrument = 1;
+            else if (instrument == 1 && pc == STOP)
+                instrument = 0;
 
-            debug_printf("Instrumenting %lx\n", op->args[0]);
-            if (op->args[0] == 0x40054d)
-                make_reg_symbolic("rdi", op, tcg_ctx);
+            if (instrument)
+            {
+                debug_printf("Instrumenting %lx\n", op->args[0]);
+                if (op->args[0] == REG_AT)
+                    make_reg_symbolic(REG, op, tcg_ctx);
+            }
             break;
 
         case INDEX_op_set_label:
@@ -1649,12 +1812,12 @@ void parse_translation_block(TranslationBlock *tb, uintptr_t pc, uint8_t *tb_cod
         case INDEX_op_rotl_i64:
         case INDEX_op_rotr_i64:;
 
-            OPKIND bin_opkind = get_opkind(op->opc);
             mark_temp_as_in_use(arg_temp(op->args[0]));
             mark_temp_as_in_use(arg_temp(op->args[1]));
             mark_temp_as_in_use(arg_temp(op->args[2]));
             if (instrument)
             {
+                OPKIND bin_opkind = get_opkind(op->opc);
                 TCGTemp *t_out = arg_temp(op->args[0]);
                 TCGTemp *t_a = arg_temp(op->args[1]);
                 TCGTemp *t_b = arg_temp(op->args[2]);
@@ -1664,7 +1827,7 @@ void parse_translation_block(TranslationBlock *tb, uintptr_t pc, uint8_t *tb_cod
 
         case INDEX_op_discard:
             mark_temp_as_in_use(arg_temp(op->args[0]));
-            if (instrument && 0)
+            if (instrument)
             {
                 TCGTemp *t = arg_temp(op->args[0]);
                 clear_temp(temp_idx(t), op, tcg_ctx);
@@ -1672,10 +1835,10 @@ void parse_translation_block(TranslationBlock *tb, uintptr_t pc, uint8_t *tb_cod
             break;
 
         case INDEX_op_qemu_ld_i64:
+            mark_temp_as_in_use(arg_temp(op->args[0]));
+            mark_temp_as_in_use(arg_temp(op->args[1]));
             if (instrument)
             {
-                mark_temp_as_in_use(arg_temp(op->args[0]));
-                mark_temp_as_in_use(arg_temp(op->args[1]));
                 TCGTemp *t_val = arg_temp(op->args[0]);
                 TCGTemp *t_ptr = arg_temp(op->args[1]);
                 TCGMemOp mem_op = get_memop(op->args[2]);
@@ -1685,10 +1848,10 @@ void parse_translation_block(TranslationBlock *tb, uintptr_t pc, uint8_t *tb_cod
             break;
 
         case INDEX_op_qemu_st_i64:
+            mark_temp_as_in_use(arg_temp(op->args[0]));
+            mark_temp_as_in_use(arg_temp(op->args[1]));
             if (instrument)
             {
-                mark_temp_as_in_use(arg_temp(op->args[0]));
-                mark_temp_as_in_use(arg_temp(op->args[1]));
                 TCGTemp *t_val = arg_temp(op->args[0]);
                 TCGTemp *t_ptr = arg_temp(op->args[1]);
                 TCGMemOp mem_op = get_memop(op->args[2]);
@@ -1698,11 +1861,13 @@ void parse_translation_block(TranslationBlock *tb, uintptr_t pc, uint8_t *tb_cod
             break;
 
         case INDEX_op_ld_i32:
-            // ToDo: mark temps as used?
+            mark_temp_as_in_use(arg_temp(op->args[0]));
+            mark_temp_as_in_use(arg_temp(op->args[1]));
             break;
 
         case INDEX_op_st_i64:
-            // ToDo: mark temps as used?
+            mark_temp_as_in_use(arg_temp(op->args[0]));
+            mark_temp_as_in_use(arg_temp(op->args[1]));
             break;
 
         case INDEX_op_brcond_i64:
@@ -1733,9 +1898,12 @@ void parse_translation_block(TranslationBlock *tb, uintptr_t pc, uint8_t *tb_cod
         case INDEX_op_exit_tb:
             break;
 
-        default:;
-            const TCGOpDef *def __attribute__((unused)) = &tcg_op_defs[op->opc];
-            debug_printf("Unhandled TCG instruction: %s\n", def->name);
+        default:
+            if (instrument)
+            {
+                const TCGOpDef *def __attribute__((unused)) = &tcg_op_defs[op->opc];
+                debug_printf("Unhandled TCG instruction: %s\n", def->name);
+            }
         }
 
         // mark as free any temp that was dead at this instruction
