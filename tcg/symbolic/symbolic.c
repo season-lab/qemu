@@ -459,6 +459,9 @@ static inline void tcg_load_n(TCGTemp *ts_from, TCGTemp *ts_to, uintptr_t offset
     case 8:
         opc = INDEX_op_ld_i64;
         break;
+    case 1:
+        opc = INDEX_op_ld8u_i64;
+        break;
     default:
         tcg_abort();
     }
@@ -1272,6 +1275,24 @@ static inline void qemu_load(TCGTemp *t_addr, TCGTemp *t_val, uintptr_t offset, 
             tcg_store_n(t_new_expr, t_opkind, offsetof(Expr, opkind), 0, 1, sizeof(uint8_t), op_in, NULL, tcg_ctx);
 
             tcg_store_n(t_new_expr, t_expr, offsetof(Expr, op1), 0, 1, sizeof(Expr *), op_in, NULL, tcg_ctx);
+
+            // if expr is NULL, use the concrete value
+
+            TCGLabel *label_expr_is_not_null = gen_new_label();
+            tcg_brcond(label_expr_is_not_null, t_exprs[i], t_zero, TCG_COND_EQ, 0, 0, op_in, NULL, tcg_ctx);
+
+            TCGTemp *t_mem_value = new_non_conflicting_temp(TCG_TYPE_I64);
+            TCGTemp *t_mem_value_addr = new_non_conflicting_temp(TCG_TYPE_I64);
+            MARK_TEMP_AS_ALLOCATED(t_addr);
+            tcg_mov(t_mem_value_addr, t_addr, 0, 0, op_in, NULL, tcg_ctx);
+            MARK_TEMP_AS_NOT_ALLOCATED(t_addr);
+            TCGTemp *t_mem_value_addr_offset = new_non_conflicting_temp(TCG_TYPE_I64);
+            tcg_movi(t_mem_value_addr_offset, offset + i, 0, op_in, NULL, tcg_ctx);
+            tcg_binop(t_mem_value_addr, t_mem_value_addr, t_mem_value_addr_offset, 0, 0, 1, ADD, op_in, NULL, tcg_ctx);
+            tcg_load_n(t_mem_value_addr, t_mem_value, 0, 1, 0, sizeof(uint8_t), op_in, NULL, tcg_ctx);
+            tcg_store_n(t_exprs[i], t_mem_value, 0, 0, 1, sizeof(Expr *), op_in, NULL, tcg_ctx);
+
+            tcg_set_label(label_expr_is_not_null, op_in, NULL, tcg_ctx);
             tcg_store_n(t_new_expr, t_exprs[i], offsetof(Expr, op2), 0, 1, sizeof(Expr *), op_in, NULL, tcg_ctx);
 
             //add_void_call_1(print_expr, t_new_expr, op_in, &op, tcg_ctx);
