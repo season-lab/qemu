@@ -5,7 +5,9 @@
 #include "symbolic.h"
 #include "qemu/bitops.h"
 
-#define SYMBOLIC_DEBUG
+#include "config.h"
+
+//#define SYMBOLIC_DEBUG
 
 typedef enum OPKIND
 {
@@ -1325,8 +1327,8 @@ static inline void qemu_load(TCGTemp *t_addr, TCGTemp *t_val, uintptr_t offset, 
             tcg_set_label(label_expr_is_not_null, op_in, NULL, tcg_ctx);
             tcg_store_n(t_new_expr, t_exprs[i], offsetof(Expr, op2), 0, 1, sizeof(Expr *), op_in, NULL, tcg_ctx);
 
-            add_void_call_1(print_expr, t_new_expr, op_in, &op, tcg_ctx);
-            mark_insn_as_instrumentation(op);
+            //add_void_call_1(print_expr, t_new_expr, op_in, &op, tcg_ctx);
+            //mark_insn_as_instrumentation(op);
 
             t_expr = t_new_expr;
             t_exprs[i] = NULL;
@@ -1355,14 +1357,14 @@ static inline void qemu_load(TCGTemp *t_addr, TCGTemp *t_val, uintptr_t offset, 
         tcg_movi(t_one, 1, 0, op_in, NULL, tcg_ctx);
         tcg_store_n(t_new_expr, t_one, offsetof(Expr, op2_is_const), 0, 1, sizeof(uint8_t), op_in, NULL, tcg_ctx);
 
-        add_void_call_1(print_expr, t_new_expr, op_in, &op, tcg_ctx);
-        mark_insn_as_instrumentation(op);
+        //add_void_call_1(print_expr, t_new_expr, op_in, &op, tcg_ctx);
+        //mark_insn_as_instrumentation(op);
 
         t_expr = t_new_expr;
     }
 
-    add_void_call_1(print_expr, t_expr, op_in, &op, tcg_ctx);
-    mark_insn_as_instrumentation(op);
+    //add_void_call_1(print_expr, t_expr, op_in, &op, tcg_ctx);
+    //mark_insn_as_instrumentation(op);
 
     // write expr to destination temp
     TCGTemp *t_to = new_non_conflicting_temp(TCG_TYPE_PTR);
@@ -1393,7 +1395,7 @@ static inline void qemu_store(TCGTemp *t_addr, TCGTemp *t_val, uintptr_t offset,
     // number of bytes to store
     size_t size = get_mem_op_size(mem_op);
 
-    TCGOp *op;
+    //TCGOp *op;
 
     // check whether val is concrete
     size_t val_idx = temp_idx(t_val);
@@ -1450,8 +1452,8 @@ static inline void qemu_store(TCGTemp *t_addr, TCGTemp *t_val, uintptr_t offset,
         tcg_movi(t_index, i, 0, op_in, NULL, tcg_ctx);
         tcg_store_n(t_new_expr, t_index, offsetof(Expr, op2), 0, 1, sizeof(Expr *), op_in, NULL, tcg_ctx);
 
-        add_void_call_1(print_expr, t_new_expr, op_in, &op, tcg_ctx);
-        mark_insn_as_instrumentation(op);
+        //add_void_call_1(print_expr, t_new_expr, op_in, &op, tcg_ctx);
+        //mark_insn_as_instrumentation(op);
 
         // set Expr
         tcg_store_n(t_l3_page_idx_addr, t_new_expr, sizeof(Expr *) * i,
@@ -1512,15 +1514,15 @@ static inline void extend(TCGTemp *t_op_to, TCGTemp *t_op_from, EXTENDKIND extki
         opkind_const_param = 32;
         break;
     case SEXT_8:
-        opkind = ZEXT;
+        opkind = SEXT;
         opkind_const_param = 8;
         break;
     case SEXT_16:
-        opkind = ZEXT;
+        opkind = SEXT;
         opkind_const_param = 16;
         break;
     case SEXT_32:
-        opkind = ZEXT;
+        opkind = SEXT;
         opkind_const_param = 32;
         break;
     default:
@@ -1823,11 +1825,6 @@ static inline void branch(TCGTemp *t_op_a, TCGTemp *t_op_b, TCGCond cond, TCGOp 
 
     tcg_set_label(label_both_concrete, op_in, NULL, tcg_ctx);
 }
-
-#define START 0x40054d
-#define STOP 0x400578
-#define REG "rdi"
-#define REG_AT 0x40054d
 
 static inline EXTENDKIND get_extend_kind(TCGOpcode opkind)
 {
