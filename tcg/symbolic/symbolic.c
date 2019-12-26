@@ -5,14 +5,16 @@
 #include "symbolic.h"
 #include "qemu/bitops.h"
 
-//#define SYMBOLIC_DEBUG
+#define SYMBOLIC_DEBUG
 
 typedef enum OPKIND
 {
     // op1 is used to store the value or id
     IS_CONST, // constants could also be embedded within an operand
     IS_SYMBOLIC,
-    //
+    // unary
+    NEG,
+    // binary
     ADD,
     SUB,
     MUL,
@@ -41,22 +43,45 @@ typedef enum OPKIND
     LEU,
     GEU,
     GTU,
-    //
-    ZEXT, // ZEXT(arg0, n): zero-extend arg0 for the n msb bits
-    SEXT, // SEXT(arg0, n): sign-extend arg0 for the n msb bits
-    //
-    CONCAT,
-    EXTRACT, // EXTRACT(arg0, i): extract i-th byte from arg0
+    // binary
+    ZEXT, // ZEXT(arg0, n): zero-extend arg0 from the n-1 msb bits
+    SEXT, // SEXT(arg0, n): sign-extend arg0 from the n-1 msb bits
+    // binary
+    CONCAT8,  // CONCAT8(arg0, arg1): concat one byte (arg1) to arg0
+    EXTRACT8, // EXTRACT8(arg0, i): extract i-th byte from arg0
+    // ternary
+    DEPOSIT, // DEPOSIT(arg0, arg1, arg2, pos, len):
+             //    arg0 = (arg1 & ~MASK(pos, len)) | ((arg2 << pos) & MASK(pos, len))
+             // where: MASK(pos, len) build a mask of bits, where len bits are set to
+             // one starting at position 8 (going towards msb). 
+             // e.g., MASK(8, 4) = 0x0f00
+    EXTRACT, // EXTRACT(arg0, arg1, pos, len):
+             //    arg0 = (arg1 << (N_BITS-(pos+len))) >> (N_BITS-len)
+             // e.g., EXTRACT(arg0, arg1, 8, 4):
+             //  when N_BITS=32 then arg0 = (arg1 << 20) >> 28
+    SEXTRACT,// same as EXTRACT but using arithmetic shift
 } OPKIND;
+
+typedef enum EXTENDKIND
+{
+    ZEXT_8,
+    ZEXT_16,
+    ZEXT_32,
+    //
+    SEXT_8,
+    SEXT_16,
+    SEXT_32,
+} EXTENDKIND;
 
 typedef struct Expr
 {
-    //struct Expr *next_free; // eq to zero when in use or when not yet allocated
     struct Expr *op1;
     struct Expr *op2;
+    struct Expr *op3;
     uint8_t opkind;
     uint8_t op1_is_const;
     uint8_t op2_is_const;
+    uint8_t op3_is_const;
 } Expr;
 
 // symbolic temps
@@ -748,9 +773,9 @@ static inline const char *opkind_to_str(uint8_t opkind)
     case SEXT:
         return "SIGN-EXTEND";
 
-    case EXTRACT:
+    case EXTRACT8:
         return "EXTRACT";
-    case CONCAT:
+    case CONCAT8:
         return "CONCAT";
 
     default:
@@ -761,17 +786,19 @@ static inline const char *opkind_to_str(uint8_t opkind)
 
 #define MAX_PRINT_CHECK 1024
 static uint8_t printed[MAX_PRINT_CHECK];
-static inline void print_expr_internal(Expr *expr, uint32_t next_expr_id)
+
+static inline void print_expr_internal(Expr *expr, uint8_t reset)
 {
-    if (next_expr_id == 0)
+    if (reset)
         for (size_t i = 0; i < MAX_PRINT_CHECK; i++)
             printed[i] = 0;
 
     printf("expr:");
-    printf(" addr=%p", expr);
+    //printf(" addr=%p", expr);
+    printf(" id=%lu", GET_EXPR_IDX(expr));
     if (expr)
     {
-        if (expr->opkind == IS_CONST) 
+        if (expr->opkind == IS_CONST)
         {
             printf("\n");
             assert(expr->opkind != IS_CONST);
@@ -787,48 +814,42 @@ static inline void print_expr_internal(Expr *expr, uint32_t next_expr_id)
         else
         {
 
-            uint32_t expr_id_a = next_expr_id++;
-            if (expr->op1_is_const)
-            {
+            if (expr->op1_is_const || expr->op1 == NULL)
                 printf(" 0x%lx", (uintptr_t)expr->op1);
-                next_expr_id--;
-            }
             else
-                printf(" E_%u", expr_id_a);
+                printf(" E_%lu", GET_EXPR_IDX(expr->op1));
 
             printf(" %s", opkind_to_str(expr->opkind));
 
-            uint32_t expr_id_b = next_expr_id++;
-            if (expr->op2_is_const || expr->opkind == EXTRACT)
-            {
+            if (expr->op2_is_const || expr->opkind == EXTRACT8 || expr->op2 == NULL)
                 printf(" 0x%lx", (uintptr_t)expr->op2);
-                next_expr_id--;
-            }
             else
-                printf(" E_%u", expr_id_b); // ToDo: expr ID should be dynamically computed based on the nesting
+                printf(" E_%lu", GET_EXPR_IDX(expr->op2));
             printf("\n");
 
             // FixMe: this makes a mess
 
-            if (!expr->op1_is_const)
+            if (!expr->op1_is_const && expr->op1 != NULL)
             {
-                if (!printed[expr_id_a])
+                assert(GET_EXPR_IDX(expr->op1) < MAX_PRINT_CHECK);
+                if (!printed[GET_EXPR_IDX(expr->op1)])
                 {
-                    printf("E_%u:: ", expr_id_a);
-                    print_expr_internal(expr->op1, next_expr_id);
-                    printed[expr_id_a] = 1;
+                    printf("E_%lu:: ", GET_EXPR_IDX(expr->op1));
+                    print_expr_internal(expr->op1, 0);
+                    printed[GET_EXPR_IDX(expr->op1)] = 1;
                 }
                 if (expr->op1 == NULL)
                     assert(expr->op2);
             }
 
-            if (!expr->op2_is_const && expr->opkind != EXTRACT)
+            if (!expr->op2_is_const && expr->opkind != EXTRACT8 && expr->op2 != NULL)
             {
-                if (!printed[expr_id_b])
+                assert(GET_EXPR_IDX(expr->op2) < MAX_PRINT_CHECK);
+                if (!printed[GET_EXPR_IDX(expr->op2)])
                 {
-                    printf("E_%u:: ", expr_id_b);
-                    print_expr_internal(expr->op2, next_expr_id);
-                    printed[expr_id_b] = 1;
+                    printf("E_%lu:: ", GET_EXPR_IDX(expr->op2));
+                    print_expr_internal(expr->op2, 0);
+                    printed[GET_EXPR_IDX(expr->op2)] = 1;
                 }
                 if (expr->op2 == NULL)
                     assert(expr->op1);
@@ -843,7 +864,8 @@ static inline void print_expr_internal(Expr *expr, uint32_t next_expr_id)
 
 static inline void print_expr(Expr *expr)
 {
-    print_expr_internal(expr, 0);
+    printf("\n");
+    print_expr_internal(expr, 1);
 }
 
 // When adding instrumentation with branches and when accessing
@@ -1224,6 +1246,9 @@ static inline void qemu_load(TCGTemp *t_addr, TCGTemp *t_val, uintptr_t offset, 
     // number of bytes to store
     size_t size = get_mem_op_size(mem_op);
 
+    preserve_op_load(t_addr, op_in, tcg_ctx);
+    preserve_op_load(t_val, op_in, tcg_ctx);
+
     TCGOp *op;
 
     TCGTemp *t_l3_page_idx_addr;
@@ -1271,7 +1296,7 @@ static inline void qemu_load(TCGTemp *t_addr, TCGTemp *t_val, uintptr_t offset, 
             allocate_new_expr(t_new_expr, op_in, tcg_ctx);
 
             TCGTemp *t_opkind = new_non_conflicting_temp(TCG_TYPE_I64);
-            tcg_movi(t_opkind, CONCAT, 0, op_in, NULL, tcg_ctx);
+            tcg_movi(t_opkind, CONCAT8, 0, op_in, NULL, tcg_ctx);
             tcg_store_n(t_new_expr, t_opkind, offsetof(Expr, opkind), 0, 1, sizeof(uint8_t), op_in, NULL, tcg_ctx);
 
             tcg_store_n(t_new_expr, t_expr, offsetof(Expr, op1), 0, 1, sizeof(Expr *), op_in, NULL, tcg_ctx);
@@ -1279,7 +1304,7 @@ static inline void qemu_load(TCGTemp *t_addr, TCGTemp *t_val, uintptr_t offset, 
             // if expr is NULL, use the concrete value
 
             TCGLabel *label_expr_is_not_null = gen_new_label();
-            tcg_brcond(label_expr_is_not_null, t_exprs[i], t_zero, TCG_COND_EQ, 0, 0, op_in, NULL, tcg_ctx);
+            tcg_brcond(label_expr_is_not_null, t_exprs[i], t_zero, TCG_COND_NE, 0, 0, op_in, NULL, tcg_ctx);
 
             TCGTemp *t_mem_value = new_non_conflicting_temp(TCG_TYPE_I64);
             TCGTemp *t_mem_value_addr = new_non_conflicting_temp(TCG_TYPE_I64);
@@ -1295,8 +1320,8 @@ static inline void qemu_load(TCGTemp *t_addr, TCGTemp *t_val, uintptr_t offset, 
             tcg_set_label(label_expr_is_not_null, op_in, NULL, tcg_ctx);
             tcg_store_n(t_new_expr, t_exprs[i], offsetof(Expr, op2), 0, 1, sizeof(Expr *), op_in, NULL, tcg_ctx);
 
-            //add_void_call_1(print_expr, t_new_expr, op_in, &op, tcg_ctx);
-            //mark_insn_as_instrumentation(op);
+            add_void_call_1(print_expr, t_new_expr, op_in, &op, tcg_ctx);
+            mark_insn_as_instrumentation(op);
 
             t_expr = t_new_expr;
             t_exprs[i] = NULL;
@@ -1325,13 +1350,14 @@ static inline void qemu_load(TCGTemp *t_addr, TCGTemp *t_val, uintptr_t offset, 
         tcg_movi(t_one, 1, 0, op_in, NULL, tcg_ctx);
         tcg_store_n(t_new_expr, t_one, offsetof(Expr, op2_is_const), 0, 1, sizeof(uint8_t), op_in, NULL, tcg_ctx);
 
-        //add_void_call_1(print_expr, t_new_expr, op_in, &op, tcg_ctx);
-        //mark_insn_as_instrumentation(op);
+        add_void_call_1(print_expr, t_new_expr, op_in, &op, tcg_ctx);
+        mark_insn_as_instrumentation(op);
 
         t_expr = t_new_expr;
     }
 
-    //add_void_call_1(print_expr, t_expr, op_in, &op, tcg_ctx);
+    add_void_call_1(print_expr, t_expr, op_in, &op, tcg_ctx);
+    mark_insn_as_instrumentation(op);
 
     // write expr to destination temp
     TCGTemp *t_to = new_non_conflicting_temp(TCG_TYPE_PTR);
@@ -1362,7 +1388,7 @@ static inline void qemu_store(TCGTemp *t_addr, TCGTemp *t_val, uintptr_t offset,
     // number of bytes to store
     size_t size = get_mem_op_size(mem_op);
 
-    //TCGOp *op;
+    TCGOp *op;
 
     // check whether val is concrete
     size_t val_idx = temp_idx(t_val);
@@ -1410,7 +1436,7 @@ static inline void qemu_store(TCGTemp *t_addr, TCGTemp *t_val, uintptr_t offset,
         allocate_new_expr(t_new_expr, op_in, tcg_ctx);
 
         TCGTemp *t_opkind = new_non_conflicting_temp(TCG_TYPE_I64);
-        tcg_movi(t_opkind, EXTRACT, 0, op_in, NULL, tcg_ctx);
+        tcg_movi(t_opkind, EXTRACT8, 0, op_in, NULL, tcg_ctx);
         tcg_store_n(t_new_expr, t_opkind, offsetof(Expr, opkind), 0, 1, sizeof(uint8_t), op_in, NULL, tcg_ctx);
 
         tcg_store_n(t_new_expr, t_val_expr, offsetof(Expr, op1), 0, i == size - 1, sizeof(Expr *), op_in, NULL, tcg_ctx);
@@ -1419,8 +1445,8 @@ static inline void qemu_store(TCGTemp *t_addr, TCGTemp *t_val, uintptr_t offset,
         tcg_movi(t_index, i, 0, op_in, NULL, tcg_ctx);
         tcg_store_n(t_new_expr, t_index, offsetof(Expr, op2), 0, 1, sizeof(Expr *), op_in, NULL, tcg_ctx);
 
-        //add_void_call_1(print_expr, t_new_expr, op_in, &op, tcg_ctx);
-        //mark_insn_as_instrumentation(op);
+        add_void_call_1(print_expr, t_new_expr, op_in, &op, tcg_ctx);
+        mark_insn_as_instrumentation(op);
 
         // set Expr
         tcg_store_n(t_l3_page_idx_addr, t_new_expr, sizeof(Expr *) * i,
@@ -1433,7 +1459,7 @@ static inline void qemu_store(TCGTemp *t_addr, TCGTemp *t_val, uintptr_t offset,
     CHECK_TEMPS_COUNT(tcg_ctx);
 }
 
-static inline void zero_extend(TCGTemp *t_op_to, TCGTemp *t_op_from, TCGOp *op_in, TCGContext *tcg_ctx)
+static inline void extend(TCGTemp *t_op_to, TCGTemp *t_op_from, EXTENDKIND extkind, TCGOp *op_in, TCGContext *tcg_ctx)
 {
     SAVE_TEMPS_COUNT(tcg_ctx);
 
@@ -1464,13 +1490,45 @@ static inline void zero_extend(TCGTemp *t_op_to, TCGTemp *t_op_from, TCGOp *op_i
 
     tcg_store_n(t_out, t_from, offsetof(Expr, op1), 0, 1, sizeof(uintptr_t), op_in, NULL, tcg_ctx);
 
+    uint8_t opkind;
+    uintptr_t opkind_const_param;
+    switch(extkind)
+    {
+        case ZEXT_8:
+            opkind = ZEXT;
+            opkind_const_param = 8;
+            break;
+        case ZEXT_16:
+            opkind = ZEXT;
+            opkind_const_param = 16;
+            break;
+        case ZEXT_32:
+            opkind = ZEXT;
+            opkind_const_param = 32;
+            break;
+        case SEXT_8:
+            opkind = ZEXT;
+            opkind_const_param = 8;
+            break;
+        case SEXT_16:
+            opkind = ZEXT;
+            opkind_const_param = 16;
+            break;
+        case SEXT_32:
+            opkind = ZEXT;
+            opkind_const_param = 32;
+            break;
+        default:
+            tcg_abort();
+    }
+
     TCGTemp *t_opkind = new_non_conflicting_temp(TCG_TYPE_I64);
-    tcg_movi(t_opkind, ZEXT, 0, op_in, NULL, tcg_ctx);
+    tcg_movi(t_opkind, opkind, 0, op_in, NULL, tcg_ctx);
     tcg_store_n(t_out, t_opkind, offsetof(Expr, opkind), 0, 1, sizeof(uint8_t), op_in, NULL, tcg_ctx);
 
-    TCGTemp *t_32 = new_non_conflicting_temp(TCG_TYPE_PTR);
-    tcg_movi(t_32, 32, 0, op_in, NULL, tcg_ctx);
-    tcg_store_n(t_out, t_32, offsetof(Expr, op2), 0, 1, sizeof(Expr *), op_in, NULL, tcg_ctx);
+    TCGTemp *t_const_param = new_non_conflicting_temp(TCG_TYPE_PTR);
+    tcg_movi(t_const_param, opkind_const_param, 0, op_in, NULL, tcg_ctx);
+    tcg_store_n(t_out, t_const_param, offsetof(Expr, op2), 0, 1, sizeof(Expr *), op_in, NULL, tcg_ctx);
 
     TCGTemp *t_one = new_non_conflicting_temp(TCG_TYPE_PTR);
     tcg_movi(t_one, 1, 0, op_in, NULL, tcg_ctx);
@@ -1766,7 +1824,34 @@ static inline void branch(TCGTemp *t_op_a, TCGTemp *t_op_b, TCGCond cond, TCGOp 
 #define REG     "rdi"
 #define REG_AT  0x40054d
 
+static inline EXTENDKIND get_extend_kind(TCGOpcode opkind)
+{
+    switch (opkind)
+    {
+        case INDEX_op_ext8u_i64:
+            return ZEXT_8;
+        case INDEX_op_ext8s_i64:
+            return SEXT_8;
+
+        case INDEX_op_ext16u_i64:
+            return ZEXT_16;
+        case INDEX_op_ext16s_i64:
+            return SEXT_16;
+
+        case INDEX_op_ext32u_i64:
+        case INDEX_op_extu_i32_i64:
+            return ZEXT_32;
+        case INDEX_op_ext32s_i64:
+            return SEXT_32;
+
+        default:
+            tcg_abort();
+    }
+}
+
+
 static int instrument = 0;
+static int first_load = 0;
 void parse_translation_block(TranslationBlock *tb, uintptr_t pc, uint8_t *tb_code, TCGContext *tcg_ctx)
 {
     //if (pc < 0x40054d || pc > 0x400577) // boundary of foo function
@@ -1862,6 +1947,7 @@ void parse_translation_block(TranslationBlock *tb, uintptr_t pc, uint8_t *tb_cod
                 TCGMemOp mem_op = get_memop(op->args[2]);
                 uintptr_t offset = (uintptr_t)get_mmuidx(op->args[2]);
                 qemu_load(t_ptr, t_val, offset, mem_op, op, tcg_ctx);
+                first_load = 1;
             }
             break;
 
@@ -1900,20 +1986,27 @@ void parse_translation_block(TranslationBlock *tb, uintptr_t pc, uint8_t *tb_cod
             }
             break;
 
+        case INDEX_op_ext8u_i64:
+        case INDEX_op_ext8s_i64:
+        case INDEX_op_ext16u_i64:
+        case INDEX_op_ext16s_i64:
         case INDEX_op_ext32u_i64:
+        case INDEX_op_ext32s_i64:
+        case INDEX_op_extu_i32_i64:
             mark_temp_as_in_use(arg_temp(op->args[0]));
             mark_temp_as_in_use(arg_temp(op->args[1]));
             if (instrument)
             {
                 TCGTemp *t_to = arg_temp(op->args[0]);
                 TCGTemp *t_from = arg_temp(op->args[1]);
-                zero_extend(t_to, t_from, op, tcg_ctx);
+                extend(t_to, t_from, get_extend_kind(op->opc), op, tcg_ctx);
             }
             break;
 
         case INDEX_op_goto_ptr:
         case INDEX_op_goto_tb:
         case INDEX_op_exit_tb:
+        case INDEX_op_brcond_i32: // skip when emulating 64 bit
             break;
 
         default:
