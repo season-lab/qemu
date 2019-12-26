@@ -50,16 +50,16 @@ typedef enum OPKIND
     CONCAT8,  // CONCAT8(arg0, arg1): concat one byte (arg1) to arg0
     EXTRACT8, // EXTRACT8(arg0, i): extract i-th byte from arg0
     // ternary
-    DEPOSIT, // DEPOSIT(arg0, arg1, arg2, pos, len):
-             //    arg0 = (arg1 & ~MASK(pos, len)) | ((arg2 << pos) & MASK(pos, len))
-             // where: MASK(pos, len) build a mask of bits, where len bits are set to
-             // one starting at position 8 (going towards msb). 
-             // e.g., MASK(8, 4) = 0x0f00
-    EXTRACT, // EXTRACT(arg0, arg1, pos, len):
-             //    arg0 = (arg1 << (N_BITS-(pos+len))) >> (N_BITS-len)
-             // e.g., EXTRACT(arg0, arg1, 8, 4):
-             //  when N_BITS=32 then arg0 = (arg1 << 20) >> 28
-    SEXTRACT,// same as EXTRACT but using arithmetic shift
+    DEPOSIT,  // DEPOSIT(arg0, arg1, arg2, pos, len):
+              //    arg0 = (arg1 & ~MASK(pos, len)) | ((arg2 << pos) & MASK(pos, len))
+              // where: MASK(pos, len) build a mask of bits, where len bits are set to
+              // one starting at position 8 (going towards msb).
+              // e.g., MASK(8, 4) = 0x0f00
+    EXTRACT,  // EXTRACT(arg0, arg1, pos, len):
+              //    arg0 = (arg1 << (N_BITS-(pos+len))) >> (N_BITS-len)
+              // e.g., EXTRACT(arg0, arg1, 8, 4):
+              //  when N_BITS=32 then arg0 = (arg1 << 20) >> 28
+    SEXTRACT, // same as EXTRACT but using arithmetic shift
 } OPKIND;
 
 typedef enum EXTENDKIND
@@ -592,7 +592,7 @@ static inline void tcg_brcond(TCGLabel *label, TCGTemp *ts_a, TCGTemp *ts_b, TCG
 
 // branch to label (always)
 static inline void tcg_br(TCGLabel *label,
-                              TCGOp *op_in, TCGOp **op_out, TCGContext *tcg_ctx)
+                          TCGOp *op_in, TCGOp **op_out, TCGContext *tcg_ctx)
 {
     label->refs++;
     TCGOpcode opc = INDEX_op_br;
@@ -1054,9 +1054,10 @@ static inline void get_expr_addr_for_addr(TCGTemp *t_addr, TCGTemp **t_expr_addr
     MARK_TEMP_AS_NOT_ALLOCATED(t_addr);
 
     TCGTemp *t_l3_page_idx_addr = new_non_conflicting_temp(TCG_TYPE_PTR);
-    if (early_exit) {
+    if (early_exit)
+    {
         TCGTemp *t_null = new_non_conflicting_temp(TCG_TYPE_PTR);
-        tcg_movi(t_null, (uintptr_t) 0, 0, op_in, NULL, tcg_ctx);
+        tcg_movi(t_null, (uintptr_t)0, 0, op_in, NULL, tcg_ctx);
         tcg_binop(t_l3_page_idx_addr, t_null, t_null, 0, 1, 0, XOR, op_in, &op, tcg_ctx); // force TCG to allocate the temp into a reg
         //add_void_call_1(print_value, t_l3_page_idx_addr, op_in, NULL, tcg_ctx);
     }
@@ -1097,7 +1098,8 @@ static inline void get_expr_addr_for_addr(TCGTemp *t_addr, TCGTemp **t_expr_addr
 
     // early_exit?
     TCGLabel *label_early_exit = NULL;
-    if (early_exit) {
+    if (early_exit)
+    {
         label_early_exit = gen_new_label();
         if (early_exit == EARLY_EXIT_CONST)
             tcg_br(label_early_exit, op_in, NULL, tcg_ctx);
@@ -1151,7 +1153,8 @@ static inline void get_expr_addr_for_addr(TCGTemp *t_addr, TCGTemp **t_expr_addr
     tcg_brcond(label_l3_page_is_allocated, t_l3_page, t_zero, TCG_COND_NE, 0, 0, op_in, NULL, tcg_ctx);
 
     // early_exit?
-    if (early_exit) {
+    if (early_exit)
+    {
         if (early_exit == EARLY_EXIT_CONST)
             tcg_br(label_early_exit, op_in, NULL, tcg_ctx);
         else
@@ -1206,7 +1209,8 @@ static inline void get_expr_addr_for_addr(TCGTemp *t_addr, TCGTemp **t_expr_addr
     mark_insn_as_instrumentation(op);
     tcg_set_label(label_no_cross_page_access, op_in, NULL, tcg_ctx);
 
-    if (early_exit) {
+    if (early_exit)
+    {
         tcg_set_label(label_early_exit, op_in, NULL, tcg_ctx);
         //add_void_call_1(print_value, t_l3_page_idx_addr, op_in, NULL, tcg_ctx);
     }
@@ -1216,17 +1220,18 @@ static inline void get_expr_addr_for_addr(TCGTemp *t_addr, TCGTemp **t_expr_addr
 
 static inline size_t get_mem_op_size(TCGMemOp mem_op)
 {
-    switch (mem_op & MO_SIZE) {
-        case MO_8:
-            return 1;
-        case MO_16:
-            return 2;
-        case MO_32:
-            return 4;
-        case MO_64:
-            return 8;
-        default:
-            tcg_abort();
+    switch (mem_op & MO_SIZE)
+    {
+    case MO_8:
+        return 1;
+    case MO_16:
+        return 2;
+    case MO_32:
+        return 4;
+    case MO_64:
+        return 8;
+    default:
+        tcg_abort();
     }
 }
 
@@ -1241,7 +1246,7 @@ static inline void qemu_load(TCGTemp *t_addr, TCGTemp *t_val, uintptr_t offset, 
 
     assert(t_val->base_type == TCG_TYPE_TL);
     assert(t_val->base_type == TCG_TYPE_I64); // FixMe: support other types
-    assert((mem_op & MO_BE) == 0); // FixMe: extend to BE
+    assert((mem_op & MO_BE) == 0);            // FixMe: extend to BE
 
     // number of bytes to store
     size_t size = get_mem_op_size(mem_op);
@@ -1269,13 +1274,13 @@ static inline void qemu_load(TCGTemp *t_addr, TCGTemp *t_val, uintptr_t offset, 
     tcg_movi(t_expr_is_null, 0, 0, op_in, NULL, tcg_ctx);
 
     assert(size <= 8);
-    TCGTemp *t_exprs[8] = { NULL };
+    TCGTemp *t_exprs[8] = {NULL};
 
     for (size_t i = 0; i < size; i++)
     {
         t_exprs[i] = new_non_conflicting_temp(TCG_TYPE_PTR);
         tcg_load_n(t_l3_page_idx_addr, t_exprs[i], sizeof(Expr *) * i,
-            i == size - 1, 0, sizeof(uintptr_t), op_in, NULL, tcg_ctx);
+                   i == size - 1, 0, sizeof(uintptr_t), op_in, NULL, tcg_ctx);
         tcg_binop(t_expr_is_null, t_expr_is_null, t_exprs[i], 0, 0, 0, OR, op_in, NULL, tcg_ctx);
     }
 
@@ -1419,8 +1424,8 @@ static inline void qemu_store(TCGTemp *t_addr, TCGTemp *t_val, uintptr_t offset,
     {
         // set Expr
         tcg_store_n(t_l3_page_idx_addr, t_val_expr, sizeof(Expr *) * i,
-            0, 0,
-            sizeof(void *), op_in, NULL, tcg_ctx);
+                    0, 0,
+                    sizeof(void *), op_in, NULL, tcg_ctx);
     }
 
     tcg_br(label_end, op_in, NULL, tcg_ctx);
@@ -1450,8 +1455,8 @@ static inline void qemu_store(TCGTemp *t_addr, TCGTemp *t_val, uintptr_t offset,
 
         // set Expr
         tcg_store_n(t_l3_page_idx_addr, t_new_expr, sizeof(Expr *) * i,
-            i == size - 1, 1,
-            sizeof(void *), op_in, NULL, tcg_ctx);
+                    i == size - 1, 1,
+                    sizeof(void *), op_in, NULL, tcg_ctx);
     }
 
     tcg_set_label(label_end, op_in, NULL, tcg_ctx);
@@ -1492,34 +1497,34 @@ static inline void extend(TCGTemp *t_op_to, TCGTemp *t_op_from, EXTENDKIND extki
 
     uint8_t opkind;
     uintptr_t opkind_const_param;
-    switch(extkind)
+    switch (extkind)
     {
-        case ZEXT_8:
-            opkind = ZEXT;
-            opkind_const_param = 8;
-            break;
-        case ZEXT_16:
-            opkind = ZEXT;
-            opkind_const_param = 16;
-            break;
-        case ZEXT_32:
-            opkind = ZEXT;
-            opkind_const_param = 32;
-            break;
-        case SEXT_8:
-            opkind = ZEXT;
-            opkind_const_param = 8;
-            break;
-        case SEXT_16:
-            opkind = ZEXT;
-            opkind_const_param = 16;
-            break;
-        case SEXT_32:
-            opkind = ZEXT;
-            opkind_const_param = 32;
-            break;
-        default:
-            tcg_abort();
+    case ZEXT_8:
+        opkind = ZEXT;
+        opkind_const_param = 8;
+        break;
+    case ZEXT_16:
+        opkind = ZEXT;
+        opkind_const_param = 16;
+        break;
+    case ZEXT_32:
+        opkind = ZEXT;
+        opkind_const_param = 32;
+        break;
+    case SEXT_8:
+        opkind = ZEXT;
+        opkind_const_param = 8;
+        break;
+    case SEXT_16:
+        opkind = ZEXT;
+        opkind_const_param = 16;
+        break;
+    case SEXT_32:
+        opkind = ZEXT;
+        opkind_const_param = 32;
+        break;
+    default:
+        tcg_abort();
     }
 
     TCGTemp *t_opkind = new_non_conflicting_temp(TCG_TYPE_I64);
@@ -1819,36 +1824,35 @@ static inline void branch(TCGTemp *t_op_a, TCGTemp *t_op_b, TCGCond cond, TCGOp 
     tcg_set_label(label_both_concrete, op_in, NULL, tcg_ctx);
 }
 
-#define START   0x40054d
-#define STOP    0x400578
-#define REG     "rdi"
-#define REG_AT  0x40054d
+#define START 0x40054d
+#define STOP 0x400578
+#define REG "rdi"
+#define REG_AT 0x40054d
 
 static inline EXTENDKIND get_extend_kind(TCGOpcode opkind)
 {
     switch (opkind)
     {
-        case INDEX_op_ext8u_i64:
-            return ZEXT_8;
-        case INDEX_op_ext8s_i64:
-            return SEXT_8;
+    case INDEX_op_ext8u_i64:
+        return ZEXT_8;
+    case INDEX_op_ext8s_i64:
+        return SEXT_8;
 
-        case INDEX_op_ext16u_i64:
-            return ZEXT_16;
-        case INDEX_op_ext16s_i64:
-            return SEXT_16;
+    case INDEX_op_ext16u_i64:
+        return ZEXT_16;
+    case INDEX_op_ext16s_i64:
+        return SEXT_16;
 
-        case INDEX_op_ext32u_i64:
-        case INDEX_op_extu_i32_i64:
-            return ZEXT_32;
-        case INDEX_op_ext32s_i64:
-            return SEXT_32;
+    case INDEX_op_ext32u_i64:
+    case INDEX_op_extu_i32_i64:
+        return ZEXT_32;
+    case INDEX_op_ext32s_i64:
+        return SEXT_32;
 
-        default:
-            tcg_abort();
+    default:
+        tcg_abort();
     }
 }
-
 
 static int instrument = 0;
 static int first_load = 0;
