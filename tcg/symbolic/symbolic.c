@@ -11,6 +11,7 @@
 
 typedef enum OPKIND
 {
+    RESERVED,
     // op1 is used to store the value or id
     IS_CONST, // constants could also be embedded within an operand
     IS_SYMBOLIC,
@@ -862,12 +863,6 @@ static inline void print_expr_internal(Expr *expr, uint8_t reset)
     printf(" id=%lu", GET_EXPR_IDX(expr));
     if (expr)
     {
-        if (expr->opkind == IS_CONST)
-        {
-            printf("\n");
-            assert(expr->opkind != IS_CONST);
-        }
-
         printf(" is_symbolic_input=%u", expr->opkind == IS_SYMBOLIC);
         printf(" op1_is_const=%u", expr->op1_is_const);
         printf(" op2_is_const=%u", expr->op2_is_const);
@@ -1457,8 +1452,7 @@ static inline void qemu_load(TCGTemp *t_addr, TCGTemp *t_val, uintptr_t offset, 
             TCGLabel *label_expr_is_not_null = gen_new_label();
             tcg_brcond(label_expr_is_not_null, t_exprs[i], t_zero, TCG_COND_NE, 0, 0, op_in, NULL, tcg_ctx);
 
-            TCGTemp *t_new_expr = new_non_conflicting_temp(TCG_TYPE_PTR);
-            allocate_new_expr(t_new_expr, op_in, tcg_ctx);
+            allocate_new_expr(t_exprs[i], op_in, tcg_ctx);
 
             TCGTemp *t_mem_value = new_non_conflicting_temp(TCG_TYPE_I64);
             TCGTemp *t_mem_value_addr = new_non_conflicting_temp(TCG_TYPE_I64);
@@ -1470,16 +1464,13 @@ static inline void qemu_load(TCGTemp *t_addr, TCGTemp *t_val, uintptr_t offset, 
             tcg_binop(t_mem_value_addr, t_mem_value_addr, t_mem_value_addr_offset, 0, 0, 1, ADD, op_in, NULL, tcg_ctx);
             tcg_load_n(t_mem_value_addr, t_mem_value, 0, 1, 0, sizeof(uint8_t), op_in, NULL, tcg_ctx);
 
-            tcg_store_n(t_new_expr, t_mem_value, offsetof(Expr, op1), 0, 1, sizeof(Expr *), op_in, NULL, tcg_ctx);
+            tcg_store_n(t_exprs[i], t_mem_value, offsetof(Expr, op1), 0, 1, sizeof(Expr *), op_in, NULL, tcg_ctx);
 
             TCGTemp *t_opkind = new_non_conflicting_temp(TCG_TYPE_I64);
             tcg_movi(t_opkind, IS_CONST, 0, op_in, NULL, tcg_ctx);
-            tcg_store_n(t_new_expr, t_opkind, offsetof(Expr, opkind), 0, 1, sizeof(uint8_t), op_in, NULL, tcg_ctx);
+            tcg_store_n(t_exprs[i], t_opkind, offsetof(Expr, opkind), 0, 1, sizeof(uint8_t), op_in, NULL, tcg_ctx);
 
-            tcg_mov(t_exprs[i], t_new_expr, 0, 1, op_in, NULL, tcg_ctx);
-
-            tcg_set_label(label_expr_is_not_null, op_in, &op, tcg_ctx);
-            mark_insn_as_instrumentation(op);
+            tcg_set_label(label_expr_is_not_null, op_in, NULL, tcg_ctx);
 
             t_expr = t_exprs[i];
             t_exprs[i] = NULL;
