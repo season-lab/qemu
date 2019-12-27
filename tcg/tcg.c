@@ -4116,6 +4116,7 @@ void enable_symbolic_mode(void)
 {
     if (symbolic_mode == 0)
         init_symbolic_mode();
+    symbolic_mode = 1;
 }
 
 int tcg_gen_code(TCGContext *s, TranslationBlock *tb)

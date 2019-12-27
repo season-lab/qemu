@@ -1,10 +1,13 @@
 #ifndef SYMBOLIC_STRUCT_H
 #define SYMBOLIC_STRUCT_H
 
+#define EXPR_POOL_CAPACITY (256 * 1024)
+#define EXPR_POOL_SHM_KEY   0xDEADBEEF
+
 typedef enum OPKIND
 {
     RESERVED,
-    // op1 is used to store the value or id
+    //
     IS_CONST, // constants could also be embedded within an operand
     IS_SYMBOLIC,
     // unary

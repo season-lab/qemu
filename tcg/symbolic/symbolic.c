@@ -1,4 +1,6 @@
 #include <stdio.h>
+#include <sys/ipc.h>
+#include <sys/shm.h>
 
 #include "qemu/osdep.h"
 #include "qemu-common.h"
@@ -45,9 +47,8 @@ s_memory_t s_memory = {0};
 Expr *path_constraints = NULL;
 
 // Expr allocation pool
-#define EXPR_POOL_CAPACITY (256 * 1024)
-Expr pool[EXPR_POOL_CAPACITY] = {0};
-Expr *next_free_expr = &pool[0];
+Expr * pool = NULL;
+Expr *next_free_expr = NULL;
 Expr *last_expr = NULL; // ToDo: unsafe
 
 #if 0
@@ -88,7 +89,16 @@ TCGOp * op_macro;
 
 void init_symbolic_mode(void)
 {
-    return;
+    int expr_pool_shm_id = shmget(EXPR_POOL_SHM_KEY, // IPC_PRIVATE,
+                                sizeof(Expr) * EXPR_POOL_CAPACITY, 0600);
+
+    assert(expr_pool_shm_id > 0);
+    printf("POOL_SHM_ID=%d\n", expr_pool_shm_id);
+
+    pool = shmat(expr_pool_shm_id, NULL, 0);
+    assert(pool);
+
+    next_free_expr = pool;
 }
 
 static inline int count_free_temps(TCGContext *tcg_ctx)
@@ -268,7 +278,7 @@ static inline void check_pool_expr_capacity(void)
     assert(next_free_expr < pool + EXPR_POOL_CAPACITY);
 }
 
-#define GET_EXPR_IDX(e) ((((uintptr_t)e) - ((uintptr_t)&pool)) / sizeof(Expr))
+#define GET_EXPR_IDX(e) ((((uintptr_t)e) - ((uintptr_t)pool)) / sizeof(Expr))
 
 static inline Expr *new_expr(void)
 {
@@ -702,8 +712,10 @@ static inline void allocate_new_expr(TCGTemp *t_out, TCGOp *op_in, TCGContext *t
     add_void_call_0(check_pool_expr_capacity, op_in, &op, tcg_ctx); // ToDo: make inline check
     mark_insn_as_instrumentation(op);
 
+    //assert(next_free_expr);
+
     TCGTemp *t_next_free_expr_addr = new_non_conflicting_temp(TCG_TYPE_PTR);
-    tcg_movi(t_next_free_expr_addr, (uintptr_t)&next_free_expr, 0, op_in, NULL, tcg_ctx);
+    tcg_movi(t_next_free_expr_addr, (uintptr_t) &next_free_expr, 0, op_in, NULL, tcg_ctx);
 
     TCGTemp *t_next_free_expr = new_non_conflicting_temp(TCG_TYPE_PTR);
     tcg_load_n(t_next_free_expr_addr, t_next_free_expr, 0, 0, 0, sizeof(uintptr_t), op_in, NULL, tcg_ctx);
