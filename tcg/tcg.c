@@ -4114,7 +4114,8 @@ int64_t tcg_cpu_exec_time(void)
 static uint8_t symbolic_mode = 0;
 void enable_symbolic_mode(void)
 {
-    symbolic_mode = 1;
+    if (symbolic_mode == 0)
+        init_symbolic_mode();
 }
 
 int tcg_gen_code(TCGContext *s, TranslationBlock *tb)

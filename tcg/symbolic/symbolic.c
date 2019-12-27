@@ -163,6 +163,11 @@ TCGOp * op_macro;
     } while (0);
 #endif
 
+void init_symbolic_mode(void)
+{
+    return;
+}
+
 static inline int count_free_temps(TCGContext *tcg_ctx)
 {
     int count = 0;
