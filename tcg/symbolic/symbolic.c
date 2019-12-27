@@ -353,8 +353,7 @@ static inline Expr *new_expr(void)
 
 static inline void print_reg(void)
 {
-    //printf("RDI is at %p\n", &stemps[r]);
-    debug_printf("RDI is %ssymbolic\n", s_temps[12]->opkind == IS_SYMBOLIC ? "" : "not ");
+    debug_printf("%s is %ssymbolic\n", REG, s_temps[12]->opkind == IS_SYMBOLIC ? "" : "not ");
 }
 
 static inline void new_symbolic_expr(void)
@@ -2109,9 +2108,9 @@ void parse_translation_block(TranslationBlock *tb, uintptr_t pc, uint8_t *tb_cod
         {
 
         case INDEX_op_insn_start:
-            if (instrument == 0 && pc == START)
+            if (instrument == 0 && op->args[0] == START)
                 instrument = 1;
-            else if (instrument == 1 && pc == STOP)
+            else if (instrument == 1 && op->args[0] == STOP)
                 instrument = 0;
 
             if (instrument)
