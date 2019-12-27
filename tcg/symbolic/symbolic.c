@@ -7,7 +7,7 @@
 
 #include "config.h"
 
-#define SYMBOLIC_DEBUG
+//#define SYMBOLIC_DEBUG
 
 typedef enum OPKIND
 {
@@ -1453,8 +1453,6 @@ static inline void qemu_load(TCGTemp *t_addr, TCGTemp *t_val, uintptr_t offset, 
     {
         if (i == 0)
         {
-            t_expr = t_exprs[i];
-
             // if expr is NULL, use the concrete value
             TCGLabel *label_expr_is_not_null = gen_new_label();
             tcg_brcond(label_expr_is_not_null, t_exprs[i], t_zero, TCG_COND_NE, 0, 0, op_in, NULL, tcg_ctx);
@@ -1478,9 +1476,12 @@ static inline void qemu_load(TCGTemp *t_addr, TCGTemp *t_val, uintptr_t offset, 
             tcg_movi(t_opkind, IS_CONST, 0, op_in, NULL, tcg_ctx);
             tcg_store_n(t_new_expr, t_opkind, offsetof(Expr, opkind), 0, 1, sizeof(uint8_t), op_in, NULL, tcg_ctx);
 
-            tcg_set_label(label_expr_is_not_null, op_in, NULL, tcg_ctx);
+            tcg_mov(t_exprs[i], t_new_expr, 0, 1, op_in, NULL, tcg_ctx);
 
-            t_expr = t_new_expr;
+            tcg_set_label(label_expr_is_not_null, op_in, &op, tcg_ctx);
+            mark_insn_as_instrumentation(op);
+
+            t_expr = t_exprs[i];
             t_exprs[i] = NULL;
         }
         else
@@ -2197,7 +2198,7 @@ void parse_translation_block(TranslationBlock *tb, uintptr_t pc, uint8_t *tb_cod
             {
                 TCGTemp *t_val = arg_temp(op->args[0]);
                 TCGTemp *t_ptr = arg_temp(op->args[1]);
-#if 0
+#if 1
                 TCGMemOp mem_op = get_memop(op->args[2]);
                 uintptr_t offset = (uintptr_t)get_mmuidx(op->args[2]);
                 qemu_load(t_ptr, t_val, offset, mem_op, op, tcg_ctx);
@@ -2229,7 +2230,7 @@ void parse_translation_block(TranslationBlock *tb, uintptr_t pc, uint8_t *tb_cod
             {
                 TCGTemp *t_val = arg_temp(op->args[0]);
                 TCGTemp *t_ptr = arg_temp(op->args[1]);
-#if 0
+#if 1
                 TCGMemOp mem_op = get_memop(op->args[2]);
                 uintptr_t offset = (uintptr_t)get_mmuidx(op->args[2]);
                 qemu_store(t_ptr, t_val, offset, mem_op, op, tcg_ctx);
