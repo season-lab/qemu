@@ -2098,9 +2098,6 @@ static int instrument = 0;
 static int first_load = 0;
 void parse_translation_block(TranslationBlock *tb, uintptr_t pc, uint8_t *tb_code, TCGContext *tcg_ctx)
 {
-    //if (pc < 0x40054d || pc > 0x400577) // boundary of foo function
-    //    return;
-
     TCGOp __attribute__((unused)) *op;
     QTAILQ_FOREACH(op, &tcg_ctx->ops, link)
     {
