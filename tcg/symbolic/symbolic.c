@@ -7,7 +7,7 @@
 
 #include "config.h"
 
-//#define SYMBOLIC_DEBUG
+#define SYMBOLIC_DEBUG
 
 typedef enum OPKIND
 {
