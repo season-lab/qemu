@@ -7,7 +7,7 @@
 
 #include "config.h"
 
-//#define SYMBOLIC_DEBUG
+#define SYMBOLIC_DEBUG
 
 typedef enum OPKIND
 {
@@ -222,6 +222,7 @@ static inline void mark_insn_as_instrumentation(TCGOp *op)
     op->args[MAX_OPC_PARAM - 1] = (uint64_t)1;
 }
 
+// see tcg_gen_callN in tgc.c
 static inline void add_void_call_0(void *f, TCGOp *op_in, TCGOp **op_out, TCGContext *tcg_ctx)
 {
     TCGOpcode opc = INDEX_op_call;
@@ -235,6 +236,7 @@ static inline void add_void_call_0(void *f, TCGOp *op_in, TCGOp **op_out, TCGCon
         *op_out = op;
 }
 
+// see tcg_gen_callN in tgc.c
 static inline void add_void_call_1(void *f, TCGTemp *arg, TCGOp *op_in, TCGOp **op_out, TCGContext *tcg_ctx)
 {
     assert(arg->temp_allocated);
@@ -252,6 +254,7 @@ static inline void add_void_call_1(void *f, TCGTemp *arg, TCGOp *op_in, TCGOp **
         *op_out = op;
 }
 
+// see tcg_gen_callN in tgc.c
 static inline void add_void_call_2(void *f, TCGTemp *arg0, TCGTemp *arg1, TCGOp *op_in, TCGOp **op_out, TCGContext *tcg_ctx)
 {
     assert(arg0->temp_allocated);
@@ -265,6 +268,65 @@ static inline void add_void_call_2(void *f, TCGTemp *arg0, TCGTemp *arg1, TCGOp 
     op->args[2] = (uintptr_t)f;
     op->args[3] = 0;     // flags
     TCGOP_CALLI(op) = 2; // input args
+    TCGOP_CALLO(op) = 0; // ret args
+
+    if (op_out)
+        *op_out = op;
+}
+
+// see tcg_gen_callN in tgc.c
+static inline void add_void_call_4(void *f,
+                                   TCGTemp *arg0, TCGTemp *arg1,
+                                   TCGTemp *arg2, TCGTemp *arg3,
+                                   TCGOp *op_in, TCGOp **op_out, TCGContext *tcg_ctx)
+{
+    assert(arg0->temp_allocated);
+    assert(arg1->temp_allocated);
+    assert(arg2->temp_allocated);
+    assert(arg3->temp_allocated);
+
+    // FixMe: check 32 bit, check other archs
+    TCGOpcode opc = INDEX_op_call;
+    TCGOp *op = tcg_op_insert_before(tcg_ctx, op_in, opc);
+    op->args[0] = temp_arg(arg0);
+    op->args[1] = temp_arg(arg1);
+    op->args[2] = temp_arg(arg2);
+    op->args[3] = temp_arg(arg3);
+    op->args[4] = (uintptr_t)f;
+    op->args[5] = 0;     // flags
+    TCGOP_CALLI(op) = 4; // input args
+    TCGOP_CALLO(op) = 0; // ret args
+
+    if (op_out)
+        *op_out = op;
+}
+
+// see tcg_gen_callN in tgc.c
+static inline void add_void_call_6(void *f,
+                                   TCGTemp *arg0, TCGTemp *arg1,
+                                   TCGTemp *arg2, TCGTemp *arg3,
+                                   TCGTemp *arg4, TCGTemp *arg5,
+                                   TCGOp *op_in, TCGOp **op_out, TCGContext *tcg_ctx)
+{
+    assert(arg0->temp_allocated);
+    assert(arg1->temp_allocated);
+    assert(arg2->temp_allocated);
+    assert(arg3->temp_allocated);
+    assert(arg4->temp_allocated);
+    assert(arg5->temp_allocated);
+
+    // FixMe: check 32 bit, check other archs
+    TCGOpcode opc = INDEX_op_call;
+    TCGOp *op = tcg_op_insert_before(tcg_ctx, op_in, opc);
+    op->args[0] = temp_arg(arg0);
+    op->args[1] = temp_arg(arg1);
+    op->args[2] = temp_arg(arg2);
+    op->args[3] = temp_arg(arg3);
+    op->args[4] = temp_arg(arg4);
+    op->args[5] = temp_arg(arg5);
+    op->args[6] = (uintptr_t)f;
+    op->args[7] = 0;     // flags
+    TCGOP_CALLI(op) = 6; // input args
     TCGOP_CALLO(op) = 0; // ret args
 
     if (op_out)
@@ -1128,6 +1190,8 @@ static inline void get_expr_addr_for_addr(TCGTemp *t_addr, TCGTemp **t_expr_addr
     TCGTemp *t_l2_page_idx = new_non_conflicting_temp(TCG_TYPE_PTR);
     tcg_mov(t_l2_page_idx, t_addr_with_offset, 0, 0, op_in, NULL, tcg_ctx);
 
+    // FixMe: mask higher bits
+
     TCGTemp *t_l2_shr_bit = new_non_conflicting_temp(TCG_TYPE_PTR);
     tcg_movi(t_l2_shr_bit, L2_PAGE_BITS, 0, op_in, NULL, tcg_ctx);
 
@@ -1242,6 +1306,102 @@ static inline size_t get_mem_op_signextend(TCGMemOp mem_op)
     return mem_op & MO_SIGN;
 }
 
+static inline void qemu_load_helper(
+    uintptr_t orig_addr,
+    uintptr_t mem_op_uidx,
+    uintptr_t addr_idx,
+    uintptr_t val_idx)
+{
+    TCGMemOp mem_op = get_memop(mem_op_uidx);
+    uintptr_t offset = (uintptr_t)get_mmuidx(mem_op_uidx);
+
+    assert((mem_op & MO_BE) == 0); // FixMe: extend to BE
+
+    // number of bytes to load
+    size_t size = get_mem_op_size(mem_op);
+
+    //printf("Loading %lu bytes from %p at offset %lu\n", size, (void *)orig_addr, offset);
+
+    uintptr_t addr = orig_addr + offset;
+
+    uintptr_t l1_page_idx = addr >> (L1_PAGE_BITS + L2_PAGE_BITS);
+    l2_page_t *l2_page = s_memory.table.entries[l1_page_idx];
+    if (l2_page == NULL) // early exit
+    {
+        stemps[val_idx] = NULL;
+        return;
+    }
+
+    uintptr_t l2_page_idx = (addr >> L2_PAGE_BITS) & 0xFFFF;
+    l3_page_t *l3_page = l2_page->entries[l2_page_idx];
+    if (l3_page == NULL) // early exit
+    {
+        stemps[val_idx] = NULL;
+        return;
+    }
+
+    uintptr_t l3_page_idx = addr & 0xFFFF;
+    assert(l3_page_idx + size < 1 << L3_PAGE_BITS);
+
+    assert(size <= 8);
+    Expr *exprs[8] = {NULL};
+    uint8_t expr_is_not_null = 0;
+    for (size_t i = 0; i < size; i++)
+    {
+        exprs[i] = l3_page->entries[l3_page_idx + i];
+        expr_is_not_null = expr_is_not_null | (exprs[i] != 0);
+    }
+
+    if (expr_is_not_null == 0) // early exit
+    {
+        stemps[val_idx] = NULL;
+        return;
+    }
+
+    Expr *e = NULL;
+    for (size_t i = 0; i < size; i++)
+    {
+        if (i == 0)
+        {
+            if (exprs[i] == NULL)
+            {
+                // allocate a new expr for the concrete value
+                e = new_expr();
+                e->opkind = IS_CONST;
+                uint8_t *byte_addr = ((uint8_t *)addr) + i;
+                uint8_t byte = *byte_addr;
+                e->op1 = (Expr *)((uintptr_t)byte);
+            }
+            else
+                e = exprs[i];
+        }
+        else
+        {
+            Expr *n_expr = new_expr();
+            n_expr->opkind = CONCAT8;
+
+            if (exprs[i] == NULL)
+            {
+                // fetch the concrete value, embed it in the expr
+                uint8_t *byte_addr = ((uint8_t *)addr) + i;
+                uint8_t byte = *byte_addr;
+                n_expr->op1 = (Expr *)((uintptr_t)byte);
+                n_expr->op1_is_const = 1;
+            }
+            else
+            {
+                e->op1 = exprs[i];
+            }
+
+            n_expr->op2 = e;
+
+            e = n_expr;
+        }
+    }
+
+    stemps[val_idx] = e;
+}
+
 static inline void qemu_load(TCGTemp *t_addr, TCGTemp *t_val, uintptr_t offset, TCGMemOp mem_op, TCGOp *op_in, TCGContext *tcg_ctx)
 {
     SAVE_TEMPS_COUNT(tcg_ctx);
@@ -1250,7 +1410,7 @@ static inline void qemu_load(TCGTemp *t_addr, TCGTemp *t_val, uintptr_t offset, 
     assert(t_val->base_type == TCG_TYPE_I64); // FixMe: support other types
     assert((mem_op & MO_BE) == 0);            // FixMe: extend to BE
 
-    // number of bytes to store
+    // number of bytes to load
     size_t size = get_mem_op_size(mem_op);
 
     preserve_op_load(t_addr, op_in, tcg_ctx);
@@ -1294,6 +1454,33 @@ static inline void qemu_load(TCGTemp *t_addr, TCGTemp *t_val, uintptr_t offset, 
         if (i == 0)
         {
             t_expr = t_exprs[i];
+
+            // if expr is NULL, use the concrete value
+            TCGLabel *label_expr_is_not_null = gen_new_label();
+            tcg_brcond(label_expr_is_not_null, t_exprs[i], t_zero, TCG_COND_NE, 0, 0, op_in, NULL, tcg_ctx);
+
+            TCGTemp *t_new_expr = new_non_conflicting_temp(TCG_TYPE_PTR);
+            allocate_new_expr(t_new_expr, op_in, tcg_ctx);
+
+            TCGTemp *t_mem_value = new_non_conflicting_temp(TCG_TYPE_I64);
+            TCGTemp *t_mem_value_addr = new_non_conflicting_temp(TCG_TYPE_I64);
+            MARK_TEMP_AS_ALLOCATED(t_addr);
+            tcg_mov(t_mem_value_addr, t_addr, 0, 0, op_in, NULL, tcg_ctx);
+            MARK_TEMP_AS_NOT_ALLOCATED(t_addr);
+            TCGTemp *t_mem_value_addr_offset = new_non_conflicting_temp(TCG_TYPE_I64);
+            tcg_movi(t_mem_value_addr_offset, offset + i, 0, op_in, NULL, tcg_ctx);
+            tcg_binop(t_mem_value_addr, t_mem_value_addr, t_mem_value_addr_offset, 0, 0, 1, ADD, op_in, NULL, tcg_ctx);
+            tcg_load_n(t_mem_value_addr, t_mem_value, 0, 1, 0, sizeof(uint8_t), op_in, NULL, tcg_ctx);
+
+            tcg_store_n(t_new_expr, t_mem_value, offsetof(Expr, op1), 0, 1, sizeof(Expr *), op_in, NULL, tcg_ctx);
+
+            TCGTemp *t_opkind = new_non_conflicting_temp(TCG_TYPE_I64);
+            tcg_movi(t_opkind, IS_CONST, 0, op_in, NULL, tcg_ctx);
+            tcg_store_n(t_new_expr, t_opkind, offsetof(Expr, opkind), 0, 1, sizeof(uint8_t), op_in, NULL, tcg_ctx);
+
+            tcg_set_label(label_expr_is_not_null, op_in, NULL, tcg_ctx);
+
+            t_expr = t_new_expr;
             t_exprs[i] = NULL;
         }
         else
@@ -1323,6 +1510,10 @@ static inline void qemu_load(TCGTemp *t_addr, TCGTemp *t_val, uintptr_t offset, 
             tcg_binop(t_mem_value_addr, t_mem_value_addr, t_mem_value_addr_offset, 0, 0, 1, ADD, op_in, NULL, tcg_ctx);
             tcg_load_n(t_mem_value_addr, t_mem_value, 0, 1, 0, sizeof(uint8_t), op_in, NULL, tcg_ctx);
             tcg_store_n(t_exprs[i], t_mem_value, 0, 0, 1, sizeof(Expr *), op_in, NULL, tcg_ctx);
+
+            TCGTemp *t_one = new_non_conflicting_temp(TCG_TYPE_I64);
+            tcg_movi(t_one, 1, 0, op_in, NULL, tcg_ctx);
+            tcg_store_n(t_new_expr, t_one, offsetof(Expr, op1_is_const), 0, 1, sizeof(uint8_t), op_in, NULL, tcg_ctx);
 
             tcg_set_label(label_expr_is_not_null, op_in, NULL, tcg_ctx);
             tcg_store_n(t_new_expr, t_exprs[i], offsetof(Expr, op2), 0, 1, sizeof(Expr *), op_in, NULL, tcg_ctx);
@@ -1395,7 +1586,7 @@ static inline void qemu_store(TCGTemp *t_addr, TCGTemp *t_val, uintptr_t offset,
     // number of bytes to store
     size_t size = get_mem_op_size(mem_op);
 
-    //TCGOp *op;
+    TCGOp __attribute__((unused))  *op;
 
     // check whether val is concrete
     size_t val_idx = temp_idx(t_val);
@@ -1434,7 +1625,7 @@ static inline void qemu_store(TCGTemp *t_addr, TCGTemp *t_val, uintptr_t offset,
 
     tcg_set_label(label_expr_is_not_concrete, op_in, NULL, tcg_ctx);
 
-    // write EXT(expr, index) for each byte to store
+    // write EXT8(expr, index) for each byte to store
     for (size_t i = 0; i < size; i++)
     {
         // build EXTRACT expr
@@ -1858,7 +2049,7 @@ void parse_translation_block(TranslationBlock *tb, uintptr_t pc, uint8_t *tb_cod
     //if (pc < 0x40054d || pc > 0x400577) // boundary of foo function
     //    return;
 
-    TCGOp *op;
+    TCGOp __attribute__((unused)) *op;
     QTAILQ_FOREACH(op, &tcg_ctx->ops, link)
     {
         switch (op->opc)
@@ -1945,9 +2136,28 @@ void parse_translation_block(TranslationBlock *tb, uintptr_t pc, uint8_t *tb_cod
             {
                 TCGTemp *t_val = arg_temp(op->args[0]);
                 TCGTemp *t_ptr = arg_temp(op->args[1]);
+#if 0
                 TCGMemOp mem_op = get_memop(op->args[2]);
                 uintptr_t offset = (uintptr_t)get_mmuidx(op->args[2]);
-                qemu_load(t_ptr, t_val, offset, mem_op, op, tcg_ctx);
+                qemu_load(t_ptr, t_val, offset, mem_op,
+                 op, tcg_ctx);
+#else
+                MARK_TEMP_AS_ALLOCATED(t_ptr);
+                TCGTemp *t_mem_op = new_non_conflicting_temp(TCG_TYPE_PTR);
+                tcg_movi(t_mem_op, (uintptr_t)op->args[2], 0, op, NULL, tcg_ctx);
+                TCGTemp *t_ptr_idx = new_non_conflicting_temp(TCG_TYPE_PTR);
+                tcg_movi(t_ptr_idx, (uintptr_t)temp_idx(t_ptr), 0, op, NULL, tcg_ctx);
+                TCGTemp *t_val_idx = new_non_conflicting_temp(TCG_TYPE_PTR);
+                tcg_movi(t_val_idx, (uintptr_t)temp_idx(t_val), 0, op, NULL, tcg_ctx);
+                add_void_call_4(qemu_load_helper,
+                                t_ptr, t_mem_op, t_ptr_idx, t_val_idx,
+                                op, NULL, tcg_ctx);
+                MARK_TEMP_AS_NOT_ALLOCATED(t_ptr);
+                tcg_temp_free_internal(t_mem_op);
+                tcg_temp_free_internal(t_ptr_idx);
+                tcg_temp_free_internal(t_val_idx);
+#endif
+
                 first_load = 1;
             }
             break;
