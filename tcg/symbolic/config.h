@@ -1,0 +1,23 @@
+#ifndef SYMBOLIC_CONFIG_H
+#define SYMBOLIC_CONFIG_H
+
+#define TARGET_PROGRAM_SIMPLEIF 1
+#define TARGET_PROGRAM_ALL_CONCRETE 2
+#define TARGET_PROGRAM TARGET_PROGRAM_ALL_CONCRETE
+
+// basic binary, foo function
+#if TARGET_PROGRAM == TARGET_PROGRAM_SIMPLEIF
+#define START 0x40054d
+#define STOP 0x400578
+#define REG "rdi"
+#define REG_AT 0x40054d
+
+#elif TARGET_PROGRAM == TARGET_PROGRAM_ALL_CONCRETE
+#define START 0x4004fd
+#define STOP 0x4005af
+#define REG "rdi"
+#define REG_AT 0x400505
+
+#endif
+
+#endif // SYMBOLIC_CONFIG_H
