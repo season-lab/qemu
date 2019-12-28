@@ -51,6 +51,9 @@ Expr * pool = NULL;
 Expr *next_free_expr = NULL;
 Expr *last_expr = NULL; // ToDo: unsafe
 
+// query pool
+Expr ** next_query = NULL;
+
 #if 0
 TCGOp * op_macro;
 #define ADD_VOID_CALL_0(f, op, tcg_ctx) ({do { \
@@ -93,10 +96,18 @@ void init_symbolic_mode(void)
                                 sizeof(Expr) * EXPR_POOL_CAPACITY, 0600);
 
     assert(expr_pool_shm_id > 0);
-    printf("POOL_SHM_ID=%d\n", expr_pool_shm_id);
+
+    int query_shm_id = shmget(QUERY_SHM_KEY, // IPC_PRIVATE,
+                                sizeof(Expr *) * EXPR_POOL_CAPACITY, 0600);
+    assert(query_shm_id > 0);
+
+    printf("POOL_SHM_ID=%d QUERY_SHM_ID=%d\n", expr_pool_shm_id, query_shm_id);
 
     pool = shmat(expr_pool_shm_id, NULL, 0);
     assert(pool);
+
+    next_query = shmat(expr_pool_shm_id, NULL, 0);
+    assert(next_query);
 
     next_free_expr = pool;
 }
@@ -1876,6 +1887,87 @@ static inline void print_pi(void)
     }
 }
 
+static TCGCond check_branch_cond_helper(uintptr_t a, uintptr_t b, TCGCond cond)
+{
+    switch (cond)
+    {
+        case TCG_COND_NEVER:;
+            tcg_abort();
+        case TCG_COND_ALWAYS:
+            tcg_abort();
+        //
+        case TCG_COND_EQ:
+            if (a == b) return TCG_COND_EQ;
+            else return TCG_COND_NE;
+        case TCG_COND_NE:
+            if (a != b) return TCG_COND_NE;
+            else return TCG_COND_EQ;
+        //
+        case TCG_COND_LTU:
+            if (a < b) return TCG_COND_LTU;
+            else return TCG_COND_GEU;
+        case TCG_COND_LEU:
+            if (a <= b) return TCG_COND_LEU;
+            else return TCG_COND_GTU;
+        case TCG_COND_GEU:
+            if (a > b) return TCG_COND_GTU;
+            else return TCG_COND_LEU;
+        case TCG_COND_GTU:
+            if (a >= b) return TCG_COND_GEU;
+            else return TCG_COND_LTU;
+        //
+        default:
+            tcg_abort();
+    }
+}
+
+
+static void branch_helper(uintptr_t a, uintptr_t b, uintptr_t cond,
+                    uintptr_t a_idx, uintptr_t b_idx, uintptr_t pc)
+{
+    Expr * expr_a = s_temps[a_idx];
+    Expr * expr_b = s_temps[b_idx];
+    if (expr_a == NULL && expr_b == NULL) return; // early exit
+
+    Expr * branch_expr = new_expr();
+
+    TCGCond sat_cond = check_branch_cond_helper(a, b, cond);
+    branch_expr->opkind = get_opkind_from_cond(sat_cond);
+
+    if (expr_a)
+        branch_expr->op1 = expr_a;
+    else
+    {
+        branch_expr->op1 = (Expr *)(uintptr_t) a;
+        branch_expr->op1_is_const = 1;
+    }
+
+    if (expr_b)
+        branch_expr->op2 = expr_b;
+    else
+    {
+        branch_expr->op2 = (Expr *)(uintptr_t) b;
+        branch_expr->op2_is_const = 1;
+    }
+
+    if (path_constraints == NULL)
+    {
+        path_constraints = branch_expr;
+    }
+    else
+    {
+        Expr * new_pi_expr = new_expr();
+        new_pi_expr->opkind = AND;
+        new_pi_expr->op1 = branch_expr;
+        new_pi_expr->op2 = path_constraints;
+        path_constraints = new_pi_expr;
+    }
+#ifdef SYMBOLIC_DEBUG
+    printf("Branch at %lx\n", pc);
+    print_pi();
+#endif
+}
+
 static inline void branch(TCGTemp *t_op_a, TCGTemp *t_op_b, TCGCond cond, TCGOp *op_in, TCGContext *tcg_ctx)
 {
     // check if both t_op_a and t_op_b are concrete
@@ -2036,24 +2128,26 @@ static inline EXTENDKIND get_extend_kind(TCGOpcode opkind)
 
 static int instrument = 0;
 static int first_load = 0;
-void parse_translation_block(TranslationBlock *tb, uintptr_t pc, uint8_t *tb_code, TCGContext *tcg_ctx)
+void parse_translation_block(TranslationBlock *tb, uintptr_t tb_pc, uint8_t *tb_code, TCGContext *tcg_ctx)
 {
     TCGOp __attribute__((unused)) *op;
+    uintptr_t pc = 0;
     QTAILQ_FOREACH(op, &tcg_ctx->ops, link)
     {
         switch (op->opc)
         {
 
         case INDEX_op_insn_start:
-            if (instrument == 0 && op->args[0] == START)
+            pc = op->args[0];
+            if (instrument == 0 && pc == START)
                 instrument = 1;
-            else if (instrument == 1 && op->args[0] == STOP)
+            else if (instrument == 1 && pc == STOP)
                 instrument = 0;
 
             if (instrument)
             {
                 debug_printf("Instrumenting %lx\n", op->args[0]);
-                if (op->args[0] == REG_AT)
+                if (pc == REG_AT)
                     make_reg_symbolic(REG, op, tcg_ctx);
             }
             break;
@@ -2198,7 +2292,29 @@ void parse_translation_block(TranslationBlock *tb, uintptr_t pc, uint8_t *tb_cod
                 TCGTemp *t_a = arg_temp(op->args[0]);
                 TCGTemp *t_b = arg_temp(op->args[1]);
                 TCGCond cond = op->args[2];
+#if 0
                 branch(t_a, t_b, cond, op, tcg_ctx);
+#else
+                TCGTemp *t_cond = new_non_conflicting_temp(TCG_TYPE_PTR);
+                tcg_movi(t_cond, (uintptr_t) cond, 0, op, NULL, tcg_ctx);
+                TCGTemp *t_a_idx = new_non_conflicting_temp(TCG_TYPE_PTR);
+                tcg_movi(t_a_idx, (uintptr_t) temp_idx(t_a), 0, op, NULL, tcg_ctx);
+                TCGTemp *t_b_idx = new_non_conflicting_temp(TCG_TYPE_PTR);
+                tcg_movi(t_b_idx, (uintptr_t) temp_idx(t_b), 0, op, NULL, tcg_ctx);
+                TCGTemp *t_pc = new_non_conflicting_temp(TCG_TYPE_PTR);
+                tcg_movi(t_pc, (uintptr_t) pc, 0, op, NULL, tcg_ctx);
+                MARK_TEMP_AS_ALLOCATED(t_a);
+                MARK_TEMP_AS_ALLOCATED(t_b);
+                add_void_call_6(branch_helper,
+                                t_a, t_b, t_cond, t_a_idx, t_b_idx, t_pc,
+                                op, NULL, tcg_ctx);
+                MARK_TEMP_AS_NOT_ALLOCATED(t_a);
+                MARK_TEMP_AS_NOT_ALLOCATED(t_b);
+                tcg_temp_free_internal(t_cond);
+                tcg_temp_free_internal(t_a_idx);
+                tcg_temp_free_internal(t_b_idx);
+                tcg_temp_free_internal(t_pc);
+#endif
             }
             break;
 

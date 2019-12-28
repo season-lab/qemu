@@ -3,6 +3,7 @@
 
 #define EXPR_POOL_CAPACITY (256 * 1024)
 #define EXPR_POOL_SHM_KEY   0xDEADBEEF
+#define QUERY_SHM_KEY       0xCAFECAFE
 
 typedef enum OPKIND
 {
