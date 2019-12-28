@@ -6,9 +6,9 @@
 #include "qemu-common.h"
 #include "qemu/bitops.h"
 
-#include "symbolic.h"
 #include "config.h"
 #include "symbolic-struct.h"
+#include "symbolic.h"
 
 #define SYMBOLIC_DEBUG
 
@@ -47,12 +47,13 @@ s_memory_t s_memory = {0};
 Expr *path_constraints = NULL;
 
 // Expr allocation pool
-Expr * pool = NULL;
+Expr *pool = NULL;
 Expr *next_free_expr = NULL;
 Expr *last_expr = NULL; // ToDo: unsafe
 
 // query pool
-Expr ** next_query = NULL;
+uintptr_t *queue_query = NULL;
+uintptr_t *next_query = NULL;
 
 #if 0
 TCGOp * op_macro;
@@ -93,12 +94,12 @@ TCGOp * op_macro;
 void init_symbolic_mode(void)
 {
     int expr_pool_shm_id = shmget(EXPR_POOL_SHM_KEY, // IPC_PRIVATE,
-                                sizeof(Expr) * EXPR_POOL_CAPACITY, 0600);
+                                  sizeof(Expr) * EXPR_POOL_CAPACITY, 0666);
 
     assert(expr_pool_shm_id > 0);
 
     int query_shm_id = shmget(QUERY_SHM_KEY, // IPC_PRIVATE,
-                                sizeof(Expr *) * EXPR_POOL_CAPACITY, 0600);
+                              sizeof(Expr *) * EXPR_POOL_CAPACITY, 0666);
     assert(query_shm_id > 0);
 
     printf("POOL_SHM_ID=%d QUERY_SHM_ID=%d\n", expr_pool_shm_id, query_shm_id);
@@ -106,10 +107,16 @@ void init_symbolic_mode(void)
     pool = shmat(expr_pool_shm_id, NULL, 0);
     assert(pool);
 
-    next_query = shmat(expr_pool_shm_id, NULL, 0);
-    assert(next_query);
+    queue_query = shmat(query_shm_id, NULL, 0);
+    assert(queue_query);
+
+#if 0
+    for (size_t i = 0; i < EXPR_POOL_CAPACITY; i++)
+        assert(*(queue_query + i) == 0);
+#endif
 
     next_free_expr = pool;
+    next_query = queue_query;
 }
 
 static inline int count_free_temps(TCGContext *tcg_ctx)
@@ -726,7 +733,7 @@ static inline void allocate_new_expr(TCGTemp *t_out, TCGOp *op_in, TCGContext *t
     //assert(next_free_expr);
 
     TCGTemp *t_next_free_expr_addr = new_non_conflicting_temp(TCG_TYPE_PTR);
-    tcg_movi(t_next_free_expr_addr, (uintptr_t) &next_free_expr, 0, op_in, NULL, tcg_ctx);
+    tcg_movi(t_next_free_expr_addr, (uintptr_t)&next_free_expr, 0, op_in, NULL, tcg_ctx);
 
     TCGTemp *t_next_free_expr = new_non_conflicting_temp(TCG_TYPE_PTR);
     tcg_load_n(t_next_free_expr_addr, t_next_free_expr, 0, 0, 0, sizeof(uintptr_t), op_in, NULL, tcg_ctx);
@@ -1251,7 +1258,7 @@ static inline size_t get_mem_op_signextend(TCGMemOp mem_op)
     return mem_op & MO_SIGN;
 }
 
-static inline void qemu_load_helper (
+static inline void qemu_load_helper(
     uintptr_t orig_addr,
     uintptr_t mem_op_uidx,
     uintptr_t addr_idx,
@@ -1519,7 +1526,7 @@ static inline void qemu_load(TCGTemp *t_addr, TCGTemp *t_val, uintptr_t offset, 
     CHECK_TEMPS_COUNT(tcg_ctx);
 }
 
-static inline void qemu_store_helper (
+static inline void qemu_store_helper(
     uintptr_t orig_addr,
     uintptr_t mem_op_uidx,
     uintptr_t addr_idx,
@@ -1541,7 +1548,7 @@ static inline void qemu_store_helper (
     l2_page_t *l2_page = s_memory.table.entries[l1_page_idx];
     if (l2_page == NULL)
     {
-        if (s_temps[val_idx] == NULL)  // early exit
+        if (s_temps[val_idx] == NULL) // early exit
             return;
 
         l2_page = g_malloc0(sizeof(l2_page_t));
@@ -1552,7 +1559,7 @@ static inline void qemu_store_helper (
     l3_page_t *l3_page = l2_page->entries[l2_page_idx];
     if (l3_page == NULL)
     {
-        if (s_temps[val_idx] == NULL)  // early exit
+        if (s_temps[val_idx] == NULL) // early exit
             return;
 
         l3_page = g_malloc0(sizeof(l3_page_t));
@@ -1574,7 +1581,7 @@ static inline void qemu_store_helper (
             Expr *e = new_expr();
             e->opkind = EXTRACT8;
             e->op1 = s_temps[val_idx];
-            e->op2 = (Expr *) i;
+            e->op2 = (Expr *)i;
             l3_page->entries[l3_page_idx + i] = e;
         }
     }
@@ -1589,7 +1596,7 @@ static inline void qemu_store(TCGTemp *t_addr, TCGTemp *t_val, uintptr_t offset,
     // number of bytes to store
     size_t size = get_mem_op_size(mem_op);
 
-    TCGOp __attribute__((unused))  *op;
+    TCGOp __attribute__((unused)) * op;
 
     // check whether val is concrete
     size_t val_idx = temp_idx(t_val);
@@ -1891,45 +1898,57 @@ static TCGCond check_branch_cond_helper(uintptr_t a, uintptr_t b, TCGCond cond)
 {
     switch (cond)
     {
-        case TCG_COND_NEVER:;
-            tcg_abort();
-        case TCG_COND_ALWAYS:
-            tcg_abort();
-        //
-        case TCG_COND_EQ:
-            if (a == b) return TCG_COND_EQ;
-            else return TCG_COND_NE;
-        case TCG_COND_NE:
-            if (a != b) return TCG_COND_NE;
-            else return TCG_COND_EQ;
-        //
-        case TCG_COND_LTU:
-            if (a < b) return TCG_COND_LTU;
-            else return TCG_COND_GEU;
-        case TCG_COND_LEU:
-            if (a <= b) return TCG_COND_LEU;
-            else return TCG_COND_GTU;
-        case TCG_COND_GEU:
-            if (a > b) return TCG_COND_GTU;
-            else return TCG_COND_LEU;
-        case TCG_COND_GTU:
-            if (a >= b) return TCG_COND_GEU;
-            else return TCG_COND_LTU;
-        //
-        default:
-            tcg_abort();
+    case TCG_COND_NEVER:;
+        tcg_abort();
+    case TCG_COND_ALWAYS:
+        tcg_abort();
+    //
+    case TCG_COND_EQ:
+        if (a == b)
+            return TCG_COND_EQ;
+        else
+            return TCG_COND_NE;
+    case TCG_COND_NE:
+        if (a != b)
+            return TCG_COND_NE;
+        else
+            return TCG_COND_EQ;
+    //
+    case TCG_COND_LTU:
+        if (a < b)
+            return TCG_COND_LTU;
+        else
+            return TCG_COND_GEU;
+    case TCG_COND_LEU:
+        if (a <= b)
+            return TCG_COND_LEU;
+        else
+            return TCG_COND_GTU;
+    case TCG_COND_GEU:
+        if (a > b)
+            return TCG_COND_GTU;
+        else
+            return TCG_COND_LEU;
+    case TCG_COND_GTU:
+        if (a >= b)
+            return TCG_COND_GEU;
+        else
+            return TCG_COND_LTU;
+    //
+    default:
+        tcg_abort();
     }
 }
 
-
 static void branch_helper(uintptr_t a, uintptr_t b, uintptr_t cond,
-                    uintptr_t a_idx, uintptr_t b_idx, uintptr_t pc)
+                          uintptr_t a_idx, uintptr_t b_idx, uintptr_t pc)
 {
-    Expr * expr_a = s_temps[a_idx];
-    Expr * expr_b = s_temps[b_idx];
-    if (expr_a == NULL && expr_b == NULL) return; // early exit
+    Expr *expr_a = s_temps[a_idx];
+    Expr *expr_b = s_temps[b_idx];
+    if (expr_a == NULL && expr_b == NULL)
+        return; // early exit
 
-    Expr * branch_expr = new_expr();
+    Expr *branch_expr = new_expr();
 
     TCGCond sat_cond = check_branch_cond_helper(a, b, cond);
     branch_expr->opkind = get_opkind_from_cond(sat_cond);
@@ -1938,7 +1957,7 @@ static void branch_helper(uintptr_t a, uintptr_t b, uintptr_t cond,
         branch_expr->op1 = expr_a;
     else
     {
-        branch_expr->op1 = (Expr *)(uintptr_t) a;
+        branch_expr->op1 = (Expr *)(uintptr_t)a;
         branch_expr->op1_is_const = 1;
     }
 
@@ -1946,26 +1965,69 @@ static void branch_helper(uintptr_t a, uintptr_t b, uintptr_t cond,
         branch_expr->op2 = expr_b;
     else
     {
-        branch_expr->op2 = (Expr *)(uintptr_t) b;
+        branch_expr->op2 = (Expr *)(uintptr_t)b;
         branch_expr->op2_is_const = 1;
     }
 
+    Expr * old_pi = NULL;
     if (path_constraints == NULL)
     {
         path_constraints = branch_expr;
     }
     else
     {
-        Expr * new_pi_expr = new_expr();
+        old_pi = path_constraints;
+        Expr *new_pi_expr = new_expr();
         new_pi_expr->opkind = AND;
         new_pi_expr->op1 = branch_expr;
-        new_pi_expr->op2 = path_constraints;
+        new_pi_expr->op2 = old_pi;
         path_constraints = new_pi_expr;
     }
 #ifdef SYMBOLIC_DEBUG
-    printf("Branch at %lx\n", pc);
+    //printf("Branch at %lx\n", pc);
     print_pi();
 #endif
+
+    // Invert branch and submit query
+
+    Expr *branch_neg_expr = new_expr();
+    branch_neg_expr->opkind = get_opkind_from_neg_cond(sat_cond);
+
+    if (expr_a)
+        branch_neg_expr->op1 = expr_a;
+    else
+    {
+        branch_neg_expr->op1 = (Expr *)(uintptr_t)a;
+        branch_neg_expr->op1_is_const = 1;
+    }
+
+    if (expr_b)
+        branch_neg_expr->op2 = expr_b;
+    else
+    {
+        branch_neg_expr->op2 = (Expr *)(uintptr_t)b;
+        branch_neg_expr->op2_is_const = 1;
+    }
+
+    Expr * query = branch_neg_expr;
+    if (old_pi)
+    {
+        query = new_expr();
+        query->opkind = AND;
+        query->op1 = branch_neg_expr;
+        query->op2 = old_pi;
+    }
+    printf("next_query: %p\n", next_query);
+    assert(*next_query == 0);
+    MEM_BARRIER();
+    *next_query = (uintptr_t) query;
+    MEM_BARRIER();
+    assert(*next_query != 0);
+    next_query++;
+    printf("next_query: %p\n", next_query);
+    assert(*next_query == 0);
+    assert(next_query < queue_query + EXPR_POOL_CAPACITY);
+    printf("Query submitted to solver\n");
 }
 
 static inline void branch(TCGTemp *t_op_a, TCGTemp *t_op_b, TCGCond cond, TCGOp *op_in, TCGContext *tcg_ctx)
@@ -2130,7 +2192,7 @@ static int instrument = 0;
 static int first_load = 0;
 void parse_translation_block(TranslationBlock *tb, uintptr_t tb_pc, uint8_t *tb_code, TCGContext *tcg_ctx)
 {
-    TCGOp __attribute__((unused)) *op;
+    TCGOp __attribute__((unused)) * op;
     uintptr_t pc = 0;
     QTAILQ_FOREACH(op, &tcg_ctx->ops, link)
     {
@@ -2142,7 +2204,10 @@ void parse_translation_block(TranslationBlock *tb, uintptr_t tb_pc, uint8_t *tb_
             if (instrument == 0 && pc == START)
                 instrument = 1;
             else if (instrument == 1 && pc == STOP)
+            {
                 instrument = 0;
+                *next_query = FINAL_QUERY;
+            }
 
             if (instrument)
             {
@@ -2296,13 +2361,13 @@ void parse_translation_block(TranslationBlock *tb, uintptr_t tb_pc, uint8_t *tb_
                 branch(t_a, t_b, cond, op, tcg_ctx);
 #else
                 TCGTemp *t_cond = new_non_conflicting_temp(TCG_TYPE_PTR);
-                tcg_movi(t_cond, (uintptr_t) cond, 0, op, NULL, tcg_ctx);
+                tcg_movi(t_cond, (uintptr_t)cond, 0, op, NULL, tcg_ctx);
                 TCGTemp *t_a_idx = new_non_conflicting_temp(TCG_TYPE_PTR);
-                tcg_movi(t_a_idx, (uintptr_t) temp_idx(t_a), 0, op, NULL, tcg_ctx);
+                tcg_movi(t_a_idx, (uintptr_t)temp_idx(t_a), 0, op, NULL, tcg_ctx);
                 TCGTemp *t_b_idx = new_non_conflicting_temp(TCG_TYPE_PTR);
-                tcg_movi(t_b_idx, (uintptr_t) temp_idx(t_b), 0, op, NULL, tcg_ctx);
+                tcg_movi(t_b_idx, (uintptr_t)temp_idx(t_b), 0, op, NULL, tcg_ctx);
                 TCGTemp *t_pc = new_non_conflicting_temp(TCG_TYPE_PTR);
-                tcg_movi(t_pc, (uintptr_t) pc, 0, op, NULL, tcg_ctx);
+                tcg_movi(t_pc, (uintptr_t)pc, 0, op, NULL, tcg_ctx);
                 MARK_TEMP_AS_ALLOCATED(t_a);
                 MARK_TEMP_AS_ALLOCATED(t_b);
                 add_void_call_6(branch_helper,

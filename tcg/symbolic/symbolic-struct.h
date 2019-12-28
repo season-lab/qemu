@@ -1,9 +1,10 @@
 #ifndef SYMBOLIC_STRUCT_H
 #define SYMBOLIC_STRUCT_H
 
-#define EXPR_POOL_CAPACITY (256 * 1024)
-#define EXPR_POOL_SHM_KEY   0xDEADBEEF
+#define EXPR_POOL_CAPACITY  (256 * 1024)
+#define EXPR_POOL_SHM_KEY   (0xDEADBEEF + 2)
 #define QUERY_SHM_KEY       0xCAFECAFE
+#define FINAL_QUERY         0xDEAD
 
 typedef enum OPKIND
 {
@@ -83,5 +84,7 @@ typedef struct Expr
     uint8_t op2_is_const;
     uint8_t op3_is_const;
 } Expr;
+
+#define MEM_BARRIER() asm volatile("" ::: "memory")
 
 #endif // SYMBOLIC_STRUCT_H
