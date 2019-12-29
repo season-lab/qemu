@@ -1,10 +1,24 @@
 #ifndef SYMBOLIC_STRUCT_H
 #define SYMBOLIC_STRUCT_H
 
+#include <stdlib.h>
+#include <assert.h>
+
+// same as tcg_abort()
+#ifndef ABORT
+#define ABORT() \
+do {\
+    fprintf(stderr, "%s:%d: tcg fatal error\n", __FILE__, __LINE__);\
+    abort();\
+} while (0)
+#endif
+
 #define EXPR_POOL_CAPACITY  (256 * 1024)
 #define EXPR_POOL_SHM_KEY   (0xDEADBEEF + 2)
+#define EXPR_POOL_ADDR      ((const void *)0x7f05c8cc7000)
 #define QUERY_SHM_KEY       0xCAFECAFE
-#define FINAL_QUERY         0xDEAD
+#define FINAL_QUERY         ((void *)0xDEAD)
+#define MEM_BARRIER() asm volatile("" ::: "memory")
 
 typedef enum OPKIND
 {
@@ -85,6 +99,141 @@ typedef struct Expr
     uint8_t op3_is_const;
 } Expr;
 
-#define MEM_BARRIER() asm volatile("" ::: "memory")
+void print_expr_internal(Expr *expr, uint8_t reset);
+void print_expr(Expr *expr);
+const char *opkind_to_str(uint8_t opkind);
+
+extern Expr *pool;
+#define GET_EXPR_IDX(e) ((((uintptr_t)e) - ((uintptr_t)pool)) / sizeof(Expr))
+
+inline const char *opkind_to_str(uint8_t opkind)
+{
+    switch (opkind)
+    {
+    case ADD:
+        return "+";
+    case SUB:
+        return "-";
+
+    case AND:
+        return "&";
+    case OR:
+        return "|";
+
+    case EQ:
+        return "==";
+    case NE:
+        return "!=";
+
+    case LT:
+        return "<";
+    case LE:
+        return "<=";
+    case GE:
+        return ">=";
+    case GT:
+        return ">";
+
+    case LTU:
+        return "<u";
+    case LEU:
+        return "<=u";
+    case GEU:
+        return ">=u";
+    case GTU:
+        return ">u";
+
+    case ZEXT:
+        return "ZERO-EXTEND";
+    case SEXT:
+        return "SIGN-EXTEND";
+
+    case EXTRACT8:
+        return "EXTRACT";
+    case CONCAT8:
+        return "CONCAT";
+
+    default:
+        printf("\nstr(opkind=%u) is unknown\n", opkind);
+        ABORT();
+    }
+}
+
+#define MAX_PRINT_CHECK 1024
+uint8_t printed[MAX_PRINT_CHECK];
+inline void print_expr_internal(Expr *expr, uint8_t reset)
+{
+    if (reset)
+        for (size_t i = 0; i < MAX_PRINT_CHECK; i++)
+            printed[i] = 0;
+
+    printf("expr:");
+    //printf(" addr=%p", expr);
+    printf(" id=%lu", GET_EXPR_IDX(expr));
+    if (expr)
+    {
+        printf(" is_symbolic_input=%u", expr->opkind == IS_SYMBOLIC);
+        printf(" op1_is_const=%u", expr->op1_is_const);
+        printf(" op2_is_const=%u", expr->op2_is_const);
+        if (expr->opkind == IS_SYMBOLIC)
+            printf(" INPUT_%lu\n", (uintptr_t)expr->op1);
+        else if (expr->opkind == IS_CONST)
+            printf(" 0x%lu\n", (uintptr_t)expr->op1);
+        else
+        {
+
+            if (expr->op1_is_const || expr->op1 == NULL)
+                printf(" 0x%lx", (uintptr_t)expr->op1);
+            else
+                printf(" E_%lu", GET_EXPR_IDX(expr->op1));
+
+            printf(" %s", opkind_to_str(expr->opkind));
+
+            if (expr->op2_is_const || expr->opkind == EXTRACT8 || expr->op2 == NULL)
+                printf(" 0x%lx", (uintptr_t)expr->op2);
+            else
+                printf(" E_%lu", GET_EXPR_IDX(expr->op2));
+            printf("\n");
+
+            // FixMe: this makes a mess
+
+            if (!expr->op1_is_const && expr->op1 != NULL)
+            {
+                assert(GET_EXPR_IDX(expr->op1) < MAX_PRINT_CHECK);
+                if (!printed[GET_EXPR_IDX(expr->op1)])
+                {
+                    printf("E_%lu:: ", GET_EXPR_IDX(expr->op1));
+                    print_expr_internal(expr->op1, 0);
+                    printed[GET_EXPR_IDX(expr->op1)] = 1;
+                }
+                if (expr->op1 == NULL)
+                    assert(expr->op2);
+            }
+
+            if (!expr->op2_is_const && expr->opkind != EXTRACT8 && expr->op2 != NULL)
+            {
+                assert(GET_EXPR_IDX(expr->op2) < MAX_PRINT_CHECK);
+                if (!printed[GET_EXPR_IDX(expr->op2)])
+                {
+                    printf("E_%lu:: ", GET_EXPR_IDX(expr->op2));
+                    print_expr_internal(expr->op2, 0);
+                    printed[GET_EXPR_IDX(expr->op2)] = 1;
+                }
+                if (expr->op2 == NULL)
+                    assert(expr->op1);
+            }
+        }
+    }
+    else
+    {
+        printf("\n");
+    }
+}
+
+inline void print_expr(Expr *expr)
+{
+    printf("\n");
+    print_expr_internal(expr, 1);
+}
 
 #endif // SYMBOLIC_STRUCT_H

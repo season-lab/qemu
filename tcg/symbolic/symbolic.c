@@ -104,11 +104,13 @@ void init_symbolic_mode(void)
 
     printf("POOL_SHM_ID=%d QUERY_SHM_ID=%d\n", expr_pool_shm_id, query_shm_id);
 
-    pool = shmat(expr_pool_shm_id, NULL, 0);
+    pool = shmat(expr_pool_shm_id, EXPR_POOL_ADDR, 0);
     assert(pool);
 
     queue_query = shmat(query_shm_id, NULL, 0);
     assert(queue_query);
+
+    //printf("POOL_ADDR=%p\n", pool);
 
 #if 0
     for (size_t i = 0; i < EXPR_POOL_CAPACITY; i++)
@@ -295,8 +297,6 @@ static inline void check_pool_expr_capacity(void)
     assert(next_free_expr >= pool);
     assert(next_free_expr < pool + EXPR_POOL_CAPACITY);
 }
-
-#define GET_EXPR_IDX(e) ((((uintptr_t)e) - ((uintptr_t)pool)) / sizeof(Expr))
 
 static inline Expr *new_expr(void)
 {
@@ -751,137 +751,6 @@ static inline void allocate_new_expr(TCGTemp *t_out, TCGOp *op_in, TCGContext *t
     tcg_store_n(t_next_free_expr_addr, t_next_free_expr, 0, 1, 1, sizeof(void *), op_in, NULL, tcg_ctx);
 
     CHECK_TEMPS_COUNT(tcg_ctx);
-}
-
-static inline const char *opkind_to_str(uint8_t opkind)
-{
-    switch (opkind)
-    {
-    case ADD:
-        return "+";
-    case SUB:
-        return "-";
-
-    case AND:
-        return "&";
-    case OR:
-        return "|";
-
-    case EQ:
-        return "==";
-    case NE:
-        return "!=";
-
-    case LT:
-        return "<";
-    case LE:
-        return "<=";
-    case GE:
-        return ">=";
-    case GT:
-        return ">";
-
-    case LTU:
-        return "<u";
-    case LEU:
-        return "<=u";
-    case GEU:
-        return ">=u";
-    case GTU:
-        return ">u";
-
-    case ZEXT:
-        return "ZERO-EXTEND";
-    case SEXT:
-        return "SIGN-EXTEND";
-
-    case EXTRACT8:
-        return "EXTRACT";
-    case CONCAT8:
-        return "CONCAT";
-
-    default:
-        printf("\nstr(opkind=%u) is unknown\n", opkind);
-        tcg_abort();
-    }
-}
-
-#define MAX_PRINT_CHECK 1024
-static uint8_t printed[MAX_PRINT_CHECK];
-
-static inline void print_expr_internal(Expr *expr, uint8_t reset)
-{
-    if (reset)
-        for (size_t i = 0; i < MAX_PRINT_CHECK; i++)
-            printed[i] = 0;
-
-    printf("expr:");
-    //printf(" addr=%p", expr);
-    printf(" id=%lu", GET_EXPR_IDX(expr));
-    if (expr)
-    {
-        printf(" is_symbolic_input=%u", expr->opkind == IS_SYMBOLIC);
-        printf(" op1_is_const=%u", expr->op1_is_const);
-        printf(" op2_is_const=%u", expr->op2_is_const);
-        if (expr->opkind == IS_SYMBOLIC)
-            printf(" INPUT_%lu\n", (uintptr_t)expr->op1);
-        else if (expr->opkind == IS_CONST)
-            printf(" 0x%lu\n", (uintptr_t)expr->op1);
-        else
-        {
-
-            if (expr->op1_is_const || expr->op1 == NULL)
-                printf(" 0x%lx", (uintptr_t)expr->op1);
-            else
-                printf(" E_%lu", GET_EXPR_IDX(expr->op1));
-
-            printf(" %s", opkind_to_str(expr->opkind));
-
-            if (expr->op2_is_const || expr->opkind == EXTRACT8 || expr->op2 == NULL)
-                printf(" 0x%lx", (uintptr_t)expr->op2);
-            else
-                printf(" E_%lu", GET_EXPR_IDX(expr->op2));
-            printf("\n");
-
-            // FixMe: this makes a mess
-
-            if (!expr->op1_is_const && expr->op1 != NULL)
-            {
-                assert(GET_EXPR_IDX(expr->op1) < MAX_PRINT_CHECK);
-                if (!printed[GET_EXPR_IDX(expr->op1)])
-                {
-                    printf("E_%lu:: ", GET_EXPR_IDX(expr->op1));
-                    print_expr_internal(expr->op1, 0);
-                    printed[GET_EXPR_IDX(expr->op1)] = 1;
-                }
-                if (expr->op1 == NULL)
-                    assert(expr->op2);
-            }
-
-            if (!expr->op2_is_const && expr->opkind != EXTRACT8 && expr->op2 != NULL)
-            {
-                assert(GET_EXPR_IDX(expr->op2) < MAX_PRINT_CHECK);
-                if (!printed[GET_EXPR_IDX(expr->op2)])
-                {
-                    printf("E_%lu:: ", GET_EXPR_IDX(expr->op2));
-                    print_expr_internal(expr->op2, 0);
-                    printed[GET_EXPR_IDX(expr->op2)] = 1;
-                }
-                if (expr->op2 == NULL)
-                    assert(expr->op1);
-            }
-        }
-    }
-    else
-    {
-        printf("\n");
-    }
-}
-
-static inline void print_expr(Expr *expr)
-{
-    printf("\n");
-    print_expr_internal(expr, 1);
 }
 
 // When adding instrumentation with branches and when accessing
