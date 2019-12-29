@@ -52,8 +52,8 @@ Expr *next_free_expr = NULL;
 Expr *last_expr = NULL; // ToDo: unsafe
 
 // query pool
-uintptr_t *queue_query = NULL;
-uintptr_t *next_query = NULL;
+Expr **queue_query = NULL;
+Expr **next_query = NULL;
 
 #if 0
 TCGOp * op_macro;
@@ -1889,7 +1889,7 @@ static void branch_helper(uintptr_t a, uintptr_t b, uintptr_t cond,
     printf("next_query: %p\n", next_query);
     assert(*next_query == 0);
     MEM_BARRIER();
-    *next_query = (uintptr_t) query;
+    *next_query = query;
     MEM_BARRIER();
     assert(*next_query != 0);
     next_query++;
