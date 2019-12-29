@@ -10,7 +10,7 @@
 #include "symbolic-struct.h"
 #include "symbolic.h"
 
-#define SYMBOLIC_DEBUG
+//#define SYMBOLIC_DEBUG
 
 // symbolic temps
 Expr *s_temps[TCG_MAX_TEMPS] = {0};
@@ -102,7 +102,7 @@ void init_symbolic_mode(void)
                               sizeof(Expr *) * EXPR_POOL_CAPACITY, 0666);
     assert(query_shm_id > 0);
 
-    printf("POOL_SHM_ID=%d QUERY_SHM_ID=%d\n", expr_pool_shm_id, query_shm_id);
+    //printf("POOL_SHM_ID=%d QUERY_SHM_ID=%d\n", expr_pool_shm_id, query_shm_id);
 
     pool = shmat(expr_pool_shm_id, EXPR_POOL_ADDR, 0);
     assert(pool);
@@ -1886,17 +1886,13 @@ static void branch_helper(uintptr_t a, uintptr_t b, uintptr_t cond,
         query->op1 = branch_neg_expr;
         query->op2 = old_pi;
     }
-    printf("next_query: %p\n", next_query);
     assert(*next_query == 0);
-    MEM_BARRIER();
     *next_query = query;
-    MEM_BARRIER();
     assert(*next_query != 0);
     next_query++;
-    printf("next_query: %p\n", next_query);
     assert(*next_query == 0);
     assert(next_query < queue_query + EXPR_POOL_CAPACITY);
-    printf("Query submitted to solver\n");
+    //printf("Query submitted to solver\n");
 }
 
 static inline void branch(TCGTemp *t_op_a, TCGTemp *t_op_b, TCGCond cond, TCGOp *op_in, TCGContext *tcg_ctx)
