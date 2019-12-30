@@ -8,9 +8,9 @@
 // basic binary, foo function
 #if TARGET_PROGRAM == TARGET_PROGRAM_SIMPLE_IF
 #define START 0x40054d
-#define STOP 0x400578
-#define REG "rdi"
-#define REG_AT 0x40054d
+#define STOP 0x40058c
+#define REG ""
+#define REG_AT 0x00000
 
 #elif TARGET_PROGRAM == TARGET_PROGRAM_ALL_CONCRETE
 #define START 0x4004fd

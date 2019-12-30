@@ -189,7 +189,8 @@ inline void print_expr_internal(Expr *expr, uint8_t reset)
 
             printf(" %s", opkind_to_str(expr->opkind));
 
-            if (expr->op2_is_const || expr->opkind == EXTRACT8 || expr->op2 == NULL)
+            if (expr->op2_is_const || expr->opkind == EXTRACT8 
+                || expr->opkind == ZEXT || expr->opkind == SEXT || expr->op2 == NULL)
                 printf(" 0x%lx", (uintptr_t)expr->op2);
             else
                 printf(" E_%lu", GET_EXPR_IDX(expr->op2));
@@ -210,7 +211,10 @@ inline void print_expr_internal(Expr *expr, uint8_t reset)
                     assert(expr->op2);
             }
 
-            if (!expr->op2_is_const && expr->opkind != EXTRACT8 && expr->op2 != NULL)
+            if (!expr->op2_is_const 
+                && expr->opkind != EXTRACT8 
+                && expr->opkind != ZEXT && expr->opkind != SEXT
+                && expr->op2 != NULL)
             {
                 assert(GET_EXPR_IDX(expr->op2) < MAX_PRINT_CHECK);
                 if (!printed[GET_EXPR_IDX(expr->op2)])

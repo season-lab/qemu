@@ -915,7 +915,11 @@ typedef struct TCGHelperInfo {
 static const TCGHelperInfo all_helpers[] = {
 #include "exec/helper-tcg.h"
 };
-static GHashTable *helper_table;
+
+#ifndef TCG_INSTRUMENTATION
+static
+#endif
+GHashTable *helper_table;
 
 static int indirect_reg_alloc_order[ARRAY_SIZE(tcg_target_reg_alloc_order)];
 static void process_op_defs(TCGContext *s);
@@ -1885,7 +1889,12 @@ static char *tcg_get_arg_str(TCGContext *s, char *buf,
 }
 
 /* Find helper name.  */
-static inline const char *tcg_find_helper(TCGContext *s, uintptr_t val)
+#ifdef TCG_INSTRUMENTATION
+const char *tcg_find_helper(TCGContext *s, uintptr_t val);
+#else
+static inline
+#endif
+const char *tcg_find_helper(TCGContext *s, uintptr_t val)
 {
     const char *ret = NULL;
     if (helper_table) {

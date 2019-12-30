@@ -55,6 +55,28 @@ Expr *last_expr = NULL; // ToDo: unsafe
 Expr **queue_query = NULL;
 Expr **next_query = NULL;
 
+// from tcg.c
+typedef struct TCGHelperInfo {
+    void *func;
+    const char *name;
+    unsigned flags;
+    unsigned sizemask;
+} TCGHelperInfo;
+
+// from tcg.c
+extern GHashTable *helper_table;
+extern const char *tcg_find_helper(TCGContext *s, uintptr_t val);
+#define str(s) #s
+// FLAGS | dh_callflag(ret),
+// dh_sizemask(ret, 0) },
+#define DEF_HELPER_INFO(HELPER_FUNC) \
+TCGHelperInfo helper_info_##HELPER_FUNC = { \
+    .func = HELPER_FUNC, \
+    .name = str(HELPER_FUNC), \
+    .flags = 0, \
+    .sizemask = 0 \
+};
+
 #if 0
 TCGOp * op_macro;
 #define ADD_VOID_CALL_0(f, op, tcg_ctx) ({do { \
@@ -307,10 +329,12 @@ static inline Expr *new_expr(void)
     return next_free_expr - 1;
 }
 
-static inline void print_reg(void)
+void print_reg(void);
+void print_reg(void)
 {
     debug_printf("%s is %ssymbolic\n", REG, s_temps[12]->opkind == IS_SYMBOLIC ? "" : "not ");
 }
+DEF_HELPER_INFO(print_reg);
 
 static inline void new_symbolic_expr(void)
 {
@@ -1213,11 +1237,21 @@ static inline void qemu_load_helper(
             }
             else
             {
-                e->op2 = exprs[i];
+                n_expr->op2 = exprs[i];
             }
 
             e = n_expr;
         }
+    }
+
+    if (size < 8)
+    {
+        Expr *n_expr = new_expr();
+        uintptr_t opkind = get_mem_op_signextend(mem_op) ? SEXT : ZEXT;
+        n_expr->opkind = opkind;
+        n_expr->op1 = e;
+        n_expr->op2 = (Expr *)(8 * size);
+        e = n_expr;
     }
 
     s_temps[val_idx] = e;
@@ -1409,7 +1443,7 @@ static inline void qemu_store_helper(
     // number of bytes to load
     size_t size = get_mem_op_size(mem_op);
 
-    //printf("Loading %lu bytes from %p at offset %lu\n", size, (void *)orig_addr, offset);
+    //printf("Storing %lu bytes from %p at offset %lu\n", size, (void *)orig_addr, offset);
 
     uintptr_t addr = orig_addr + offset;
 
@@ -2028,6 +2062,68 @@ static inline void branch(TCGTemp *t_op_a, TCGTemp *t_op_b, TCGCond cond, TCGOp 
     tcg_set_label(label_both_concrete, op_in, NULL, tcg_ctx);
 }
 
+static inline TCGTemp * tcg_find_temp_arch_reg(TCGContext * tcg_ctx, const char * reg_name)
+{
+    for (int i = 0; i < TCG_TARGET_NB_REGS; i++)
+    {
+        TCGTemp *t = &tcg_ctx->temps[i];
+        if (t->fixed_reg)
+            continue; // not a register
+        if (strcmp(t->name, reg_name) == 0)
+            return t;
+    }
+    tcg_abort();
+}
+
+// ToDo: support other archs/platforms
+#define SYSCALL_NR_READ     0
+#define FD_STDIN            0
+static uintptr_t symbolic_input_next_id = 0;
+static inline void qemu_syscall_helper(uintptr_t syscall_no, uintptr_t syscall_arg0,
+                            uintptr_t syscall_arg1, uintptr_t syscall_arg2)
+{
+    if (syscall_no != SYSCALL_NR_READ) return;
+    if (syscall_arg0 != FD_STDIN) return;
+
+    uintptr_t addr = syscall_arg1;
+    uintptr_t size = syscall_arg2;
+    printf("Marking as symbolic %lu bytes at 0x%lx during read from stdin\n", size, addr);
+
+    // expression for the entire input
+    Expr * e_input = new_expr();
+    e_input->opkind = IS_SYMBOLIC;
+    e_input->op1 = (Expr *) symbolic_input_next_id++; // ID
+    e_input->op2 = (Expr *) size;             // number of bytes
+
+    uintptr_t l1_page_idx = addr >> (L1_PAGE_BITS + L2_PAGE_BITS);
+    l2_page_t *l2_page = s_memory.table.entries[l1_page_idx];
+    if (l2_page == NULL)
+    {
+        l2_page = g_malloc0(sizeof(l2_page_t));
+        s_memory.table.entries[l1_page_idx] = l2_page;
+    }
+
+    uintptr_t l2_page_idx = (addr >> L2_PAGE_BITS) & 0xFFFF;
+    l3_page_t *l3_page = l2_page->entries[l2_page_idx];
+    if (l3_page == NULL)
+    {
+        l3_page = g_malloc0(sizeof(l3_page_t));
+        l2_page->entries[l2_page_idx] = l3_page;
+    }
+
+    uintptr_t l3_page_idx = addr & 0xFFFF;
+    assert(l3_page_idx + size < 1 << L3_PAGE_BITS); // ToDo: cross page access
+
+    for (size_t i = 0; i < size; i++)
+    {
+        Expr *e = new_expr();
+        e->opkind = EXTRACT8;
+        e->op1 = e_input;
+        e->op2 = (Expr *)i;
+        l3_page->entries[l3_page_idx + i] = e;
+    }
+}
+
 static inline EXTENDKIND get_extend_kind(TCGOpcode opkind)
 {
     switch (opkind)
@@ -2053,10 +2149,17 @@ static inline EXTENDKIND get_extend_kind(TCGOpcode opkind)
     }
 }
 
+static void register_helpers(void)
+{
+    g_hash_table_insert(helper_table, (gpointer)print_reg, (gpointer)&helper_info_print_reg);
+}
+
 static int instrument = 0;
 static int first_load = 0;
 void parse_translation_block(TranslationBlock *tb, uintptr_t tb_pc, uint8_t *tb_code, TCGContext *tcg_ctx)
 {
+    register_helpers();
+
     TCGOp __attribute__((unused)) * op;
     uintptr_t pc = 0;
     QTAILQ_FOREACH(op, &tcg_ctx->ops, link)
@@ -2149,7 +2252,7 @@ void parse_translation_block(TranslationBlock *tb, uintptr_t tb_pc, uint8_t *tb_
             {
                 TCGTemp *t_val = arg_temp(op->args[0]);
                 TCGTemp *t_ptr = arg_temp(op->args[1]);
-#if 1
+#if 0
                 TCGMemOp mem_op = get_memop(op->args[2]);
                 uintptr_t offset = (uintptr_t)get_mmuidx(op->args[2]);
                 qemu_load(t_ptr, t_val, offset, mem_op, op, tcg_ctx);
@@ -2269,6 +2372,44 @@ void parse_translation_block(TranslationBlock *tb, uintptr_t tb_pc, uint8_t *tb_
         case INDEX_op_goto_tb:
         case INDEX_op_exit_tb:
         case INDEX_op_brcond_i32: // skip when emulating 64 bit
+            break;
+
+        case INDEX_op_call:
+            for (size_t i = 0; i < TCGOP_CALLI(op); i++)
+                mark_temp_as_in_use(arg_temp(op->args[i]));
+            for (size_t i = 0; i < TCGOP_CALLO(op); i++)
+                mark_temp_as_in_use(arg_temp(op->args[TCGOP_CALLI(op) + i]));
+            if (instrument)
+            {
+                if (strcmp(tcg_find_helper(tcg_ctx, op->args[TCGOP_CALLI(op) + TCGOP_CALLO(op)]), "syscall") == 0)
+                {
+#if 0
+                    printf("Syscall\n");
+                    // ToDo: inline instrumentation
+#else
+                    // ToDo: support other archs/platforms
+                    // ToDo: reg temps could be located once for all in the init phase...
+                    // ToDo: rax should be an immediate, we should check it and
+                    //       only instrument the syscalls that we care for
+                    TCGTemp *t_syscall_no = tcg_find_temp_arch_reg(tcg_ctx, "rax");
+                    TCGTemp *t_syscall_arg0 = tcg_find_temp_arch_reg(tcg_ctx, "rdi");
+                    TCGTemp *t_syscall_arg1 = tcg_find_temp_arch_reg(tcg_ctx, "rsi");
+                    TCGTemp *t_syscall_arg2 = tcg_find_temp_arch_reg(tcg_ctx, "rdx");
+                    MARK_TEMP_AS_ALLOCATED(t_syscall_no);
+                    MARK_TEMP_AS_ALLOCATED(t_syscall_arg0);
+                    MARK_TEMP_AS_ALLOCATED(t_syscall_arg1);
+                    MARK_TEMP_AS_ALLOCATED(t_syscall_arg2);
+                    // ToDo: should mark bytes after the call
+                    add_void_call_4(qemu_syscall_helper,
+                                    t_syscall_no, t_syscall_arg0, t_syscall_arg1, t_syscall_arg2,
+                                    op, NULL, tcg_ctx);
+                    MARK_TEMP_AS_NOT_ALLOCATED(t_syscall_no);
+                    MARK_TEMP_AS_NOT_ALLOCATED(t_syscall_arg0);
+                    MARK_TEMP_AS_NOT_ALLOCATED(t_syscall_arg1);
+                    MARK_TEMP_AS_NOT_ALLOCATED(t_syscall_arg2);
+#endif
+                }
+            }
             break;
 
         default:
