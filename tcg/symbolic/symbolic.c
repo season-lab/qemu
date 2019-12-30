@@ -1201,20 +1201,20 @@ static inline void qemu_load_helper(
             Expr *n_expr = new_expr();
             n_expr->opkind = CONCAT8;
 
+            n_expr->op1 = e;
+
             if (exprs[i] == NULL)
             {
                 // fetch the concrete value, embed it in the expr
                 uint8_t *byte_addr = ((uint8_t *)addr) + i;
                 uint8_t byte = *byte_addr;
-                n_expr->op1 = (Expr *)((uintptr_t)byte);
-                n_expr->op1_is_const = 1;
+                n_expr->op2 = (Expr *)((uintptr_t)byte);
+                n_expr->op2_is_const = 1;
             }
             else
             {
-                e->op1 = exprs[i];
+                e->op2 = exprs[i];
             }
-
-            n_expr->op2 = e;
 
             e = n_expr;
         }
@@ -1311,7 +1311,7 @@ static inline void qemu_load(TCGTemp *t_addr, TCGTemp *t_val, uintptr_t offset, 
             tcg_movi(t_opkind, CONCAT8, 0, op_in, NULL, tcg_ctx);
             tcg_store_n(t_new_expr, t_opkind, offsetof(Expr, opkind), 0, 1, sizeof(uint8_t), op_in, NULL, tcg_ctx);
 
-            tcg_store_n(t_new_expr, t_expr, offsetof(Expr, op1), 0, 1, sizeof(Expr *), op_in, NULL, tcg_ctx);
+            tcg_store_n(t_new_expr, t_expr, offsetof(Expr, op2), 0, 1, sizeof(Expr *), op_in, NULL, tcg_ctx);
 
             // if expr is NULL, use the concrete value
 
@@ -1334,7 +1334,7 @@ static inline void qemu_load(TCGTemp *t_addr, TCGTemp *t_val, uintptr_t offset, 
             tcg_store_n(t_new_expr, t_one, offsetof(Expr, op1_is_const), 0, 1, sizeof(uint8_t), op_in, NULL, tcg_ctx);
 
             tcg_set_label(label_expr_is_not_null, op_in, NULL, tcg_ctx);
-            tcg_store_n(t_new_expr, t_exprs[i], offsetof(Expr, op2), 0, 1, sizeof(Expr *), op_in, NULL, tcg_ctx);
+            tcg_store_n(t_new_expr, t_exprs[i], offsetof(Expr, op1), 0, 1, sizeof(Expr *), op_in, NULL, tcg_ctx);
 
             //add_void_call_1(print_expr, t_new_expr, op_in, &op, tcg_ctx);
             //mark_insn_as_instrumentation(op);

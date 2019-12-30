@@ -36,7 +36,7 @@ typedef enum OPKIND
     DIVU,
     REM,
     REMU,
-    AND,
+    AND, // 11
     OR,
     XOR,
     SHL,
