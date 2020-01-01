@@ -6,7 +6,6 @@
 #include "qemu-common.h"
 #include "qemu/bitops.h"
 
-#include "config.h"
 #include "symbolic-struct.h"
 #include "symbolic.h"
 
@@ -113,6 +112,44 @@ TCGOp * op_macro;
     } while (0);
 #endif
 
+static uintptr_t symbolic_exec_start_addr = 0;
+static uintptr_t symbolic_exec_stop_addr = 0;
+static const char * symbolic_exec_reg_name = NULL;
+static uintptr_t symbolic_exec_reg_addr = 0;
+
+static inline void load_configuration(void)
+{
+    char * var = getenv("SYMBOLIC_EXEC_START_ADDR");
+    if (var)
+    {
+        symbolic_exec_start_addr = (uintptr_t) strtoll(var, NULL, 16);
+        assert(symbolic_exec_start_addr != LONG_MIN && symbolic_exec_start_addr != LONG_MAX);
+    }
+    assert(symbolic_exec_start_addr != 0 && "Need to specify symbolic exec start address.");
+
+    var = getenv("SYMBOLIC_EXEC_STOP_ADDR");
+    if (var)
+    {
+        symbolic_exec_stop_addr = (uintptr_t) strtoll(var, NULL, 16);
+        assert(symbolic_exec_stop_addr != LONG_MIN && symbolic_exec_stop_addr != LONG_MAX);
+    }
+    assert(symbolic_exec_stop_addr != 0 && "Need to specify symbolic exec stop address.");
+
+    symbolic_exec_reg_name = getenv("SYMBOLIC_EXEC_REG_NAME");
+
+    var = getenv("SYMBOLIC_EXEC_REG_ADDR");
+    if (var)
+    {
+        symbolic_exec_reg_addr = (uintptr_t) strtoll(var, NULL, 16);
+        assert(symbolic_exec_reg_addr != LONG_MIN && symbolic_exec_reg_addr != LONG_MAX);
+        assert(symbolic_exec_reg_name && "Need to specify symbolic exec register name.");
+    }
+    else
+    {
+        assert(symbolic_exec_reg_name == NULL && "Need to specify symbolic exec register address.");
+    }
+}
+
 void init_symbolic_mode(void)
 {
     int expr_pool_shm_id = shmget(EXPR_POOL_SHM_KEY, // IPC_PRIVATE,
@@ -141,6 +178,9 @@ void init_symbolic_mode(void)
 
     next_free_expr = pool;
     next_query = queue_query;
+
+    // configuration
+    load_configuration();
 }
 
 static inline int count_free_temps(TCGContext *tcg_ctx)
@@ -2169,9 +2209,9 @@ void parse_translation_block(TranslationBlock *tb, uintptr_t tb_pc, uint8_t *tb_
 
         case INDEX_op_insn_start:
             pc = op->args[0];
-            if (instrument == 0 && pc == START)
+            if (instrument == 0 && pc == symbolic_exec_start_addr)
                 instrument = 1;
-            else if (instrument == 1 && pc == STOP)
+            else if (instrument == 1 && pc == symbolic_exec_stop_addr)
             {
                 instrument = 0;
                 *next_query = FINAL_QUERY;
@@ -2180,8 +2220,8 @@ void parse_translation_block(TranslationBlock *tb, uintptr_t tb_pc, uint8_t *tb_
             if (instrument)
             {
                 debug_printf("Instrumenting %lx\n", op->args[0]);
-                if (pc == REG_AT)
-                    make_reg_symbolic(REG, op, tcg_ctx);
+                if (pc == symbolic_exec_reg_addr)
+                    make_reg_symbolic(symbolic_exec_reg_name, op, tcg_ctx);
             }
             break;
 
