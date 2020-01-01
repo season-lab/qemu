@@ -372,7 +372,7 @@ static inline Expr *new_expr(void)
 void print_reg(void);
 void print_reg(void)
 {
-    debug_printf("%s is %ssymbolic\n", REG, s_temps[12]->opkind == IS_SYMBOLIC ? "" : "not ");
+    debug_printf("%s is %ssymbolic\n", symbolic_exec_reg_name, s_temps[12]->opkind == IS_SYMBOLIC ? "" : "not ");
 }
 DEF_HELPER_INFO(print_reg);
 
@@ -724,6 +724,14 @@ static inline void init_reg(size_t reg, TCGOp *op_in, TCGContext *tcg_ctx)
     TCGTemp *t_last_expr = new_non_conflicting_temp(TCG_TYPE_PTR);
     tcg_movi(t_last_expr, (uintptr_t)&last_expr, 0, op_in, NULL, tcg_ctx);
     tcg_load_n(t_last_expr, t_last_expr, 0, 0, 0, sizeof(uintptr_t), op_in, NULL, tcg_ctx);
+
+    TCGTemp *t_reg_id = new_non_conflicting_temp(TCG_TYPE_PTR);
+    tcg_movi(t_reg_id, (uintptr_t) reg, 0, op_in, NULL, tcg_ctx);
+    tcg_store_n(t_last_expr, t_reg_id, offsetof(Expr, op1), 0, 1, sizeof(uintptr_t), op_in, NULL, tcg_ctx);
+
+    TCGTemp *t_reg_size = new_non_conflicting_temp(TCG_TYPE_PTR);
+    tcg_movi(t_reg_size, (uintptr_t) 8, 0, op_in, NULL, tcg_ctx);
+    tcg_store_n(t_last_expr, t_reg_size, offsetof(Expr, op2), 0, 1, sizeof(uintptr_t), op_in, NULL, tcg_ctx);
 
     TCGTemp *t_dst = new_non_conflicting_temp(TCG_TYPE_PTR);
     tcg_movi(t_dst, (uintptr_t)&s_temps[reg], 0, op_in, NULL, tcg_ctx);
