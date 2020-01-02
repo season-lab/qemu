@@ -128,13 +128,25 @@ static inline void    load_configuration(void)
     assert(s_config.symbolic_exec_stop_addr != 0 &&
            "Need to specify symbolic exec stop address.");
 
+    var = getenv("SYMBOLIC_INJECT_INPUT_MODE");
+    if (var) {
+        if (strcmp(var, "READ_FD_0") == 0)
+            s_config.symbolic_inject_input_mode = READ_FD_0;
+        if (strcmp(var, "REG") == 0)
+            s_config.symbolic_inject_input_mode = REG;
+        if (strcmp(var, "BUFFER") == 0)
+            s_config.symbolic_inject_input_mode = BUFFER;
+    }
+    assert(s_config.symbolic_inject_input_mode != NO_INPUT &&
+            "Need to specify symbolic exec injection input mode.");
+
     s_config.symbolic_exec_reg_name = getenv("SYMBOLIC_EXEC_REG_NAME");
 
-    var = getenv("SYMBOLIC_EXEC_REG_ADDR");
+    var = getenv("SYMBOLIC_EXEC_REG_INSTR_ADDR");
     if (var) {
-        s_config.symbolic_exec_reg_addr = (uintptr_t)strtoll(var, NULL, 16);
-        assert(s_config.symbolic_exec_reg_addr != LONG_MIN &&
-               s_config.symbolic_exec_reg_addr != LONG_MAX);
+        s_config.symbolic_exec_reg_instr_addr = (uintptr_t)strtoll(var, NULL, 16);
+        assert(s_config.symbolic_exec_reg_instr_addr != LONG_MIN &&
+               s_config.symbolic_exec_reg_instr_addr != LONG_MAX);
         assert(s_config.symbolic_exec_reg_name &&
                "Need to specify symbolic exec register name.");
     } else {
@@ -2297,7 +2309,7 @@ void       parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
 
                 if (instrument) {
                     debug_printf("Instrumenting %lx\n", op->args[0]);
-                    if (pc == s_config.symbolic_exec_reg_addr)
+                    if (pc == s_config.symbolic_exec_reg_instr_addr)
                         make_reg_symbolic(s_config.symbolic_exec_reg_name, op,
                                           tcg_ctx);
                 }
