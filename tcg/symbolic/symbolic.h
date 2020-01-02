@@ -24,89 +24,95 @@ static inline void gen_helper_pcounter(void)
 
 #define TCG_INSTRUMENTATION
 
-typedef enum RESTORE_LOC
-{
-  TO_REG,
-  TO_MEM,
-  TO_CONST
-} RESTORE_LOC;
+typedef enum RESTORE_LOC { TO_REG, TO_MEM, TO_CONST } RESTORE_LOC;
 
-typedef struct temp_to_restore_t
-{
-  TCGTemp *ts;
-  RESTORE_LOC where;
-  TCGReg reg;
-  intptr_t mem_offset;
-  tcg_target_long const_val;
+typedef struct temp_to_restore_t {
+    TCGTemp*        ts;
+    RESTORE_LOC     where;
+    TCGReg          reg;
+    intptr_t        mem_offset;
+    tcg_target_long const_val;
 } temp_to_restore_t;
 
 // FixMe: refactor this
-#define DEFINE_TEMPS_TO_RECOVER(temps_to_restore_var, temp_to_restores_count) \
-  temp_to_restore_t temps_to_restore_var[TCG_MAX_TEMPS];                      \
-  size_t temp_to_restores_count = 0;
+#define DEFINE_TEMPS_TO_RECOVER(temps_to_restore_var, temp_to_restores_count)  \
+    temp_to_restore_t temps_to_restore_var[TCG_MAX_TEMPS];                     \
+    size_t            temp_to_restores_count = 0;
 
-inline uint8_t is_instrumentation(const TCGOp *op)
+inline uint8_t is_instrumentation(const TCGOp* op)
 {
-  return op->args[MAX_OPC_PARAM - 1] == 1;
+    return op->args[MAX_OPC_PARAM - 1] == 1;
 }
 
-inline void add_temp_reg_to_restore(TCGTemp *ts, TCGReg reg, temp_to_restore_t *temps_to_restore, size_t *temps_to_restore_count)
+inline void add_temp_reg_to_restore(TCGTemp* ts, TCGReg reg,
+                                    temp_to_restore_t* temps_to_restore,
+                                    size_t*            temps_to_restore_count)
 {
-  size_t i = *temps_to_restore_count;
-  (*temps_to_restore_count)++;
-  assert(*temps_to_restore_count < TCG_MAX_TEMPS);
-  assert(ts->val_type == TEMP_VAL_REG);
-  temps_to_restore[i].ts = ts;
-  temps_to_restore[i].ts->mem_coherent = 0;
-  temps_to_restore[i].reg = reg;
-  temps_to_restore[i].where = TO_REG;
+    size_t i = *temps_to_restore_count;
+    (*temps_to_restore_count)++;
+    assert(*temps_to_restore_count < TCG_MAX_TEMPS);
+    assert(ts->val_type == TEMP_VAL_REG);
+    temps_to_restore[i].ts               = ts;
+    temps_to_restore[i].ts->mem_coherent = 0;
+    temps_to_restore[i].reg              = reg;
+    temps_to_restore[i].where            = TO_REG;
 }
 
 // from tcg.c
-void tcg_reg_free(TCGContext *s, TCGReg reg, TCGRegSet allocated_regs);
-void temp_load(TCGContext *, TCGTemp *, TCGRegSet, TCGRegSet, TCGRegSet);
+void tcg_reg_free(TCGContext* s, TCGReg reg, TCGRegSet allocated_regs);
+void temp_load(TCGContext*, TCGTemp*, TCGRegSet, TCGRegSet, TCGRegSet);
 
-static inline void add_temp_const_to_restore(TCGTemp *ts, tcg_target_long const_val, temp_to_restore_t *temps_to_restore, size_t *temps_to_restore_count)
+static inline void
+add_temp_const_to_restore(TCGTemp* ts, tcg_target_long const_val,
+                          temp_to_restore_t* temps_to_restore,
+                          size_t*            temps_to_restore_count)
 {
-  size_t i = *temps_to_restore_count;
-  (*temps_to_restore_count)++;
-  assert(*temps_to_restore_count < TCG_MAX_TEMPS);
-  assert(ts->val_type == TEMP_VAL_CONST);
-  temps_to_restore[i].ts = ts;
-  temps_to_restore[i].where = TO_CONST;
-  temps_to_restore[i].const_val = const_val;
+    size_t i = *temps_to_restore_count;
+    (*temps_to_restore_count)++;
+    assert(*temps_to_restore_count < TCG_MAX_TEMPS);
+    assert(ts->val_type == TEMP_VAL_CONST);
+    temps_to_restore[i].ts        = ts;
+    temps_to_restore[i].where     = TO_CONST;
+    temps_to_restore[i].const_val = const_val;
 
-  // it does not make sense to mark it as not mem coherent... right?
-  // temps_to_restore[i].ts->mem_coherent = 0;
+    // it does not make sense to mark it as not mem coherent... right?
+    // temps_to_restore[i].ts->mem_coherent = 0;
 }
 
-static inline void add_temp_mem_to_restore(TCGTemp *ts, TCGReg reg, intptr_t mem_offset, temp_to_restore_t *temps_to_restore, size_t *temps_to_restore_count)
+static inline void add_temp_mem_to_restore(TCGTemp* ts, TCGReg reg,
+                                           intptr_t           mem_offset,
+                                           temp_to_restore_t* temps_to_restore,
+                                           size_t* temps_to_restore_count)
 {
-  size_t i = *temps_to_restore_count;
-  (*temps_to_restore_count)++;
-  assert(*temps_to_restore_count < TCG_MAX_TEMPS);
-  assert(ts->val_type == TEMP_VAL_MEM);
-  temps_to_restore[i].ts = ts;
-  temps_to_restore[i].reg = reg;
-  temps_to_restore[i].mem_offset = mem_offset;
-  temps_to_restore[i].where = TO_MEM;
+    size_t i = *temps_to_restore_count;
+    (*temps_to_restore_count)++;
+    assert(*temps_to_restore_count < TCG_MAX_TEMPS);
+    assert(ts->val_type == TEMP_VAL_MEM);
+    temps_to_restore[i].ts         = ts;
+    temps_to_restore[i].reg        = reg;
+    temps_to_restore[i].mem_offset = mem_offset;
+    temps_to_restore[i].where      = TO_MEM;
 
-  // it does not make sense to mark it as not mem coherent... right?
-  // temps_to_restore[i].ts->mem_coherent = 0;
+    // it does not make sense to mark it as not mem coherent... right?
+    // temps_to_restore[i].ts->mem_coherent = 0;
 }
 
-static inline void restore_temp_to_reg(size_t i,  TCGRegSet allocated_regs, TCGContext *s, temp_to_restore_t *temps_to_restore, size_t *temps_to_restore_count)
+static inline void restore_temp_to_reg(size_t i, TCGRegSet allocated_regs,
+                                       TCGContext*        s,
+                                       temp_to_restore_t* temps_to_restore,
+                                       size_t* temps_to_restore_count)
 {
-  tcg_debug_assert(!temps_to_restore[i].ts->fixed_reg);
-  tcg_reg_free(s, temps_to_restore[i].reg, allocated_regs);
-  tcg_regset_reset_reg(allocated_regs, temps_to_restore[i].reg);
-  TCGRegSet arg_set = 0;
-  tcg_regset_set_reg(arg_set, temps_to_restore[i].reg);
-  temp_load(s, temps_to_restore[i].ts, arg_set, allocated_regs, 0);
-  temps_to_restore[i].ts->mem_coherent = 0;
+    tcg_debug_assert(!temps_to_restore[i].ts->fixed_reg);
+    tcg_reg_free(s, temps_to_restore[i].reg, allocated_regs);
+    tcg_regset_reset_reg(allocated_regs, temps_to_restore[i].reg);
+    TCGRegSet arg_set = 0;
+    tcg_regset_set_reg(arg_set, temps_to_restore[i].reg);
+    temp_load(s, temps_to_restore[i].ts, arg_set, allocated_regs, 0);
+    temps_to_restore[i].ts->mem_coherent = 0;
 }
 
 void init_symbolic_mode(void);
-void parse_translation_block(TranslationBlock *tb, uintptr_t pc, uint8_t *tb_code, TCGContext *tcg_ctx);
+void parse_translation_block(TranslationBlock* tb, uintptr_t pc,
+                             uint8_t* tb_code, TCGContext* tcg_ctx);
 
 #endif // TCG_SYMBOLIC
