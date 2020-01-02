@@ -138,13 +138,14 @@ static inline void    load_configuration(void)
             s_config.symbolic_inject_input_mode = BUFFER;
     }
     assert(s_config.symbolic_inject_input_mode != NO_INPUT &&
-            "Need to specify symbolic exec injection input mode.");
+           "Need to specify symbolic exec injection input mode.");
 
     s_config.symbolic_exec_reg_name = getenv("SYMBOLIC_EXEC_REG_NAME");
 
     var = getenv("SYMBOLIC_EXEC_REG_INSTR_ADDR");
     if (var) {
-        s_config.symbolic_exec_reg_instr_addr = (uintptr_t)strtoll(var, NULL, 16);
+        s_config.symbolic_exec_reg_instr_addr =
+            (uintptr_t)strtoll(var, NULL, 16);
         assert(s_config.symbolic_exec_reg_instr_addr != LONG_MIN &&
                s_config.symbolic_exec_reg_instr_addr != LONG_MAX);
         assert(s_config.symbolic_exec_reg_name &&
@@ -379,7 +380,7 @@ static inline Expr* new_expr(void)
 void print_reg(void);
 void print_reg(void)
 {
-    debug_printf("%s is %ssymbolic\n", symbolic_exec_reg_name,
+    debug_printf("%s is %ssymbolic\n", s_config.symbolic_exec_reg_name,
                  s_temps[12]->opkind == IS_SYMBOLIC ? "" : "not ");
 }
 DEF_HELPER_INFO(print_reg);
@@ -1292,8 +1293,9 @@ static inline void qemu_load_helper(uintptr_t orig_addr, uintptr_t mem_op_uidx,
     Expr*   exprs[8]         = {NULL};
     uint8_t expr_is_not_null = 0;
     for (size_t i = 0; i < size; i++) {
-        exprs[i]         = l3_page->entries[l3_page_idx + i];
-        expr_is_not_null = expr_is_not_null | (exprs[i] != 0);
+        size_t idx       = (mem_op & MO_BE) ? i : size - i - 1;
+        exprs[idx]       = l3_page->entries[l3_page_idx + i];
+        expr_is_not_null = expr_is_not_null | (exprs[idx] != 0);
     }
 
     if (expr_is_not_null == 0) // early exit
@@ -1386,10 +1388,12 @@ static inline void qemu_load(TCGTemp* t_addr, TCGTemp* t_val, uintptr_t offset,
     TCGTemp* t_exprs[8] = {NULL};
 
     for (size_t i = 0; i < size; i++) {
-        t_exprs[i] = new_non_conflicting_temp(TCG_TYPE_PTR);
-        tcg_load_n(t_l3_page_idx_addr, t_exprs[i], sizeof(Expr*) * i,
+        size_t idx = (mem_op & MO_BE) ? i : size - i - 1;
+        t_exprs[idx] = new_non_conflicting_temp(TCG_TYPE_PTR);
+        tcg_load_n(t_l3_page_idx_addr, t_exprs[idx],
+                   sizeof(Expr*) * idx /* Why? Different from the helper but it works...*/,
                    i == size - 1, 0, sizeof(uintptr_t), op_in, NULL, tcg_ctx);
-        tcg_binop(t_expr_is_null, t_expr_is_null, t_exprs[i], 0, 0, 0, OR,
+        tcg_binop(t_expr_is_null, t_expr_is_null, t_exprs[idx], 0, 0, 0, OR,
                   op_in, NULL, tcg_ctx);
     }
 
@@ -1587,10 +1591,11 @@ static inline void qemu_store_helper(uintptr_t orig_addr, uintptr_t mem_op_uidx,
             l3_page->entries[l3_page_idx + i] = NULL;
     } else {
         for (size_t i = 0; i < size; i++) {
-            Expr* e                           = new_expr();
-            e->opkind                         = EXTRACT8;
-            e->op1                            = s_temps[val_idx];
-            e->op2                            = (Expr*)i;
+            Expr* e    = new_expr();
+            e->opkind  = EXTRACT8;
+            e->op1     = s_temps[val_idx];
+            size_t idx = (mem_op & MO_BE) ? i : size - i - 1;
+            e->op2     = (Expr*)idx;
             l3_page->entries[l3_page_idx + i] = e;
         }
     }
@@ -1673,7 +1678,8 @@ static inline void qemu_store(TCGTemp* t_addr, TCGTemp* t_val, uintptr_t offset,
         // mark_insn_as_instrumentation(op);
 
         // set Expr
-        tcg_store_n(t_l3_page_idx_addr, t_new_expr, sizeof(Expr*) * i,
+        size_t idx = (mem_op & MO_BE) ? i : size - i - 1;
+        tcg_store_n(t_l3_page_idx_addr, t_new_expr, sizeof(Expr*) * idx,
                     i == size - 1, 1, sizeof(void*), op_in, NULL, tcg_ctx);
     }
 
@@ -2378,10 +2384,10 @@ void       parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                 if (instrument) {
                     TCGTemp* t_val = arg_temp(op->args[0]);
                     TCGTemp* t_ptr = arg_temp(op->args[1]);
-#if 0
-                TCGMemOp mem_op = get_memop(op->args[2]);
-                uintptr_t offset = (uintptr_t)get_mmuidx(op->args[2]);
-                qemu_load(t_ptr, t_val, offset, mem_op, op, tcg_ctx);
+#if 1
+                    TCGMemOp  mem_op = get_memop(op->args[2]);
+                    uintptr_t offset = (uintptr_t)get_mmuidx(op->args[2]);
+                    qemu_load(t_ptr, t_val, offset, mem_op, op, tcg_ctx);
 #else
                     MARK_TEMP_AS_ALLOCATED(t_ptr);
                     TCGTemp* t_mem_op = new_non_conflicting_temp(TCG_TYPE_PTR);
