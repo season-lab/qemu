@@ -10,7 +10,7 @@
 #include "symbolic.h"
 #include "config.h"
 
-//#define SYMBOLIC_DEBUG
+#define SYMBOLIC_DEBUG
 
 // symbolic temps
 Expr* s_temps[TCG_MAX_TEMPS] = {0};
@@ -1343,11 +1343,11 @@ static inline void qemu_load_helper(uintptr_t orig_addr, uintptr_t mem_op_uidx,
         n_expr->op1      = e;
         n_expr->op2      = (Expr*)(8 * size);
         e                = n_expr;
-        //printf("Zero extending on load. %lu\n", (8 * size));
+        // printf("Zero extending on load. %lu\n", (8 * size));
     }
 
-    //printf("Load expr:\n");
-    //print_expr(e);
+    // printf("Load expr:\n");
+    // print_expr(e);
     s_temps[val_idx] = e;
 }
 
@@ -1391,10 +1391,11 @@ static inline void qemu_load(TCGTemp* t_addr, TCGTemp* t_val, uintptr_t offset,
     TCGTemp* t_exprs[8] = {NULL};
 
     for (size_t i = 0; i < size; i++) {
-        size_t idx = (mem_op & MO_BE) ? i : size - i - 1;
+        size_t idx   = (mem_op & MO_BE) ? i : size - i - 1;
         t_exprs[idx] = new_non_conflicting_temp(TCG_TYPE_PTR);
         tcg_load_n(t_l3_page_idx_addr, t_exprs[idx],
-                   sizeof(Expr*) * idx /* Why? Different from the helper but it works...*/,
+                   sizeof(Expr*) *
+                       idx /* Why? Different from the helper but it works...*/,
                    i == size - 1, 0, sizeof(uintptr_t), op_in, NULL, tcg_ctx);
         tcg_binop(t_expr_is_null, t_expr_is_null, t_exprs[idx], 0, 0, 0, OR,
                   op_in, NULL, tcg_ctx);
@@ -1719,9 +1720,9 @@ static inline void extend(TCGTemp* t_op_to, TCGTemp* t_op_from,
 
     // create a ZEXT 32 expr
 
-    //TCGOp *op;
-    //tcg_print_const_str("Zero-extending", op_in, &op, tcg_ctx);
-    //mark_insn_as_instrumentation(op);
+    // TCGOp *op;
+    // tcg_print_const_str("Zero-extending", op_in, &op, tcg_ctx);
+    // mark_insn_as_instrumentation(op);
 
     allocate_new_expr(
         t_out, op_in,
@@ -2050,6 +2051,8 @@ static void branch_helper(uintptr_t a, uintptr_t b, uintptr_t cond,
 static inline void branch(TCGTemp* t_op_a, TCGTemp* t_op_b, TCGCond cond,
                           TCGOp* op_in, TCGContext* tcg_ctx)
 {
+    SAVE_TEMPS_COUNT(tcg_ctx);
+
     // check if both t_op_a and t_op_b are concrete
     // if this is true, skip any further work
 
@@ -2197,6 +2200,8 @@ static inline void branch(TCGTemp* t_op_a, TCGTemp* t_op_b, TCGCond cond,
 #endif
 
     tcg_set_label(label_both_concrete, op_in, NULL, tcg_ctx);
+
+    CHECK_TEMPS_COUNT(tcg_ctx);
 }
 
 static inline TCGTemp* tcg_find_temp_arch_reg(TCGContext* tcg_ctx,
@@ -2261,6 +2266,45 @@ static inline void qemu_syscall_helper(uintptr_t syscall_no,
         e->op2                            = (Expr*)i;
         l3_page->entries[l3_page_idx + i] = e;
     }
+}
+
+static inline void qemu_movcond(TCGTemp* t_op_out, TCGTemp* t_op_a,
+                                TCGTemp* t_op_b, TCGTemp* t_op_true,
+                                TCGTemp* t_op_false, TCGCond cond, TCGOp* op_in,
+                                TCGContext* tcg_ctx)
+{
+    SAVE_TEMPS_COUNT(tcg_ctx);
+
+    size_t op_out_idx   = temp_idx(t_op_out);
+    size_t op_true_idx  = temp_idx(t_op_true);
+    size_t op_false_idx = temp_idx(t_op_false);
+
+    TCGTemp* t_true = new_non_conflicting_temp(TCG_TYPE_I64);
+    tcg_movi(t_true, (uintptr_t)&s_temps[op_true_idx], 0, op_in, NULL, tcg_ctx);
+    tcg_load_n(t_true, t_true, 0, 0, 0, sizeof(uintptr_t), op_in, NULL,
+               tcg_ctx);
+
+    TCGTemp* t_false = new_non_conflicting_temp(TCG_TYPE_I64);
+    tcg_movi(t_false, (uintptr_t)&s_temps[op_false_idx], 0, op_in, NULL,
+             tcg_ctx);
+    tcg_load_n(t_false, t_false, 0, 0, 0, sizeof(uintptr_t), op_in, NULL,
+               tcg_ctx);
+
+    TCGTemp* t_out = new_non_conflicting_temp(TCG_TYPE_I64);
+    MARK_TEMP_AS_ALLOCATED(t_op_a);
+    MARK_TEMP_AS_ALLOCATED(t_op_b);
+    tcg_cmov(t_out, t_op_a, t_op_b, t_true, t_false, cond, 0, 0, 0, 1, 1, op_in,
+             NULL, tcg_ctx);
+    MARK_TEMP_AS_NOT_ALLOCATED(t_op_a);
+    MARK_TEMP_AS_NOT_ALLOCATED(t_op_b);
+
+    TCGTemp* t_out_addr = new_non_conflicting_temp(TCG_TYPE_I64);
+    tcg_movi(t_out_addr, (uintptr_t)&s_temps[op_out_idx], 0, op_in, NULL,
+             tcg_ctx);
+    tcg_store_n(t_out_addr, t_out, 0, 1, 1, sizeof(uintptr_t), op_in, NULL,
+                tcg_ctx);
+
+    CHECK_TEMPS_COUNT(tcg_ctx);
 }
 
 static inline EXTENDKIND get_extend_kind(TCGOpcode opkind)
@@ -2508,7 +2552,7 @@ void       parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
             case INDEX_op_goto_ptr:
             case INDEX_op_goto_tb:
             case INDEX_op_exit_tb:
-            case INDEX_op_brcond_i32: // skip when emulating 64 bit
+            case INDEX_op_brcond_i32: // skip when emulating 64 bit?
                 break;
 
             case INDEX_op_call:
@@ -2553,6 +2597,23 @@ void       parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                         MARK_TEMP_AS_NOT_ALLOCATED(t_syscall_arg2);
 #endif
                     }
+                }
+                break;
+
+            case INDEX_op_movcond_i64:
+                mark_temp_as_in_use(arg_temp(op->args[0]));
+                mark_temp_as_in_use(arg_temp(op->args[1]));
+                mark_temp_as_in_use(arg_temp(op->args[2]));
+                mark_temp_as_in_use(arg_temp(op->args[3]));
+                if (instrument) {
+                    TCGTemp* t_out   = arg_temp(op->args[0]);
+                    TCGTemp* t_a     = arg_temp(op->args[1]);
+                    TCGTemp* t_b     = arg_temp(op->args[2]);
+                    TCGTemp* t_true  = arg_temp(op->args[3]);
+                    TCGTemp* t_false = arg_temp(op->args[4]);
+                    TCGCond  cond    = op->args[5];
+                    qemu_movcond(t_out, t_a, t_b, t_true, t_false, cond, op,
+                                 tcg_ctx);
                 }
                 break;
 
