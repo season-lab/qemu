@@ -1343,8 +1343,11 @@ static inline void qemu_load_helper(uintptr_t orig_addr, uintptr_t mem_op_uidx,
         n_expr->op1      = e;
         n_expr->op2      = (Expr*)(8 * size);
         e                = n_expr;
+        //printf("Zero extending on load. %lu\n", (8 * size));
     }
 
+    //printf("Load expr:\n");
+    //print_expr(e);
     s_temps[val_idx] = e;
 }
 
@@ -1716,9 +1719,9 @@ static inline void extend(TCGTemp* t_op_to, TCGTemp* t_op_from,
 
     // create a ZEXT 32 expr
 
-    // TCGOp *op;
-    // tcg_print_const_str("Zero-extending", op_in, &op, tcg_ctx);
-    // mark_insn_as_instrumentation(op);
+    //TCGOp *op;
+    //tcg_print_const_str("Zero-extending", op_in, &op, tcg_ctx);
+    //mark_insn_as_instrumentation(op);
 
     allocate_new_expr(
         t_out, op_in,
