@@ -69,6 +69,9 @@
 // added due to inline functions in symbolic.h
 
 #include "symbolic/symbolic.h"
+#ifdef TCG_INSTRUMENTATION
+int symbolic_force_flush_cache = 0;
+#endif
 
 /* Forward declarations for functions declared in tcg-target.inc.c and
    used here. */
@@ -4223,8 +4226,9 @@ int tcg_gen_code(TCGContext *s, TranslationBlock *tb)
 #endif
 
 #ifdef TCG_INSTRUMENTATION
-    if (symbolic_mode)
-        parse_translation_block(tb, tb->pc, tb->tc.ptr, tcg_ctx);
+    if (symbolic_mode) {
+        symbolic_force_flush_cache = parse_translation_block(tb, tb->pc, tb->tc.ptr, tcg_ctx);
+    }
 #endif
 
 #ifdef DEBUG_DISAS

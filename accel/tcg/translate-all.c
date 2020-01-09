@@ -58,6 +58,8 @@
 #include "sysemu/cpus.h"
 #include "sysemu/tcg.h"
 
+#include "../../../tcg/symbolic/symbolic-instrumentation.h"
+
 /* #define DEBUG_TB_INVALIDATE */
 /* #define DEBUG_TB_FLUSH */
 /* make various TB consistency checks */
@@ -1759,6 +1761,11 @@ TranslationBlock *tb_gen_code(CPUState *cpu,
 #endif
 
     gen_code_size = tcg_gen_code(tcg_ctx, tb);
+#ifdef SYMBOLIC_INSTRUMENTATION
+    if (symbolic_force_flush_cache)
+        tb_flush(cpu);
+#endif
+
     if (unlikely(gen_code_size < 0)) {
         switch (gen_code_size) {
         case -1:

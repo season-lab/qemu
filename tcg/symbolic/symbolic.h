@@ -112,7 +112,7 @@ static inline void restore_temp_to_reg(size_t i, TCGRegSet allocated_regs,
 }
 
 void init_symbolic_mode(void);
-void parse_translation_block(TranslationBlock* tb, uintptr_t pc,
+int parse_translation_block(TranslationBlock* tb, uintptr_t pc,
                              uint8_t* tb_code, TCGContext* tcg_ctx);
 
 #endif // TCG_SYMBOLIC

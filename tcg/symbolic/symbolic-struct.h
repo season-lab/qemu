@@ -37,7 +37,7 @@ typedef enum OPKIND {
     REMU,
     AND, // 11
     OR,
-    XOR,
+    XOR, // 13
     SHL,
     SHR,
     SAR,
@@ -110,11 +110,20 @@ inline const char* opkind_to_str(uint8_t opkind)
             return "+";
         case SUB:
             return "-";
-
+        case DIV:
+            return "/";
+        case DIVU:
+            return "/u";
+        case REM:
+            return "\%";
+        case REMU:
+            return "\%u";
         case AND:
             return "&";
         case OR:
             return "|";
+        case XOR:
+            return "^";
 
         case EQ:
             return "==";
