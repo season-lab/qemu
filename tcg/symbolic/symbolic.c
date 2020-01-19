@@ -10,7 +10,7 @@
 #include "symbolic.h"
 #include "config.h"
 
-// #define SYMBOLIC_DEBUG
+//#define SYMBOLIC_DEBUG
 //#define DISABLE_SOLVER
 
 // symbolic temps
@@ -1518,7 +1518,7 @@ static inline void qemu_load_helper(uintptr_t orig_addr,
     uint8_t expr_is_not_null = 0;
     for (size_t i = 0; i < size; i++) {
         size_t idx       = (mem_op & MO_BE) ? i : size - i - 1;
-        exprs[i]       = l3_page->entries[l3_page_idx + idx];
+        exprs[i]         = l3_page->entries[l3_page_idx + idx];
         expr_is_not_null = expr_is_not_null | (exprs[idx] != 0);
     }
 
@@ -1577,8 +1577,8 @@ static inline void qemu_load_helper(uintptr_t orig_addr,
         // printf("Zero extending on load. %lu\n", (8 * size));
     }
 
-    // printf("Load expr:\n");
-    // print_expr(e);
+    //printf("Load expr:\n");
+    //print_expr(e);
     s_temps[val_idx] = e;
 }
 
@@ -1840,10 +1840,10 @@ static inline void qemu_store_helper(uintptr_t orig_addr,
             e->opkind  = EXTRACT8;
             e->op1     = s_temps[val_idx];
             size_t idx = (mem_op & MO_BE) ? size - i - 1 : i;
-            e->op2     = (Expr*) idx;
+            e->op2     = (Expr*)idx;
             l3_page->entries[l3_page_idx + i] = e;
             //printf("Storing byte at index %lu\n", i);
-            //print_expr(e);
+            // print_expr(e);
         }
     }
 }
@@ -1917,7 +1917,7 @@ static inline void qemu_store(TCGTemp* t_addr, TCGTemp* t_val, uintptr_t offset,
                     i == size - 1, sizeof(Expr*), op_in, NULL, tcg_ctx);
 
         TCGTemp* t_index = new_non_conflicting_temp(TCG_TYPE_I64);
-        tcg_movi(t_index, i, 0, op_in, NULL, tcg_ctx);
+        tcg_movi(t_index, size - i - 1, 0, op_in, NULL, tcg_ctx);
         tcg_store_n(t_new_expr, t_index, offsetof(Expr, op2), 0, 1,
                     sizeof(Expr*), op_in, NULL, tcg_ctx);
 
@@ -2218,7 +2218,7 @@ static TCGCond check_branch_cond_helper(uintptr_t a, uintptr_t b, TCGCond cond)
 }
 
 static void setcond_helper(uintptr_t a, uintptr_t b, uintptr_t cond,
-                          uintptr_t out_idx, uintptr_t a_idx, uintptr_t b_idx)
+                           uintptr_t out_idx, uintptr_t a_idx, uintptr_t b_idx)
 {
     Expr* expr_a = s_temps[a_idx];
     Expr* expr_b = s_temps[b_idx];
@@ -2227,7 +2227,7 @@ static void setcond_helper(uintptr_t a, uintptr_t b, uintptr_t cond,
         return; // early exit
     }
 
-    Expr* setcond_expr = new_expr();
+    Expr* setcond_expr   = new_expr();
     setcond_expr->opkind = get_opkind_from_cond(cond);
 
     if (expr_a)
@@ -2548,11 +2548,11 @@ static inline void qemu_syscall_helper(uintptr_t syscall_no,
     assert(l3_page_idx + size < 1 << L3_PAGE_BITS); // ToDo: cross page access
 
     for (size_t i = 0; i < size; i++) {
-        Expr* e                           = new_expr();
-        e->opkind                         = EXTRACT8;
-        e->op1                            = e_input;
-        e->op2                            = (Expr*)i;
-        l3_page->entries[l3_page_idx + (size - i -1)] = e;
+        Expr* e                                        = new_expr();
+        e->opkind                                      = EXTRACT8;
+        e->op1                                         = e_input;
+        e->op2                                         = (Expr*)i;
+        l3_page->entries[l3_page_idx + (size - i - 1)] = e;
     }
 }
 
@@ -2881,8 +2881,8 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                         MARK_TEMP_AS_ALLOCATED(t_ptr);
                         TCGTemp* t_mem_op =
                             new_non_conflicting_temp(TCG_TYPE_PTR);
-                        tcg_movi(t_mem_op, make_mem_op_offset(MO_LEQ, offset), 0,
-                                 op, NULL, tcg_ctx);
+                        tcg_movi(t_mem_op, make_mem_op_offset(MO_LEQ, offset),
+                                 0, op, NULL, tcg_ctx);
                         TCGTemp* t_ptr_idx =
                             new_non_conflicting_temp(TCG_TYPE_PTR);
                         tcg_movi(t_ptr_idx, (uintptr_t)temp_idx(t_ptr), 0, op,
@@ -2916,11 +2916,13 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                         TCGTemp* t_mem_op =
                             new_non_conflicting_temp(TCG_TYPE_PTR);
                         if (op->opc == INDEX_op_st_i64) {
-                            tcg_movi(t_mem_op, make_mem_op_offset(MO_LEQ, offset), 0,
-                                    op, NULL, tcg_ctx);
+                            tcg_movi(t_mem_op,
+                                     make_mem_op_offset(MO_LEQ, offset), 0, op,
+                                     NULL, tcg_ctx);
                         } else {
-                            tcg_movi(t_mem_op, make_mem_op_offset(MO_LEUL, offset), 0,
-                                    op, NULL, tcg_ctx);
+                            tcg_movi(t_mem_op,
+                                     make_mem_op_offset(MO_LEUL, offset), 0, op,
+                                     NULL, tcg_ctx);
                         }
                         TCGTemp* t_ptr_idx =
                             new_non_conflicting_temp(TCG_TYPE_PTR);
@@ -2946,10 +2948,10 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                 mark_temp_as_in_use(arg_temp(op->args[1]));
                 mark_temp_as_in_use(arg_temp(op->args[2]));
                 if (instrument) {
-                    TCGTemp* t_out  = arg_temp(op->args[0]);
-                    TCGTemp* t_a  = arg_temp(op->args[1]);
-                    TCGTemp* t_b  = arg_temp(op->args[2]);
-                    TCGCond  cond = op->args[3];
+                    TCGTemp* t_out = arg_temp(op->args[0]);
+                    TCGTemp* t_a   = arg_temp(op->args[1]);
+                    TCGTemp* t_b   = arg_temp(op->args[2]);
+                    TCGCond  cond  = op->args[3];
 #if 0
                     // ToDo
 #else
@@ -2962,11 +2964,12 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                     tcg_movi(t_b_idx, (uintptr_t)temp_idx(t_b), 0, op, NULL,
                              tcg_ctx);
                     TCGTemp* t_out_idx = new_non_conflicting_temp(TCG_TYPE_PTR);
-                    tcg_movi(t_out_idx, (uintptr_t)temp_idx(t_out), 0, op, NULL, tcg_ctx);
+                    tcg_movi(t_out_idx, (uintptr_t)temp_idx(t_out), 0, op, NULL,
+                             tcg_ctx);
                     MARK_TEMP_AS_ALLOCATED(t_a);
                     MARK_TEMP_AS_ALLOCATED(t_b);
-                    add_void_call_6(setcond_helper, t_a, t_b, t_cond, t_out_idx, t_a_idx,
-                                    t_b_idx, op, NULL, tcg_ctx);
+                    add_void_call_6(setcond_helper, t_a, t_b, t_cond, t_out_idx,
+                                    t_a_idx, t_b_idx, op, NULL, tcg_ctx);
                     MARK_TEMP_AS_NOT_ALLOCATED(t_a);
                     MARK_TEMP_AS_NOT_ALLOCATED(t_b);
                     tcg_temp_free_internal(t_cond);
@@ -3209,8 +3212,7 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
 
                         TCGTemp* t_opkind =
                             new_non_conflicting_temp(TCG_TYPE_PTR);
-                        tcg_movi(t_opkind, (uintptr_t)OR, 0, op, NULL,
-                                 tcg_ctx);
+                        tcg_movi(t_opkind, (uintptr_t)OR, 0, op, NULL, tcg_ctx);
                         TCGTemp* t_dst_addr = arg_temp(op->args[1]);
                         TCGTemp* t_src_addr = arg_temp(op->args[2]);
                         MARK_TEMP_AS_ALLOCATED(t_dst_addr);
@@ -3274,15 +3276,14 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
 
                         TCGTemp* t_opkind =
                             new_non_conflicting_temp(TCG_TYPE_PTR);
-                        tcg_movi(t_opkind, (uintptr_t) SHL, 0, op, NULL,
+                        tcg_movi(t_opkind, (uintptr_t)SHL, 0, op, NULL,
                                  tcg_ctx);
                         TCGTemp* t_dst_addr = arg_temp(op->args[1]);
                         TCGTemp* t_src_addr = arg_temp(op->args[2]);
                         MARK_TEMP_AS_ALLOCATED(t_dst_addr);
                         MARK_TEMP_AS_ALLOCATED(t_src_addr);
-                        add_void_call_3(qemu_xmm_shift, t_opkind,
-                                        t_dst_addr, t_src_addr, op, NULL,
-                                        tcg_ctx);
+                        add_void_call_3(qemu_xmm_shift, t_opkind, t_dst_addr,
+                                        t_src_addr, op, NULL, tcg_ctx);
                         MARK_TEMP_AS_NOT_ALLOCATED(t_dst_addr);
                         MARK_TEMP_AS_NOT_ALLOCATED(t_src_addr);
                         tcg_temp_free_internal(t_opkind);
@@ -3291,15 +3292,14 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
 
                         TCGTemp* t_opkind =
                             new_non_conflicting_temp(TCG_TYPE_PTR);
-                        tcg_movi(t_opkind, (uintptr_t) SHR, 0, op, NULL,
+                        tcg_movi(t_opkind, (uintptr_t)SHR, 0, op, NULL,
                                  tcg_ctx);
                         TCGTemp* t_dst_addr = arg_temp(op->args[1]);
                         TCGTemp* t_src_addr = arg_temp(op->args[2]);
                         MARK_TEMP_AS_ALLOCATED(t_dst_addr);
                         MARK_TEMP_AS_ALLOCATED(t_src_addr);
-                        add_void_call_3(qemu_xmm_shift, t_opkind,
-                                        t_dst_addr, t_src_addr, op, NULL,
-                                        tcg_ctx);
+                        add_void_call_3(qemu_xmm_shift, t_opkind, t_dst_addr,
+                                        t_src_addr, op, NULL, tcg_ctx);
                         MARK_TEMP_AS_NOT_ALLOCATED(t_dst_addr);
                         MARK_TEMP_AS_NOT_ALLOCATED(t_src_addr);
                         tcg_temp_free_internal(t_opkind);
