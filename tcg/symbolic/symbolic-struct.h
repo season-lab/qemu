@@ -41,18 +41,19 @@ typedef enum OPKIND {
     SHL,
     SHR,
     SAR,
+    SAL,
     ROTL,
     ROTR,
     //
-    EQ,
+    EQ, // 20
     NE,
     // signed
-    LT,
+    LT, // 22
     LE,
     GE,
     GT,
     // unsigned
-    LTU,
+    LTU, // 26
     LEU,
     GEU,
     GTU,
@@ -74,6 +75,54 @@ typedef enum OPKIND {
               // e.g., EXTRACT(arg0, arg1, 8, 4):
               //  when N_BITS=32 then arg0 = (arg1 << 20) >> 28
     SEXTRACT, // same as EXTRACT but using arithmetic shift
+    //
+    CTZ, // count trailing zeros (x86: BSF, TZCNT)
+    RCL,
+    //
+    ITE, // 39
+    ITE_EQ_ZERO,
+    ITE_NE_ZERO,
+    OR_3,
+    XOR_3,
+    // XMM
+    CMPB,
+    PMOVMSKB, // 45
+    //
+    EFLAGS_ALL_ADD,
+    EFLAGS_ALL_ADCB,
+    EFLAGS_ALL_ADCW,
+    EFLAGS_ALL_ADCL,
+    EFLAGS_ALL_ADCQ,
+    EFLAGS_ALL_SUB,
+    EFLAGS_ALL_MUL,
+    EFLAGS_ALL_SBBB,
+    EFLAGS_ALL_SBBW,
+    EFLAGS_ALL_SBBL,
+    EFLAGS_ALL_SBBQ,
+    EFLAGS_ALL_LOGIC,
+    EFLAGS_ALL_INC,
+    EFLAGS_ALL_DEC,
+    EFLAGS_ALL_SHL,
+    EFLAGS_ALL_SAR,
+    EFLAGS_ALL_BMILG,
+    EFLAGS_ALL_ADCX,
+    EFLAGS_ALL_ADCO,
+    EFLAGS_ALL_ADCOX,
+    EFLAGS_ALL_RCL,
+    //
+    EFLAGS_C_ADD,
+    EFLAGS_C_ADCB,
+    EFLAGS_C_ADCW,
+    EFLAGS_C_ADCL,
+    EFLAGS_C_ADCQ,
+    EFLAGS_C_SUB,
+    EFLAGS_C_MUL,
+    EFLAGS_C_SBBB,
+    EFLAGS_C_SBBW,
+    EFLAGS_C_SBBL,
+    EFLAGS_C_SBBQ,
+    EFLAGS_C_LOGIC,
+    EFLAGS_C_SHL,
 } OPKIND;
 
 typedef enum EXTENDKIND {
@@ -96,16 +145,14 @@ typedef struct Expr {
     uint8_t      op3_is_const;
 } Expr;
 
-void        print_expr_internal(Expr* expr, uint8_t reset);
-void        print_expr(Expr* expr);
-const char* opkind_to_str(uint8_t opkind);
-
 extern Expr* pool;
 #define GET_EXPR_IDX(e) ((((uintptr_t)e) - ((uintptr_t)pool)) / sizeof(Expr))
 
-inline const char* opkind_to_str(uint8_t opkind)
+static inline const char* opkind_to_str(uint8_t opkind)
 {
     switch (opkind) {
+        case IS_SYMBOLIC:
+            return "symbolic_data";
         case ADD:
             return "+";
         case SUB:
@@ -122,8 +169,20 @@ inline const char* opkind_to_str(uint8_t opkind)
             return "&";
         case OR:
             return "|";
-        case XOR:
+        case XOR: // 13
             return "^";
+        case SHR: // 14
+            return "l>>";
+        case SHL: // 15
+            return "l<<";
+        case SAL:
+            return "a<<";
+        case SAR:
+            return "a>>";
+        case ROTL:
+            return "rotl";
+        case ROTR:
+            return "rotr";
 
         case EQ:
             return "==";
@@ -158,6 +217,78 @@ inline const char* opkind_to_str(uint8_t opkind)
         case CONCAT8:
             return "CONCAT";
 
+        case CTZ:
+            return "CTZ";
+        case RCL:
+            return "RCL";
+
+        case ITE:
+            return "ITE";
+        case ITE_EQ_ZERO:
+            return "ITE_EQ_ZERO";
+        case ITE_NE_ZERO:
+            return "ITE_NE_ZERO";
+        case OR_3:
+            return "OR_3";
+        case XOR_3:
+            return "XOR_3";
+
+        case CMPB:
+            return "CMPB";
+        case PMOVMSKB:
+            return "PMOVMSKB";
+
+        case EFLAGS_ALL_ADD:
+        case EFLAGS_ALL_ADCB:
+        case EFLAGS_ALL_ADCW:
+        case EFLAGS_ALL_ADCL:
+        case EFLAGS_ALL_ADCQ:
+        case EFLAGS_ALL_SUB:
+        case EFLAGS_ALL_MUL:
+        case EFLAGS_ALL_SBBB:
+        case EFLAGS_ALL_SBBW:
+        case EFLAGS_ALL_SBBL:
+        case EFLAGS_ALL_SBBQ:
+        case EFLAGS_ALL_LOGIC:
+        case EFLAGS_ALL_INC:
+        case EFLAGS_ALL_DEC:
+        case EFLAGS_ALL_SHL:
+        case EFLAGS_ALL_SAR:
+        case EFLAGS_ALL_BMILG:
+        case EFLAGS_ALL_ADCX:
+        case EFLAGS_ALL_ADCO:
+        case EFLAGS_ALL_ADCOX:
+            return "EFLAGS_ALL_OP";
+        case EFLAGS_ALL_RCL:
+            return "EFLAGS_ALL_RCL";
+
+        case EFLAGS_C_ADD:
+            return "EFLAGS_C_ADD";
+        case EFLAGS_C_ADCB:
+            return "EFLAGS_C_ADCB";
+        case EFLAGS_C_ADCW:
+            return "EFLAGS_C_ADCW";
+        case EFLAGS_C_ADCL:
+            return "EFLAGS_C_ADCL";
+        case EFLAGS_C_ADCQ:
+            return "EFLAGS_C_ADCQ";
+        case EFLAGS_C_SUB:
+            return "EFLAGS_C_SUB";
+        case EFLAGS_C_MUL:
+            return "EFLAGS_C_MUL";
+        case EFLAGS_C_SBBB:
+            return "EFLAGS_C_SBBB";
+        case EFLAGS_C_SBBW:
+            return "EFLAGS_C_SBBW";
+        case EFLAGS_C_SBBL:
+            return "EFLAGS_C_SBBL";
+        case EFLAGS_C_SBBQ:
+            return "EFLAGS_C_SBBQ";
+        case EFLAGS_C_LOGIC:
+            return "EFLAGS_C_LOGIC";
+        case EFLAGS_C_SHL:
+            return "EFLAGS_C_SHL";
+
         default:
             printf("\nstr(opkind=%u) is unknown\n", opkind);
             ABORT();
@@ -166,7 +297,7 @@ inline const char* opkind_to_str(uint8_t opkind)
 
 #define MAX_PRINT_CHECK 1024
 uint8_t     printed[MAX_PRINT_CHECK];
-inline void print_expr_internal(Expr* expr, uint8_t reset)
+static inline void print_expr_internal(Expr* expr, uint8_t reset)
 {
     if (reset)
         for (size_t i = 0; i < MAX_PRINT_CHECK; i++)
@@ -192,12 +323,21 @@ inline void print_expr_internal(Expr* expr, uint8_t reset)
 
             printf(" %s", opkind_to_str(expr->opkind));
 
-            if (expr->op2_is_const || expr->opkind == EXTRACT8 ||
-                expr->opkind == ZEXT || expr->opkind == SEXT ||
-                expr->op2 == NULL)
-                printf(" 0x%lx", (uintptr_t)expr->op2);
-            else
-                printf(" E_%lu", GET_EXPR_IDX(expr->op2));
+            if (expr->opkind != NEG && expr->opkind != PMOVMSKB) {
+                if (expr->op2_is_const || expr->opkind == EXTRACT8 ||
+                    expr->opkind == ZEXT || expr->opkind == SEXT ||
+                    expr->op2 == NULL)
+                    printf(" 0x%lx", (uintptr_t)expr->op2);
+                else
+                    printf(" E_%lu", GET_EXPR_IDX(expr->op2));
+            }
+
+            if (expr->opkind == EFLAGS_C_ADCQ && !expr->op3_is_const) {
+                if (expr->op3_is_const)
+                    printf(" 0x%lx", (uintptr_t)expr->op3);
+                else
+                    printf(" E_%lu", GET_EXPR_IDX(expr->op3));
+            }
             printf("\n");
 
             // FixMe: this makes a mess
@@ -225,13 +365,22 @@ inline void print_expr_internal(Expr* expr, uint8_t reset)
                 if (expr->op2 == NULL)
                     assert(expr->op1);
             }
+
+            if (expr->opkind == EFLAGS_C_ADCQ && !expr->op3_is_const) {
+                assert(GET_EXPR_IDX(expr->op3) < MAX_PRINT_CHECK);
+                if (!printed[GET_EXPR_IDX(expr->op3)]) {
+                    printf("E_%lu:: ", GET_EXPR_IDX(expr->op3));
+                    print_expr_internal(expr->op3, 0);
+                    printed[GET_EXPR_IDX(expr->op3)] = 1;
+                }
+            }
         }
     } else {
         printf("\n");
     }
 }
 
-inline void print_expr(Expr* expr)
+static inline void print_expr(Expr* expr)
 {
     printf("\n");
     print_expr_internal(expr, 1);
