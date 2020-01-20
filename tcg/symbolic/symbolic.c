@@ -2191,6 +2191,12 @@ static TCGCond check_branch_cond_helper(uintptr_t a, uintptr_t b, TCGCond cond)
             else
                 return TCG_COND_EQ;
         //
+        case TCG_COND_LT:
+            if (((intptr_t)a) < ((intptr_t)b))
+                return TCG_COND_LT;
+            else
+                return TCG_COND_GE;
+        //
         case TCG_COND_LTU:
             if (a < b)
                 return TCG_COND_LTU;
