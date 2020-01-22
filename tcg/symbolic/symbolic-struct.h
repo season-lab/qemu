@@ -106,7 +106,7 @@ typedef enum OPKIND {
     EFLAGS_ALL_SAR,
     EFLAGS_ALL_BMILG,
     EFLAGS_ALL_ADCX,
-    EFLAGS_ALL_ADCO,
+    EFLAGS_ALL_ADOX,
     EFLAGS_ALL_ADCOX,
     EFLAGS_ALL_RCL,
     //
@@ -123,6 +123,7 @@ typedef enum OPKIND {
     EFLAGS_C_SBBQ,
     EFLAGS_C_LOGIC,
     EFLAGS_C_SHL,
+    EFLAGS_C_BMILG,
 } OPKIND;
 
 typedef enum EXTENDKIND {
@@ -256,7 +257,7 @@ static inline const char* opkind_to_str(uint8_t opkind)
         case EFLAGS_ALL_SAR:
         case EFLAGS_ALL_BMILG:
         case EFLAGS_ALL_ADCX:
-        case EFLAGS_ALL_ADCO:
+        case EFLAGS_ALL_ADOX:
         case EFLAGS_ALL_ADCOX:
             return "EFLAGS_ALL_OP";
         case EFLAGS_ALL_RCL:

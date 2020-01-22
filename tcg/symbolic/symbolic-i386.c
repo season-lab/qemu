@@ -63,7 +63,7 @@ static inline OPKIND get_eflags_opkind(uintptr_t cc_op, uint8_t flag)
         case CC_OP_ADCX:
             return EFLAGS_ALL_ADCX;
         case CC_OP_ADOX:
-            return EFLAGS_ALL_ADCO;
+            return EFLAGS_ALL_ADOX;
         case CC_OP_ADCOX:
             return EFLAGS_ALL_ADCOX;
 
@@ -457,7 +457,7 @@ static void qemu_cc_compute_c(uint64_t packed_idx, uintptr_t dst,
         case CC_OP_BMILGQ:
             if (s_temps[src1_idx] || s_temps[dst_idx]) {
                 Expr* e   = new_expr();
-                e->opkind = EFLAGS_C_SHL;
+                e->opkind = EFLAGS_C_BMILG;
                 SET_EXPR_OP(e->op1, e->op1_is_const, s_temps[dst_idx], dst);
                 SET_EXPR_OP(e->op2, e->op2_is_const, s_temps[src1_idx], src1);
                 SET_EXPR_CONST_OP(e->op3, e->op3_is_const, get_op_width(cc_op));
