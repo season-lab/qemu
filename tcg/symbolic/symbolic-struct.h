@@ -20,6 +20,16 @@
 #define FINAL_QUERY        ((void*)0xDEAD)
 #define MEM_BARRIER()      asm volatile("" ::: "memory")
 
+#define PACK_0(p, v) (p | (v & 0xFFFF))
+#define PACK_1(p, v) (p | ((v & 0xFFFF) << 16))
+#define PACK_2(p, v) (p | ((v & 0xFFFF) << 32))
+#define PACK_3(p, v) (p | ((v & 0xFFFF) << 48))
+
+#define UNPACK_0(p) (p & 0xFFFF)
+#define UNPACK_1(p) ((p >> 16) & 0xFFFF)
+#define UNPACK_2(p) ((p >> 32) & 0xFFFF)
+#define UNPACK_3(p) ((p >> 48) & 0xFFFF)
+
 typedef enum OPKIND {
     RESERVED,
     //
