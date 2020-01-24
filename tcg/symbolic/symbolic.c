@@ -3366,44 +3366,28 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                         MARK_TEMP_AS_NOT_ALLOCATED(t_1);
                         tcg_temp_free_internal(t_packed_idx);
 
-                    } else if (strcmp(helper_name, "pxor_xmm") == 0) {
+                    } else if (strcmp(helper_name, "pxor_xmm") == 0 ||
+                               strcmp(helper_name, "por_xmm") == 0 ||
+                               strcmp(helper_name, "psubb_xmm") == 0) {
+
+                        OPKIND opkind;
+                        switch (helper_name[1]) {
+                            case 'x':
+                                opkind = XOR;
+                                break;
+                            case 'o':
+                                opkind = OR;
+                                break;
+                            case 's':
+                                opkind = SUB;
+                                break;
+                            default:
+                                tcg_abort();
+                        }
 
                         TCGTemp* t_opkind =
                             new_non_conflicting_temp(TCG_TYPE_PTR);
-                        tcg_movi(t_opkind, (uintptr_t)XOR, 0, op, NULL,
-                                 tcg_ctx);
-                        TCGTemp* t_dst_addr = arg_temp(op->args[1]);
-                        TCGTemp* t_src_addr = arg_temp(op->args[2]);
-                        MARK_TEMP_AS_ALLOCATED(t_dst_addr);
-                        MARK_TEMP_AS_ALLOCATED(t_src_addr);
-                        add_void_call_3(qemu_xmm_op_bytewise, t_opkind,
-                                        t_dst_addr, t_src_addr, op, NULL,
-                                        tcg_ctx);
-                        MARK_TEMP_AS_NOT_ALLOCATED(t_dst_addr);
-                        MARK_TEMP_AS_NOT_ALLOCATED(t_src_addr);
-                        tcg_temp_free_internal(t_opkind);
-
-                    } else if (strcmp(helper_name, "por_xmm") == 0) {
-
-                        TCGTemp* t_opkind =
-                            new_non_conflicting_temp(TCG_TYPE_PTR);
-                        tcg_movi(t_opkind, (uintptr_t)OR, 0, op, NULL, tcg_ctx);
-                        TCGTemp* t_dst_addr = arg_temp(op->args[1]);
-                        TCGTemp* t_src_addr = arg_temp(op->args[2]);
-                        MARK_TEMP_AS_ALLOCATED(t_dst_addr);
-                        MARK_TEMP_AS_ALLOCATED(t_src_addr);
-                        add_void_call_3(qemu_xmm_op_bytewise, t_opkind,
-                                        t_dst_addr, t_src_addr, op, NULL,
-                                        tcg_ctx);
-                        MARK_TEMP_AS_NOT_ALLOCATED(t_dst_addr);
-                        MARK_TEMP_AS_NOT_ALLOCATED(t_src_addr);
-                        tcg_temp_free_internal(t_opkind);
-
-                    } else if (strcmp(helper_name, "psubb_xmm") == 0) {
-
-                        TCGTemp* t_opkind =
-                            new_non_conflicting_temp(TCG_TYPE_PTR);
-                        tcg_movi(t_opkind, (uintptr_t)SUB, 0, op, NULL,
+                        tcg_movi(t_opkind, (uintptr_t)opkind, 0, op, NULL,
                                  tcg_ctx);
                         TCGTemp* t_dst_addr = arg_temp(op->args[1]);
                         TCGTemp* t_src_addr = arg_temp(op->args[2]);
