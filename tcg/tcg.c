@@ -2316,7 +2316,12 @@ void tcg_op_remove(TCGContext *s, TCGOp *op)
 #endif
 }
 
-static TCGOp *tcg_op_alloc(TCGOpcode opc)
+#ifndef TCG_INSTRUMENTATION
+static
+#else
+TCGOp *tcg_op_alloc(TCGOpcode opc);
+#endif
+TCGOp *tcg_op_alloc(TCGOpcode opc)
 {
     TCGContext *s = tcg_ctx;
     TCGOp *op;
@@ -2355,6 +2360,15 @@ TCGOp *tcg_op_insert_before(TCGContext *s, TCGOp *old_op, TCGOpcode opc)
     QTAILQ_INSERT_BEFORE(old_op, new_op, link);
     return new_op;
 }
+
+#ifdef TCG_INSTRUMENTATION
+TCGOp *tcg_op_insert_before_op(TCGContext *s, TCGOp *op, TCGOp * new_op);
+TCGOp *tcg_op_insert_before_op(TCGContext *s, TCGOp *old_op,  TCGOp *new_op)
+{
+    QTAILQ_INSERT_BEFORE(old_op, new_op, link);
+    return new_op;
+}
+#endif
 
 TCGOp *tcg_op_insert_after(TCGContext *s, TCGOp *old_op, TCGOpcode opc)
 {

@@ -13,6 +13,12 @@
 //#define SYMBOLIC_DEBUG
 //#define DISABLE_SOLVER
 
+#define QUEUE_OP_MAX_SIZE 128
+size_t        op_to_add_size               = 0;
+TCGOp*        op_to_add[QUEUE_OP_MAX_SIZE] = {0};
+extern TCGOp* tcg_op_alloc(TCGOpcode opc);
+extern TCGOp* tcg_op_insert_before_op(TCGContext* s, TCGOp* op, TCGOp* new_op);
+
 // symbolic temps
 Expr* s_temps[TCG_MAX_TEMPS] = {0};
 
@@ -157,6 +163,12 @@ static inline void    load_configuration(void)
         assert(s_config.symbolic_exec_reg_name == NULL &&
                "Need to specify symbolic exec register address.");
     }
+}
+
+static InstrumentationMode instrumentation_mode = INSTRUMENT_BEFORE;
+static inline void         set_instrumentation_mode(InstrumentationMode mode)
+{
+    instrumentation_mode = mode;
 }
 
 void init_symbolic_mode(void)
@@ -392,8 +404,10 @@ static inline void add_void_call_5(void* f, TCGTemp* arg0, TCGTemp* arg1,
     assert(arg4->temp_allocated);
 
     // FixMe: check 32 bit, check other archs
-    TCGOpcode opc   = INDEX_op_call;
-    TCGOp*    op    = tcg_op_insert_before(tcg_ctx, op_in, opc);
+    TCGOpcode opc = INDEX_op_call;
+    TCGOp*    op  = instrumentation_mode == INSTRUMENT_BEFORE
+                    ? tcg_op_insert_before(tcg_ctx, op_in, opc)
+                    : tcg_op_alloc(opc);
     op->args[0]     = temp_arg(arg0);
     op->args[1]     = temp_arg(arg1);
     op->args[2]     = temp_arg(arg2);
@@ -406,6 +420,10 @@ static inline void add_void_call_5(void* f, TCGTemp* arg0, TCGTemp* arg1,
 
     if (op_out)
         *op_out = op;
+
+    if (instrumentation_mode == INSTRUMENT_AFTER) {
+        op_to_add[op_to_add_size++] = op;
+    }
 }
 
 // see tcg_gen_callN in tgc.c
@@ -514,7 +532,9 @@ static inline void tcg_mov(TCGTemp* ts_to, TCGTemp* ts_from,
     assert(ts_from->temp_allocated);
 
     TCGOpcode opc = INDEX_op_mov_i64;
-    TCGOp*    op  = tcg_op_insert_before(tcg_ctx, op_in, opc);
+    TCGOp*    op  = instrumentation_mode == INSTRUMENT_BEFORE
+                    ? tcg_op_insert_before(tcg_ctx, op_in, opc)
+                    : tcg_op_alloc(opc);
 
     op->args[0] = temp_arg(ts_to);
     assert(!is_ts_to_dead);
@@ -527,6 +547,10 @@ static inline void tcg_mov(TCGTemp* ts_to, TCGTemp* ts_from,
 
     if (op_out)
         *op_out = op;
+
+    if (instrumentation_mode == INSTRUMENT_AFTER) {
+        op_to_add[op_to_add_size++] = op;
+    }
 }
 
 static inline void tcg_cmov(TCGTemp* ts_out, TCGTemp* ts_a, TCGTemp* ts_b,
@@ -2514,11 +2538,10 @@ static inline TCGTemp* tcg_find_temp_arch_reg(TCGContext* tcg_ctx,
 // ToDo: support other archs/platforms
 #define SYSCALL_NR_READ 0
 #define FD_STDIN        0
-static uintptr_t   symbolic_input_next_id = 0;
-static inline void qemu_syscall_helper(uintptr_t syscall_no,
-                                       uintptr_t syscall_arg0,
-                                       uintptr_t syscall_arg1,
-                                       uintptr_t syscall_arg2)
+static uintptr_t symbolic_input_next_id = 0;
+void qemu_syscall_helper(uintptr_t syscall_no, uintptr_t syscall_arg0,
+                         uintptr_t syscall_arg1, uintptr_t syscall_arg2,
+                         uintptr_t ret_val)
 {
     if (syscall_no != SYSCALL_NR_READ)
         return;
@@ -2526,7 +2549,7 @@ static inline void qemu_syscall_helper(uintptr_t syscall_no,
         return;
 
     uintptr_t addr = syscall_arg1;
-    uintptr_t size = syscall_arg2;
+    uintptr_t size = ret_val;
     printf("Marking as symbolic %lu bytes at 0x%lx during read from stdin\n",
            size, addr);
 
@@ -2824,6 +2847,13 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
     uintptr_t pc = 0;
     QTAILQ_FOREACH(op, &tcg_ctx->ops, link)
     {
+
+        for (size_t idx = 0; idx < op_to_add_size; idx++) {
+            tcg_op_insert_before_op(tcg_ctx, op, op_to_add[idx]);
+            op_to_add[idx] = NULL;
+        }
+        op_to_add_size = 0;
+
         switch (op->opc) {
 
             case INDEX_op_insn_start:
@@ -3212,39 +3242,15 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                     mark_temp_as_in_use(
                         arg_temp(op->args[TCGOP_CALLO(op) + i]));
                 if (instrument) {
+
                     const char* helper_name = tcg_find_helper(
                         tcg_ctx, op->args[TCGOP_CALLI(op) + TCGOP_CALLO(op)]);
+
                     if (strcmp(helper_name, "syscall") == 0) {
-#if 0
-                        printf("Syscall\n");
-                        // ToDo: inline instrumentation
-#else
-                        // ToDo: support other archs/platforms
-                        // ToDo: reg temps could be located once for all in the
-                        // init phase... ToDo: rax should be an immediate, we
-                        // should check it and
-                        //       only instrument the syscalls that we care for
-                        TCGTemp* t_syscall_no =
-                            tcg_find_temp_arch_reg(tcg_ctx, "rax");
-                        TCGTemp* t_syscall_arg0 =
-                            tcg_find_temp_arch_reg(tcg_ctx, "rdi");
-                        TCGTemp* t_syscall_arg1 =
-                            tcg_find_temp_arch_reg(tcg_ctx, "rsi");
-                        TCGTemp* t_syscall_arg2 =
-                            tcg_find_temp_arch_reg(tcg_ctx, "rdx");
-                        MARK_TEMP_AS_ALLOCATED(t_syscall_no);
-                        MARK_TEMP_AS_ALLOCATED(t_syscall_arg0);
-                        MARK_TEMP_AS_ALLOCATED(t_syscall_arg1);
-                        MARK_TEMP_AS_ALLOCATED(t_syscall_arg2);
-                        // ToDo: should mark bytes after the call
-                        add_void_call_4(qemu_syscall_helper, t_syscall_no,
-                                        t_syscall_arg0, t_syscall_arg1,
-                                        t_syscall_arg2, op, NULL, tcg_ctx);
-                        MARK_TEMP_AS_NOT_ALLOCATED(t_syscall_no);
-                        MARK_TEMP_AS_NOT_ALLOCATED(t_syscall_arg0);
-                        MARK_TEMP_AS_NOT_ALLOCATED(t_syscall_arg1);
-                        MARK_TEMP_AS_NOT_ALLOCATED(t_syscall_arg2);
-#endif
+
+                        // we directly instrment the syscall handler for x86
+                        // see syscall.c in linux-user
+
                     } else if (strcmp(helper_name, "cc_compute_all") == 0) {
 
                         // if you allocate it after MARK_TEMP_AS_ALLOCATED(...)

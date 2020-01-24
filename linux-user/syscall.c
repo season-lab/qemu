@@ -11946,6 +11946,8 @@ static abi_long do_syscall1(void *cpu_env, int num, abi_long arg1,
     return ret;
 }
 
+#include "../tcg/symbolic/symbolic-instrumentation.h"
+
 abi_long do_syscall(void *cpu_env, int num, abi_long arg1,
                     abi_long arg2, abi_long arg3, abi_long arg4,
                     abi_long arg5, abi_long arg6, abi_long arg7,
@@ -11980,6 +11982,10 @@ abi_long do_syscall(void *cpu_env, int num, abi_long arg1,
         ret = do_syscall1(cpu_env, num, arg1, arg2, arg3, arg4,
                           arg5, arg6, arg7, arg8);
     }
+
+#ifdef SYMBOLIC_INSTRUMENTATION
+    qemu_syscall_helper(num, arg1, arg2, arg3, ret);
+#endif
 
     trace_guest_user_syscall_ret(cpu, num, ret);
     return ret;
