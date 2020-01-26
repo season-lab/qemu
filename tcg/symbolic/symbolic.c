@@ -3366,6 +3366,48 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                         MARK_TEMP_AS_NOT_ALLOCATED(t_1);
                         tcg_temp_free_internal(t_packed_idx);
 
+                    } else if (strcmp(helper_name, "divq_EAX") == 0 ||
+                               strcmp(helper_name, "idivq_EAX") == 0) {
+
+                        TCGTemp* t_rax = tcg_find_temp_arch_reg(tcg_ctx, "rax");
+                        TCGTemp* t_rdx = tcg_find_temp_arch_reg(tcg_ctx, "rdx");
+                        TCGTemp* t_0 = arg_temp(op->args[1]);
+
+                        uint64_t mode; // 0: div, 1: idiv
+                        switch (helper_name[0]) {
+                            case 'd':
+                                mode = 0;
+                                break;
+                            case 'i':
+                                mode = 1;
+                                break;
+                            default:
+                                tcg_abort();
+                        }
+
+                        uint64_t v = 0;
+                        v          = PACK_0(v, temp_idx(t_rax));
+                        v          = PACK_1(v, temp_idx(t_rdx));
+                        v          = PACK_2(v, temp_idx(t_0));
+                        v          = PACK_3(v, mode);
+
+                        TCGTemp* t_packed_idx =
+                            new_non_conflicting_temp(TCG_TYPE_PTR);
+                        tcg_movi(t_packed_idx, (uintptr_t)v, 0, op, NULL,
+                                 tcg_ctx);
+
+                        MARK_TEMP_AS_ALLOCATED(t_rax);
+                        MARK_TEMP_AS_ALLOCATED(t_rdx);
+                        MARK_TEMP_AS_ALLOCATED(t_0);
+
+                        add_void_call_4(qemu_divq_EAX, t_packed_idx, t_rax,
+                                        t_rdx, t_0, op, NULL, tcg_ctx);
+
+                        MARK_TEMP_AS_NOT_ALLOCATED(t_rax);
+                        MARK_TEMP_AS_NOT_ALLOCATED(t_rdx);
+                        MARK_TEMP_AS_NOT_ALLOCATED(t_0);
+                        tcg_temp_free_internal(t_packed_idx);
+
                     } else if (strcmp(helper_name, "pxor_xmm") == 0 ||
                                strcmp(helper_name, "por_xmm") == 0 ||
                                strcmp(helper_name, "psubb_xmm") == 0) {
@@ -3466,7 +3508,8 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                     } else {
 
                         const char* helper_whitelist[] = {
-                            "lookup_tb_ptr", "rechecking_single_step", ""};
+                            "lookup_tb_ptr", "rechecking_single_step", "fxsave",
+                            "fxrstor"};
 
                         int helper_is_whitelisted = 0;
                         for (size_t i = 0;

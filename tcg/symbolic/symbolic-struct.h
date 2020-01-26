@@ -71,6 +71,7 @@ typedef enum OPKIND {
     ZEXT, // ZEXT(arg0, n): zero-extend arg0 from the n-1 msb bits
     SEXT, // SEXT(arg0, n): sign-extend arg0 from the n-1 msb bits
     // binary
+    CONCAT,
     CONCAT8,  // CONCAT8(arg0, arg1): concat one byte (arg1) to arg0
     EXTRACT8, // EXTRACT8(arg0, i): extract i-th byte from arg0
     // ternary
