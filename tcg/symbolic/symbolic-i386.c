@@ -618,7 +618,7 @@ static void qemu_xmm_shift(uintptr_t opkind, uint64_t* dst_addr,
         Expr* e_byte   = new_expr();
         e_byte->opkind = EXTRACT8;
         e_byte->op1    = e;
-        SET_EXPR_CONST_OP(e_byte->op2, e->op2_is_const, i);
+        SET_EXPR_CONST_OP(e_byte->op2, e_byte->op2_is_const, i);
         dst_expr_addr[i] = e_byte;
     }
 }
@@ -657,6 +657,72 @@ static void qemu_xmm_pmovmskb(uintptr_t dst_idx, uint64_t* src_addr)
 
     // printf("qemu_xmm_pmovmskb: symbolic xmm reg\n");
     // print_expr(e);
+}
+
+static void qemu_xmm_movl_mm_T0(uint64_t* dst_addr, uintptr_t src_idx)
+{
+    Expr** dst_expr_addr = get_expr_addr((uintptr_t)dst_addr, XMM_BYTES);
+    if (s_temps[src_idx] == NULL) {
+        if (dst_expr_addr == NULL) {
+            return;
+        }
+        for (size_t i = 0; i < XMM_BYTES; i++) {
+            dst_expr_addr[i] = NULL;
+        }
+        return;
+    }
+
+    // src is 32 bit
+    for (size_t i = 0; i < sizeof(uint32_t); i++) {
+        Expr* e_byte   = new_expr();
+        e_byte->opkind = EXTRACT8;
+        e_byte->op1    = s_temps[src_idx];
+        SET_EXPR_CONST_OP(e_byte->op2, e_byte->op2_is_const,
+                          i); // ToDo: check endianess!!!
+        dst_expr_addr[i] = e_byte;
+    }
+    for (size_t i = sizeof(uint32_t); i < XMM_BYTES; i++) {
+        dst_expr_addr[i] = NULL;
+    }
+}
+
+static void qemu_xmm_pshufd(uint64_t* dst_addr, uint64_t* src_addr,
+                            uintptr_t order)
+{
+    Expr** dst_expr_addr = get_expr_addr((uintptr_t)dst_addr, XMM_BYTES);
+    Expr** src_expr_addr = get_expr_addr((uintptr_t)src_addr, XMM_BYTES);
+
+    if (src_expr_addr == NULL) {
+        if (dst_expr_addr != NULL) {
+            for (size_t i = 0; i < XMM_BYTES; i++) {
+                dst_expr_addr[i] = NULL;
+            }
+        }
+        return;
+    }
+
+    int src_is_not_null = 0;
+    for (size_t i = 0; i < XMM_BYTES && src_is_not_null == 0; i++) {
+        src_is_not_null |= src_expr_addr[i] != NULL;
+    }
+
+    if (!src_is_not_null) {
+        if (dst_expr_addr != NULL) {
+            for (size_t i = 0; i < XMM_BYTES; i++) {
+                dst_expr_addr[i] = NULL;
+            }
+        }
+        return;
+    }
+
+    uint8_t count = 0;
+    for (size_t i = 0; i < XMM_BYTES; i += sizeof(uint32_t)) {
+        // ToDo: check endianness
+        uint8_t src_pos = ((order >> (2 * count++)) & 3) * 4;
+        for (size_t k = 0; k < sizeof(uint32_t); k++) {
+            dst_expr_addr[i + k] = src_expr_addr[src_pos + k];
+        }
+    }
 }
 
 static void qemu_rcl(uint64_t packed_idx, CPUX86State* env, uintptr_t t_0,
@@ -698,7 +764,7 @@ static void qemu_divq_EAX(uint64_t packed_idx, uintptr_t rax, uintptr_t rdx,
     uintptr_t t_rax_idx = UNPACK_0(packed_idx);
     uintptr_t t_rdx_idx = UNPACK_1(packed_idx);
     uintptr_t t_0_idx   = UNPACK_2(packed_idx);
-    uintptr_t mode = UNPACK_3(packed_idx); // 0: div, 1: idiv
+    uintptr_t mode      = UNPACK_3(packed_idx); // 0: div, 1: idiv
     assert(mode == 0 || mode == 1);
 
     if (s_temps[t_rax_idx] == NULL && s_temps[t_rdx_idx] == NULL &&

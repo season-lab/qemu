@@ -3371,7 +3371,7 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
 
                         TCGTemp* t_rax = tcg_find_temp_arch_reg(tcg_ctx, "rax");
                         TCGTemp* t_rdx = tcg_find_temp_arch_reg(tcg_ctx, "rdx");
-                        TCGTemp* t_0 = arg_temp(op->args[1]);
+                        TCGTemp* t_0   = arg_temp(op->args[1]);
 
                         uint64_t mode; // 0: div, 1: idiv
                         switch (helper_name[0]) {
@@ -3505,6 +3505,36 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                         MARK_TEMP_AS_NOT_ALLOCATED(t_src_addr);
                         tcg_temp_free_internal(t_opkind);
 
+                    } else if (strcmp(helper_name, "pshufd_xmm") == 0) {
+
+                        TCGTemp* t_dst_addr = arg_temp(op->args[0]);
+                        TCGTemp* t_src_addr = arg_temp(op->args[1]);
+                        TCGTemp* t_order = arg_temp(op->args[2]); // this is an immediate
+
+                        MARK_TEMP_AS_ALLOCATED(t_dst_addr);
+                        MARK_TEMP_AS_ALLOCATED(t_src_addr);
+                        add_void_call_3(qemu_xmm_pshufd, t_dst_addr,
+                                        t_src_addr, t_order, op, NULL, tcg_ctx);
+                        MARK_TEMP_AS_NOT_ALLOCATED(t_dst_addr);
+                        MARK_TEMP_AS_NOT_ALLOCATED(t_src_addr);
+                    
+                    } else if (strcmp(helper_name, "movl_mm_T0_xmm") == 0) {
+
+                        TCGTemp* t_dst_addr = arg_temp(op->args[0]);
+                        TCGTemp* t_src =
+                            arg_temp(op->args[1]); // this is 32 bit
+
+                        TCGTemp* t_src_idx =
+                            new_non_conflicting_temp(TCG_TYPE_PTR);
+                        tcg_movi(t_src_idx, (uintptr_t)temp_idx(t_src), 0, op,
+                                 NULL, tcg_ctx);
+
+                        MARK_TEMP_AS_ALLOCATED(t_dst_addr);
+                        add_void_call_2(qemu_xmm_movl_mm_T0, t_dst_addr,
+                                        t_src_idx, op, NULL, tcg_ctx);
+                        MARK_TEMP_AS_NOT_ALLOCATED(t_dst_addr);
+                        tcg_temp_free_internal(t_src_idx);
+                    
                     } else {
 
                         const char* helper_whitelist[] = {
