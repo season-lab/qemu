@@ -3509,15 +3509,16 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
 
                         TCGTemp* t_dst_addr = arg_temp(op->args[0]);
                         TCGTemp* t_src_addr = arg_temp(op->args[1]);
-                        TCGTemp* t_order = arg_temp(op->args[2]); // this is an immediate
+                        TCGTemp* t_order =
+                            arg_temp(op->args[2]); // this is an immediate
 
                         MARK_TEMP_AS_ALLOCATED(t_dst_addr);
                         MARK_TEMP_AS_ALLOCATED(t_src_addr);
-                        add_void_call_3(qemu_xmm_pshufd, t_dst_addr,
-                                        t_src_addr, t_order, op, NULL, tcg_ctx);
+                        add_void_call_3(qemu_xmm_pshufd, t_dst_addr, t_src_addr,
+                                        t_order, op, NULL, tcg_ctx);
                         MARK_TEMP_AS_NOT_ALLOCATED(t_dst_addr);
                         MARK_TEMP_AS_NOT_ALLOCATED(t_src_addr);
-                    
+
                     } else if (strcmp(helper_name, "movl_mm_T0_xmm") == 0) {
 
                         TCGTemp* t_dst_addr = arg_temp(op->args[0]);
@@ -3534,7 +3535,46 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                                         t_src_idx, op, NULL, tcg_ctx);
                         MARK_TEMP_AS_NOT_ALLOCATED(t_dst_addr);
                         tcg_temp_free_internal(t_src_idx);
-                    
+
+                    } else if (strcmp(helper_name, "punpcklbw_xmm") == 0 ||
+                               strcmp(helper_name, "punpcklwd_xmm") == 0 ||
+                               strcmp(helper_name, "punpckldq_xmm") == 0 ||
+                               strcmp(helper_name, "punpcklqdq_xmm") == 0) {
+
+                        TCGTemp* t_dst_addr = arg_temp(op->args[0]);
+                        TCGTemp* t_src_addr = arg_temp(op->args[1]);
+
+                        uint8_t slice;
+                        switch (helper_name[7]) {
+                            case 'b':
+                                slice = 1;
+                                break;
+                            case 'w':
+                                slice = 2;
+                                break;
+                            case 'd':
+                                slice = 4;
+                                break;
+                            case 'q':
+                                slice = 8;
+                                break;
+                            default:
+                                tcg_abort();
+                        }
+
+                        TCGTemp* t_slice =
+                            new_non_conflicting_temp(TCG_TYPE_PTR);
+                        tcg_movi(t_slice, (uintptr_t)slice, 0, op, NULL,
+                                 tcg_ctx);
+
+                        MARK_TEMP_AS_ALLOCATED(t_dst_addr);
+                        MARK_TEMP_AS_ALLOCATED(t_src_addr);
+                        add_void_call_3(qemu_xmm_punpckl, t_dst_addr,
+                                        t_src_addr, t_slice, op, NULL, tcg_ctx);
+                        MARK_TEMP_AS_NOT_ALLOCATED(t_dst_addr);
+                        MARK_TEMP_AS_NOT_ALLOCATED(t_src_addr);
+                        tcg_temp_free_internal(t_slice);
+
                     } else {
 
                         const char* helper_whitelist[] = {

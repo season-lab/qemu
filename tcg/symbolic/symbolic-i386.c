@@ -725,6 +725,51 @@ static void qemu_xmm_pshufd(uint64_t* dst_addr, uint64_t* src_addr,
     }
 }
 
+static void qemu_xmm_punpckl(uint64_t* dst_addr, uint64_t* src_addr, uintptr_t slice)
+{
+    Expr** dst_expr_addr = get_expr_addr((uintptr_t)dst_addr, XMM_BYTES);
+    Expr** src_expr_addr = get_expr_addr((uintptr_t)src_addr, XMM_BYTES);
+
+    if (src_expr_addr == NULL) {
+        if (dst_expr_addr != NULL) {
+            for (size_t i = 0; i < XMM_BYTES; i++) {
+                dst_expr_addr[i] = NULL;
+            }
+        }
+        return;
+    }
+
+    int src_is_not_null = 0;
+    for (size_t i = 0; i < XMM_BYTES && src_is_not_null == 0; i++) {
+        src_is_not_null |= src_expr_addr[i] != NULL;
+    }
+
+    if (!src_is_not_null) {
+        if (dst_expr_addr != NULL) {
+            for (size_t i = 0; i < XMM_BYTES; i++) {
+                dst_expr_addr[i] = NULL;
+            }
+        }
+        return;
+    }
+
+    Expr* dst_exprs[XMM_BYTES];
+    for (size_t i = 0; i < XMM_BYTES; i++) {
+        dst_exprs[i] = dst_expr_addr[i];
+    }
+
+    uint8_t count = 0;
+    for (size_t i = 0; i < XMM_BYTES; i += (2 * slice)) {
+        for (size_t k = 0; k < slice; k++) {
+            dst_expr_addr[i + k] = dst_exprs[(count * slice) + k];
+        }
+        for (size_t k = 0; k < slice; k++) {
+            dst_expr_addr[i + slice + k] = src_expr_addr[(count * slice) + k];
+        }
+        count++;
+    }
+}
+
 static void qemu_rcl(uint64_t packed_idx, CPUX86State* env, uintptr_t t_0,
                      uintptr_t t_1)
 {
