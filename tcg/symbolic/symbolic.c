@@ -141,10 +141,15 @@ static inline void    load_configuration(void)
     if (var) {
         if (strcmp(var, "READ_FD_0") == 0)
             s_config.symbolic_inject_input_mode = READ_FD_0;
-        if (strcmp(var, "REG") == 0)
+        else if (strcmp(var, "REG") == 0)
             s_config.symbolic_inject_input_mode = REG;
-        if (strcmp(var, "BUFFER") == 0)
+        else if (strcmp(var, "BUFFER") == 0)
             s_config.symbolic_inject_input_mode = BUFFER;
+        else if (strcmp(var, "FILE") == 0) {
+            s_config.symbolic_inject_input_mode = FROM_FILE;
+            s_config.inputfile = getenv("SYMBOLIC_TESTCASE_NAME");
+            assert(s_config.inputfile && "Neet to specify testcase path.");
+        }
     }
     assert(s_config.symbolic_inject_input_mode != NO_INPUT &&
            "Need to specify symbolic exec injection input mode.");
@@ -1515,7 +1520,6 @@ static inline void qemu_load_helper(uintptr_t orig_addr,
 
     // number of bytes to load
     size_t size = get_mem_op_size(mem_op);
-
     uintptr_t addr = orig_addr + offset;
 
     uintptr_t  l1_page_idx = addr >> (L1_PAGE_BITS + L2_PAGE_BITS);
@@ -1553,7 +1557,7 @@ static inline void qemu_load_helper(uintptr_t orig_addr,
     }
 
 #if 0
-    printf("Loading %lu bytes: t[%ld] = *0x%p + %lu\n", size, val_idx,
+    printf("Loading %lu bytes: t[%ld] = *(0x%p + %lu)\n", size, val_idx,
            (void*)orig_addr, offset);
     // printf("Loading %lu bytes from %p at offset %lu\n", size, (void
     // *)orig_addr, offset);
@@ -2535,29 +2539,22 @@ static inline TCGTemp* tcg_find_temp_arch_reg(TCGContext* tcg_ctx,
     tcg_abort();
 }
 
-// ToDo: support other archs/platforms
-#define SYSCALL_NR_READ 0
-#define FD_STDIN        0
-static uintptr_t symbolic_input_next_id = 0;
-void qemu_syscall_helper(uintptr_t syscall_no, uintptr_t syscall_arg0,
-                         uintptr_t syscall_arg1, uintptr_t syscall_arg2,
-                         uintptr_t ret_val)
+#define FD_STDIN       0
+#define MAX_INPUT_SIZE 4096
+static Expr* input_exprs[MAX_INPUT_SIZE] = {0};
+#define MAX_FP          128
+#define FP_UNINTIALIZED (-1)
+#define FP_CLOSED       (-2)
+// fp >= 0: offset in the inputfile
+static intptr_t input_fp[MAX_FP] = {FP_UNINTIALIZED};
+
+static inline void read_from_input(intptr_t offset, uintptr_t addr, size_t size)
 {
-    if (syscall_no != SYSCALL_NR_READ)
-        return;
-    if (syscall_arg0 != FD_STDIN)
-        return;
+    assert(offset >= 0 && "Invalid offset");
+    //printf("Offset=%ld size=%ld\n", offset, size);
+    assert((offset + size) < MAX_INPUT_SIZE && "Offset is too large");
 
-    uintptr_t addr = syscall_arg1;
-    uintptr_t size = ret_val;
-    printf("Marking as symbolic %lu bytes at 0x%lx during read from stdin\n",
-           size, addr);
-
-    // expression for the entire input
-    Expr* e_input   = new_expr();
-    e_input->opkind = IS_SYMBOLIC;
-    e_input->op1    = (Expr*)symbolic_input_next_id++; // ID
-    e_input->op2    = (Expr*)size;                     // number of bytes
+    printf("Reading %lu bytes from input at 0x%lx. Storing them at addr 0x%lx\n", size, offset, addr);
 
     uintptr_t  l1_page_idx = addr >> (L1_PAGE_BITS + L2_PAGE_BITS);
     l2_page_t* l2_page     = s_memory.table.entries[l1_page_idx];
@@ -2577,11 +2574,71 @@ void qemu_syscall_helper(uintptr_t syscall_no, uintptr_t syscall_arg0,
     assert(l3_page_idx + size < 1 << L3_PAGE_BITS); // ToDo: cross page access
 
     for (size_t i = 0; i < size; i++) {
-        Expr* e                                        = new_expr();
-        e->opkind                                      = EXTRACT8;
-        e->op1                                         = e_input;
-        e->op2                                         = (Expr*)i;
-        l3_page->entries[l3_page_idx + (size - i - 1)] = e;
+        Expr* e_byte = input_exprs[offset + i];
+        if (e_byte == NULL) {
+            e_byte   = new_expr();
+            e_byte->opkind = IS_SYMBOLIC;
+            e_byte->op1    = (Expr*)(offset + i); // ID
+            e_byte->op2    = (Expr*)1;            // number of bytes
+            input_exprs[offset + i] = e_byte;
+        }
+        l3_page->entries[l3_page_idx + i] = e_byte;
+    }
+}
+
+void qemu_syscall_helper(uintptr_t syscall_no, uintptr_t syscall_arg0,
+                         uintptr_t syscall_arg1, uintptr_t syscall_arg2,
+                         uintptr_t ret_val)
+{
+    int fp;
+    SyscallNo nr = (SyscallNo) syscall_no;
+    switch (nr) {
+        case SYS_OPEN:
+        case SYS_OPENAT:
+            fp = ((int)ret_val);
+            if (s_config.symbolic_inject_input_mode == FROM_FILE && fp >= 0) {
+                const char* fname =
+                    nr == SYS_OPEN ? (const char *)syscall_arg0 : (const char *)syscall_arg1;
+                if (strcmp(fname, s_config.inputfile) == 0) {
+                    input_fp[fp] = 0; // offset 0
+                }
+            }
+            break;
+        //
+        case SYS_CLOSE:
+            fp           = syscall_arg0;
+            input_fp[fp] = FP_CLOSED;
+            break;
+        //
+        case SYS_READ:
+            fp = syscall_arg0;
+            if (s_config.symbolic_inject_input_mode == READ_FD_0 &&
+                fp == FD_STDIN) {
+
+                if (input_fp[fp] == FP_CLOSED) {
+                    printf("Reading from stdin but fp has been previosly "
+                           "closed. What do we need to do?");
+                    tcg_abort();
+                } else if (input_fp[fp] == FP_UNINTIALIZED) {
+                    // first read from stdin, set offset to zero
+                    input_fp[fp] = 0;
+                }
+                read_from_input(input_fp[fp], syscall_arg1, ret_val);
+                input_fp[fp] += ret_val;
+
+            } else if (s_config.symbolic_inject_input_mode == FROM_FILE) {
+
+                if (input_fp[fp] <= FP_UNINTIALIZED) {
+                    printf("Reading from unintialized or closed fp.");
+                    tcg_abort();
+                }
+                read_from_input(input_fp[fp], syscall_arg1, ret_val);
+                input_fp[fp] += ret_val;
+            }
+            break;
+
+        default:
+            tcg_abort();
     }
 }
 
@@ -2603,8 +2660,7 @@ static inline void qemu_movcond(TCGTemp* t_op_out, TCGTemp* t_op_a,
     SAVE_TEMPS_COUNT(tcg_ctx);
 
     // tcg_print_const_str("Doing a movcond", op_in, NULL, tcg_ctx);
-
-    branch(t_op_a, t_op_b, cond, op_in, tcg_ctx);
+    // branch(t_op_a, t_op_b, cond, op_in, tcg_ctx);
 
     size_t op_out_idx   = temp_idx(t_op_out);
     size_t op_true_idx  = temp_idx(t_op_true);
@@ -2636,6 +2692,26 @@ static inline void qemu_movcond(TCGTemp* t_op_out, TCGTemp* t_op_a,
                 tcg_ctx);
 
     CHECK_TEMPS_COUNT(tcg_ctx);
+}
+
+static inline void qemu_deposit_helper(uintptr_t packed_idx, uintptr_t a,
+                                       uintptr_t b, uintptr_t poslen)
+{
+    uintptr_t out_idx = UNPACK_0(packed_idx);
+    uintptr_t a_idx   = UNPACK_1(packed_idx);
+    uintptr_t b_idx   = UNPACK_2(packed_idx);
+
+    if (s_temps[a_idx] == NULL && s_temps[b_idx] == NULL) {
+        s_temps[out_idx] = NULL;
+        return;
+    }
+
+    Expr* e   = new_expr();
+    e->opkind = DEPOSIT;
+    SET_EXPR_OP(e->op1, e->op1_is_const, s_temps[a_idx], a);
+    SET_EXPR_OP(e->op2, e->op2_is_const, s_temps[b_idx], b);
+    SET_EXPR_CONST_OP(e->op3, e->op3_is_const, poslen);
+    s_temps[out_idx] = e;
 }
 
 static inline void qemu_deposit(TCGTemp* t_op_out, TCGTemp* t_op_a,
@@ -2847,13 +2923,13 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
     uintptr_t pc = 0;
     QTAILQ_FOREACH(op, &tcg_ctx->ops, link)
     {
-
+#if 0
         for (size_t idx = 0; idx < op_to_add_size; idx++) {
             tcg_op_insert_before_op(tcg_ctx, op, op_to_add[idx]);
             op_to_add[idx] = NULL;
         }
         op_to_add_size = 0;
-
+#endif
         switch (op->opc) {
 
             case INDEX_op_insn_start:
@@ -2942,8 +3018,7 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
             case INDEX_op_sar_i64:
             case INDEX_op_rotl_i64:
             case INDEX_op_rotr_i64:
-            case INDEX_op_ctz_i64:;
-
+            case INDEX_op_ctz_i64:
                 mark_temp_as_in_use(arg_temp(op->args[0]));
                 mark_temp_as_in_use(arg_temp(op->args[1]));
                 mark_temp_as_in_use(arg_temp(op->args[2]));
@@ -3041,7 +3116,7 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                 if (instrument) {
                     TCGTemp* t_val = arg_temp(op->args[0]);
                     TCGTemp* t_ptr = arg_temp(op->args[1]);
-#if 1
+#if 0
                     TCGMemOp  mem_op = get_memop(op->args[2]);
                     uintptr_t offset = (uintptr_t)get_mmuidx(op->args[2]);
                     qemu_store(t_ptr, t_val, offset, mem_op, op, tcg_ctx);
@@ -3071,7 +3146,7 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
             case INDEX_op_ld_i64:
                 mark_temp_as_in_use(arg_temp(op->args[0]));
                 mark_temp_as_in_use(arg_temp(op->args[1]));
-                if (instrument && 0) {
+                if (instrument) {
                     uintptr_t offset = (uintptr_t)op->args[2];
                     if (is_xmm_offset(offset)) {
                         // printf("load to xmm data (offset=%lu)\n", offset);
@@ -3236,11 +3311,13 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                 break;
 
             case INDEX_op_call:
+#if 1
                 for (size_t i = 0; i < TCGOP_CALLO(op); i++)
                     mark_temp_as_in_use(arg_temp(op->args[i]));
                 for (size_t i = 0; i < TCGOP_CALLI(op); i++)
                     mark_temp_as_in_use(
                         arg_temp(op->args[TCGOP_CALLO(op) + i]));
+#endif
                 if (instrument) {
 
                     const char* helper_name = tcg_find_helper(
@@ -3608,8 +3685,37 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                     TCGTemp* t_true  = arg_temp(op->args[3]);
                     TCGTemp* t_false = arg_temp(op->args[4]);
                     TCGCond  cond    = op->args[5];
+#if 0
+                    // ToDo
+#else
+                    TCGTemp* t_cond = new_non_conflicting_temp(TCG_TYPE_PTR);
+                    tcg_movi(t_cond, (uintptr_t)cond, 0, op, NULL, tcg_ctx);
+
+                    TCGTemp* t_a_idx = new_non_conflicting_temp(TCG_TYPE_PTR);
+                    tcg_movi(t_a_idx, (uintptr_t)temp_idx(t_a), 0, op, NULL,
+                             tcg_ctx);
+
+                    TCGTemp* t_b_idx = new_non_conflicting_temp(TCG_TYPE_PTR);
+                    tcg_movi(t_b_idx, (uintptr_t)temp_idx(t_b), 0, op, NULL,
+                             tcg_ctx);
+
+                    TCGTemp* t_pc = new_non_conflicting_temp(TCG_TYPE_PTR);
+                    tcg_movi(t_pc, (uintptr_t)pc, 0, op, NULL, tcg_ctx);
+
+                    MARK_TEMP_AS_ALLOCATED(t_a);
+                    MARK_TEMP_AS_ALLOCATED(t_b);
+                    add_void_call_6(branch_helper, t_a, t_b, t_cond, t_a_idx,
+                                    t_b_idx, t_pc, op, NULL, tcg_ctx);
+                    MARK_TEMP_AS_NOT_ALLOCATED(t_a);
+                    MARK_TEMP_AS_NOT_ALLOCATED(t_b);
+                    tcg_temp_free_internal(t_cond);
+                    tcg_temp_free_internal(t_a_idx);
+                    tcg_temp_free_internal(t_b_idx);
+                    tcg_temp_free_internal(t_pc);
+
                     qemu_movcond(t_out, t_a, t_b, t_true, t_false, cond, op,
                                  tcg_ctx);
+#endif
                 }
                 break;
 
@@ -3651,7 +3757,35 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                     TCGTemp*  t_b   = arg_temp(op->args[2]);
                     uintptr_t pos   = (uintptr_t)op->args[3];
                     uintptr_t len   = (uintptr_t)op->args[4];
+                    // printf("Deposit pos=%lu len=%lu\n", pos, len);
+#if 0 // Bugged?
                     qemu_deposit(t_out, t_a, t_b, pos, len, op, tcg_ctx);
+#else
+                    uint64_t v1 = 0;
+                    v1          = PACK_0(v1, temp_idx(t_out));
+                    v1          = PACK_1(v1, temp_idx(t_a));
+                    v1          = PACK_2(v1, temp_idx(t_b));
+
+                    TCGTemp* t_packed_idx =
+                        new_non_conflicting_temp(TCG_TYPE_PTR);
+                    tcg_movi(t_packed_idx, (uintptr_t)v1, 0, op, NULL, tcg_ctx);
+
+                    uint64_t v2 = 0;
+                    v2          = PACK_0(v2, pos);
+                    v2          = PACK_1(v2, len);
+
+                    TCGTemp* t_poslen = new_non_conflicting_temp(TCG_TYPE_PTR);
+                    tcg_movi(t_poslen, (uintptr_t)v2, 0, op, NULL, tcg_ctx);
+
+                    MARK_TEMP_AS_ALLOCATED(t_a);
+                    MARK_TEMP_AS_ALLOCATED(t_b);
+                    add_void_call_4(qemu_deposit_helper, t_packed_idx, t_a, t_b,
+                                    t_poslen, op, NULL, tcg_ctx);
+                    MARK_TEMP_AS_NOT_ALLOCATED(t_a);
+                    MARK_TEMP_AS_NOT_ALLOCATED(t_b);
+                    tcg_temp_free_internal(t_packed_idx);
+                    tcg_temp_free_internal(t_poslen);
+#endif
                 }
                 break;
 

@@ -13,14 +13,7 @@
 #include "exec/log.h"
 #include "exec/translator.h"
 
-#if 0
-void helper_pcounter(void);
-
-static inline void gen_helper_pcounter(void)
-{
-  tcg_gen_callN(helper_pcounter, NULL, 0, NULL);
-}
-#endif
+#include "syscall_nr.h"
 
 #define TCG_INSTRUMENTATION
 

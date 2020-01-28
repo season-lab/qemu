@@ -11955,6 +11955,13 @@ abi_long do_syscall(void *cpu_env, int num, abi_long arg1,
 {
     CPUState *cpu = env_cpu(cpu_env);
     abi_long ret;
+#if 0
+    if (num == TARGET_NR_open) {
+        printf("Opening file: %s\n", (char *)(uintptr_t) arg1);
+    } else if (num == TARGET_NR_openat) {
+        printf("Opening file: %s\n", (char *)(uintptr_t) arg2);
+    }
+#endif
 
 #ifdef DEBUG_ERESTARTSYS
     /* Debug-only code for exercising the syscall-restart code paths
@@ -11984,7 +11991,22 @@ abi_long do_syscall(void *cpu_env, int num, abi_long arg1,
     }
 
 #ifdef SYMBOLIC_INSTRUMENTATION
-    qemu_syscall_helper(num, arg1, arg2, arg3, ret);
+    SyscallNo syscall_no;
+    switch (num) {
+        case TARGET_NR_open:
+            syscall_no = SYS_OPEN;
+            break;
+        case TARGET_NR_openat:
+            syscall_no = SYS_OPENAT;
+            break;
+        case TARGET_NR_read:
+            syscall_no = SYS_READ;
+            break;
+        default:
+            syscall_no = SYS_NOT_INTERESTING;
+    }
+    if (syscall_no != SYS_NOT_INTERESTING)
+        qemu_syscall_helper(syscall_no, arg1, arg2, arg3, ret);
 #endif
 
     trace_guest_user_syscall_ret(cpu, num, ret);

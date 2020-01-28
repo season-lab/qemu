@@ -20,23 +20,6 @@ static inline size_t get_op_width(CCOp op)
     }
 }
 
-#define EXPR_CONST_OP(c_arg) ((Expr*)(uintptr_t)c_arg)
-
-#define SET_EXPR_CONST_OP(op, op_is_const, c_arg)                              \
-    do {                                                                       \
-        op          = EXPR_CONST_OP(c_arg);                                    \
-        op_is_const = 1;                                                       \
-    } while (0);
-
-#define SET_EXPR_OP(op, op_is_const, s_arg, c_arg)                             \
-    do {                                                                       \
-        if (s_arg) {                                                           \
-            op = s_arg;                                                        \
-        } else {                                                               \
-            SET_EXPR_CONST_OP(op, op_is_const, c_arg);                         \
-        }                                                                      \
-    } while (0);
-
 // flag == 0: all
 // flag == 1: carry flag
 static inline OPKIND get_eflags_opkind(uintptr_t cc_op, uint8_t flag)
