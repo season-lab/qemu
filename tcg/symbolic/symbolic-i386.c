@@ -6,12 +6,44 @@ static inline size_t get_op_width(CCOp op)
 {
     switch (op) {
         case CC_OP_ADDB:
+        case CC_OP_MULB:
+        case CC_OP_SUBB:
+        case CC_OP_LOGICB:
+        case CC_OP_INCB:
+        case CC_OP_DECB:
+        case CC_OP_SHLB:
+        case CC_OP_SARB:
+        case CC_OP_BMILGB:
             return 1;
         case CC_OP_ADDW:
+        case CC_OP_MULW:
+        case CC_OP_SUBW:
+        case CC_OP_LOGICW:
+        case CC_OP_INCW:
+        case CC_OP_DECW:
+        case CC_OP_SHLW:
+        case CC_OP_SARW:
+        case CC_OP_BMILGW:
             return 2;
         case CC_OP_ADDL:
+        case CC_OP_MULL:
+        case CC_OP_SUBL:
+        case CC_OP_LOGICL:
+        case CC_OP_INCL:
+        case CC_OP_DECL:
+        case CC_OP_SHLL:
+        case CC_OP_SARL:
+        case CC_OP_BMILGL:
             return 4;
         case CC_OP_ADDQ:
+        case CC_OP_MULQ:
+        case CC_OP_SUBQ:
+        case CC_OP_LOGICQ:
+        case CC_OP_INCQ:
+        case CC_OP_DECQ:
+        case CC_OP_SHLQ:
+        case CC_OP_SARQ:
+        case CC_OP_BMILGQ:
             return 8;
 
         default:
@@ -508,7 +540,7 @@ static void qemu_xmm_op_bytewise(uintptr_t opkind, uint64_t* dst_addr,
     Expr** dst_expr_addr = get_expr_addr((uintptr_t)dst_addr, XMM_BYTES);
     Expr** src_expr_addr = get_expr_addr((uintptr_t)src_addr, XMM_BYTES);
     if (dst_expr_addr == NULL && src_expr_addr == NULL) {
-        // printf("qemu_pxor_xmm: both regs are concrete\n");
+        // printf("qemu_xmm_op_bytewise: both regs are concrete\n");
         return;
     }
 

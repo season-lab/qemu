@@ -11,7 +11,7 @@
 #include "config.h"
 
 //#define SYMBOLIC_DEBUG
-//#define DISABLE_SOLVER
+#define DISABLE_SOLVER
 
 #define QUEUE_OP_MAX_SIZE 128
 size_t        op_to_add_size               = 0;
@@ -145,7 +145,7 @@ static inline void    load_configuration(void)
             s_config.symbolic_inject_input_mode = REG;
         else if (strcmp(var, "BUFFER") == 0)
             s_config.symbolic_inject_input_mode = BUFFER;
-        else if (strcmp(var, "FILE") == 0) {
+        else if (strcmp(var, "FROM_FILE") == 0) {
             s_config.symbolic_inject_input_mode = FROM_FILE;
             s_config.inputfile = getenv("SYMBOLIC_TESTCASE_NAME");
             assert(s_config.inputfile && "Neet to specify testcase path.");
@@ -2224,6 +2224,21 @@ static TCGCond check_branch_cond_helper(uintptr_t a, uintptr_t b, TCGCond cond)
                 return TCG_COND_LT;
             else
                 return TCG_COND_GE;
+        case TCG_COND_LE:
+            if (((intptr_t)a) <= ((intptr_t)b))
+                return TCG_COND_LE;
+            else
+                return TCG_COND_GT;
+        case TCG_COND_GE:
+            if (((intptr_t)a) >= ((intptr_t)b))
+                return TCG_COND_GE;
+            else
+                return TCG_COND_LT;
+        case TCG_COND_GT:
+            if (((intptr_t)a) > ((intptr_t)b))
+                return TCG_COND_GT;
+            else
+                return TCG_COND_LE;
         //
         case TCG_COND_LTU:
             if (a < b)
@@ -2367,7 +2382,9 @@ static void branch_helper(uintptr_t a, uintptr_t b, uintptr_t cond,
     next_query++;
     assert(*next_query == 0);
     assert(next_query < queue_query + EXPR_POOL_CAPACITY);
-    // printf("Query submitted to solver\n");
+    uintptr_t query_id = next_query - queue_query;
+    if (query_id > 0 && query_id % 1000 == 0)
+        printf("Submitted %ld queries\n", query_id);
 }
 
 static inline void branch(TCGTemp* t_op_a, TCGTemp* t_op_b, TCGCond cond,
@@ -2543,10 +2560,11 @@ static inline TCGTemp* tcg_find_temp_arch_reg(TCGContext* tcg_ctx,
 #define MAX_INPUT_SIZE 4096
 static Expr* input_exprs[MAX_INPUT_SIZE] = {0};
 #define MAX_FP          128
-#define FP_UNINTIALIZED (-1)
-#define FP_CLOSED       (-2)
+#define FP_UNINTIALIZED 0
+#define FP_CLOSED       1
+#define FP_ZERO_OFFSET  2
 // fp >= 0: offset in the inputfile
-static intptr_t input_fp[MAX_FP] = {FP_UNINTIALIZED};
+static intptr_t input_fp[MAX_FP] = { 0 };
 
 static inline void read_from_input(intptr_t offset, uintptr_t addr, size_t size)
 {
@@ -2599,8 +2617,10 @@ void qemu_syscall_helper(uintptr_t syscall_no, uintptr_t syscall_arg0,
             if (s_config.symbolic_inject_input_mode == FROM_FILE && fp >= 0) {
                 const char* fname =
                     nr == SYS_OPEN ? (const char *)syscall_arg0 : (const char *)syscall_arg1;
+                //printf("Opening file: %s vs %s\n", fname, s_config.inputfile);
                 if (strcmp(fname, s_config.inputfile) == 0) {
-                    input_fp[fp] = 0; // offset 0
+                    input_fp[fp] = FP_ZERO_OFFSET; // offset 0
+                    //printf("Opening input file: %s\n", fname);
                 }
             }
             break;
@@ -2608,6 +2628,43 @@ void qemu_syscall_helper(uintptr_t syscall_no, uintptr_t syscall_arg0,
         case SYS_CLOSE:
             fp           = syscall_arg0;
             input_fp[fp] = FP_CLOSED;
+            break;
+        //
+        case SYS_SEEK:
+            fp           = syscall_arg0;
+            if (s_config.symbolic_inject_input_mode == READ_FD_0 &&
+                fp == FD_STDIN && input_fp[fp] != FP_CLOSED) {
+                off_t offset = syscall_arg1;
+                int whence = syscall_arg2;
+                switch (whence) {
+                    case SEEK_CUR:
+                        if (input_fp[fp] == FP_UNINTIALIZED) {
+                            input_fp[fp] = offset + FP_ZERO_OFFSET;
+                        } else {
+                            assert(input_fp[fp] >= FP_ZERO_OFFSET);
+                            input_fp[fp] += offset;
+                        }
+                        break;
+                    case SEEK_SET:
+                        input_fp[fp] = offset + FP_ZERO_OFFSET;
+                        break;
+                    default:
+                        tcg_abort();
+                }
+            } else if (s_config.symbolic_inject_input_mode == FROM_FILE && input_fp[fp] >= FP_ZERO_OFFSET) {
+                off_t offset = syscall_arg1;
+                int whence = syscall_arg2;
+                switch (whence) {
+                    case SEEK_CUR:
+                        input_fp[fp] += offset;
+                        break;
+                    case SEEK_SET:
+                        input_fp[fp] = offset + FP_ZERO_OFFSET;
+                        break;
+                    default:
+                        tcg_abort();
+                }
+            }
             break;
         //
         case SYS_READ:
@@ -2621,18 +2678,13 @@ void qemu_syscall_helper(uintptr_t syscall_no, uintptr_t syscall_arg0,
                     tcg_abort();
                 } else if (input_fp[fp] == FP_UNINTIALIZED) {
                     // first read from stdin, set offset to zero
-                    input_fp[fp] = 0;
+                    input_fp[fp] = FP_ZERO_OFFSET;
                 }
-                read_from_input(input_fp[fp], syscall_arg1, ret_val);
+                read_from_input(input_fp[fp] - FP_ZERO_OFFSET, syscall_arg1, ret_val);
                 input_fp[fp] += ret_val;
 
-            } else if (s_config.symbolic_inject_input_mode == FROM_FILE) {
-
-                if (input_fp[fp] <= FP_UNINTIALIZED) {
-                    printf("Reading from unintialized or closed fp.");
-                    tcg_abort();
-                }
-                read_from_input(input_fp[fp], syscall_arg1, ret_val);
+            } else if (s_config.symbolic_inject_input_mode == FROM_FILE && input_fp[fp] >= FP_ZERO_OFFSET) {
+                read_from_input(input_fp[fp] - FP_ZERO_OFFSET, syscall_arg1, ret_val);
                 input_fp[fp] += ret_val;
             }
             break;
@@ -3487,7 +3539,9 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
 
                     } else if (strcmp(helper_name, "pxor_xmm") == 0 ||
                                strcmp(helper_name, "por_xmm") == 0 ||
-                               strcmp(helper_name, "psubb_xmm") == 0) {
+                               strcmp(helper_name, "psubb_xmm") == 0 ||
+                               strcmp(helper_name, "pcmpeqb_xmm") == 0 ||
+                               strcmp(helper_name, "pminub_xmm") == 0) {
 
                         OPKIND opkind;
                         switch (helper_name[1]) {
@@ -3500,6 +3554,12 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                             case 's':
                                 opkind = SUB;
                                 break;
+                            case 'c':
+                                opkind = CMPB;
+                                break;
+                            case 'm':
+                                opkind = MIN;
+                                break;
                             default:
                                 tcg_abort();
                         }
@@ -3507,23 +3567,6 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                         TCGTemp* t_opkind =
                             new_non_conflicting_temp(TCG_TYPE_PTR);
                         tcg_movi(t_opkind, (uintptr_t)opkind, 0, op, NULL,
-                                 tcg_ctx);
-                        TCGTemp* t_dst_addr = arg_temp(op->args[1]);
-                        TCGTemp* t_src_addr = arg_temp(op->args[2]);
-                        MARK_TEMP_AS_ALLOCATED(t_dst_addr);
-                        MARK_TEMP_AS_ALLOCATED(t_src_addr);
-                        add_void_call_3(qemu_xmm_op_bytewise, t_opkind,
-                                        t_dst_addr, t_src_addr, op, NULL,
-                                        tcg_ctx);
-                        MARK_TEMP_AS_NOT_ALLOCATED(t_dst_addr);
-                        MARK_TEMP_AS_NOT_ALLOCATED(t_src_addr);
-                        tcg_temp_free_internal(t_opkind);
-
-                    } else if (strcmp(helper_name, "pcmpeqb_xmm") == 0) {
-
-                        TCGTemp* t_opkind =
-                            new_non_conflicting_temp(TCG_TYPE_PTR);
-                        tcg_movi(t_opkind, (uintptr_t)CMPB, 0, op, NULL,
                                  tcg_ctx);
                         TCGTemp* t_dst_addr = arg_temp(op->args[1]);
                         TCGTemp* t_src_addr = arg_temp(op->args[2]);

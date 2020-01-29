@@ -12002,6 +12002,12 @@ abi_long do_syscall(void *cpu_env, int num, abi_long arg1,
         case TARGET_NR_read:
             syscall_no = SYS_READ;
             break;
+        case TARGET_NR_close:
+            syscall_no = SYS_CLOSE;
+            break;
+        case TARGET_NR_lseek:
+            syscall_no = SYS_SEEK;
+            break;
         default:
             syscall_no = SYS_NOT_INTERESTING;
     }
