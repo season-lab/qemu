@@ -2382,9 +2382,9 @@ static void branch_helper(uintptr_t a, uintptr_t b, uintptr_t cond,
     next_query++;
     assert(*next_query == 0);
     assert(next_query < queue_query + EXPR_POOL_CAPACITY);
-    uintptr_t query_id = next_query - queue_query;
-    if (query_id > 0 && query_id % 1000 == 0)
-        printf("Submitted %ld queries\n", query_id);
+    // uintptr_t query_id = next_query - queue_query;
+    // if (query_id > 0 && query_id % 1000 == 0)
+    //    printf("Submitted %ld queries\n", query_id);
 }
 
 static inline void branch(TCGTemp* t_op_a, TCGTemp* t_op_b, TCGCond cond,
@@ -2996,6 +2996,8 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                            pc == s_config.symbolic_exec_stop_addr) {
                     instrument        = 0;
                     *next_query       = FINAL_QUERY;
+                    printf("Number of queries: %lu\n",  next_query - queue_query);
+                    printf("Number of expressions: %lu\n",  GET_EXPR_IDX(next_free_expr));
                     force_flush_cache = 1;
                 }
 
