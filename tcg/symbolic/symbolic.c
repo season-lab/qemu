@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <sys/ipc.h>
 #include <sys/shm.h>
+#include <time.h>
 
 #include "qemu/osdep.h"
 #include "qemu-common.h"
@@ -11,7 +12,7 @@
 #include "config.h"
 
 //#define SYMBOLIC_DEBUG
-#define DISABLE_SOLVER
+//#define DISABLE_SOLVER
 
 #define QUEUE_OP_MAX_SIZE 128
 size_t        op_to_add_size               = 0;
@@ -185,7 +186,7 @@ void init_symbolic_mode(void)
     assert(expr_pool_shm_id > 0);
 
     int query_shm_id = shmget(QUERY_SHM_KEY, // IPC_PRIVATE,
-                              sizeof(Expr*) * EXPR_POOL_CAPACITY, 0666);
+                              sizeof(Expr*) * EXPR_QUERY_CAPACITY, 0666);
     assert(query_shm_id > 0);
 
     // printf("POOL_SHM_ID=%d QUERY_SHM_ID=%d\n", expr_pool_shm_id,
@@ -199,7 +200,7 @@ void init_symbolic_mode(void)
 
 #else
     pool        = g_malloc0(sizeof(Expr) * EXPR_POOL_CAPACITY);
-    queue_query = g_malloc0(sizeof(Expr*) * EXPR_POOL_CAPACITY);
+    queue_query = g_malloc0(sizeof(Expr*) * EXPR_QUERY_CAPACITY);
 #endif
 
     // printf("POOL_ADDR=%p\n", pool);
@@ -211,6 +212,14 @@ void init_symbolic_mode(void)
 
     next_free_expr = pool;
     next_query     = queue_query;
+
+    struct timespec polling_time;
+    polling_time.tv_sec  = 0;
+    polling_time.tv_nsec = 10;
+    while (*next_query != (void*)SHM_READY) {
+        nanosleep(&polling_time, NULL);
+    }
+    next_query++;
 
     // configuration
     load_configuration();
@@ -2381,7 +2390,9 @@ static void branch_helper(uintptr_t a, uintptr_t b, uintptr_t cond,
     assert(*next_query != 0);
     next_query++;
     assert(*next_query == 0);
-    assert(next_query < queue_query + EXPR_POOL_CAPACITY);
+    assert(next_query < queue_query + EXPR_QUERY_CAPACITY);
+    printf("Submitted a query\n");
+    
     // uintptr_t query_id = next_query - queue_query;
     // if (query_id > 0 && query_id % 1000 == 0)
     //    printf("Submitted %ld queries\n", query_id);

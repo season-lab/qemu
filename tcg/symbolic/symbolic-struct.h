@@ -13,12 +13,14 @@
     } while (0)
 #endif
 
-#define EXPR_POOL_CAPACITY (256 * 1024 * 1024)
-#define EXPR_POOL_SHM_KEY  (0xDEADBEEF + 2)
-#define EXPR_POOL_ADDR     ((const void*)0x7f05c8cc7000)
-#define QUERY_SHM_KEY      0xCAFECAFE
-#define FINAL_QUERY        ((void*)0xDEAD)
-#define MEM_BARRIER()      asm volatile("" ::: "memory")
+#define EXPR_POOL_CAPACITY  (1024 * 1024 * 8)
+#define EXPR_QUERY_CAPACITY (256 * 1024)
+#define EXPR_POOL_SHM_KEY   (0xDEADBEEF + 2)
+#define EXPR_POOL_ADDR      ((const void*)0x7f05c8cc7000)
+#define QUERY_SHM_KEY       0xCAFECAFE
+#define FINAL_QUERY         ((void*)0xDEAD)
+#define SHM_READY           (0xDEADBEEF)
+#define MEM_BARRIER()       asm volatile("" ::: "memory")
 
 #define PACK_0(p, v) (p | (v & 0xFFFF))
 #define PACK_1(p, v) (p | ((v & 0xFFFF) << 16))
@@ -309,7 +311,7 @@ static inline const char* opkind_to_str(uint8_t opkind)
 }
 
 #define MAX_PRINT_CHECK 1024
-uint8_t     printed[MAX_PRINT_CHECK];
+uint8_t            printed[MAX_PRINT_CHECK];
 static inline void print_expr_internal(Expr* expr, uint8_t reset)
 {
     if (reset)
