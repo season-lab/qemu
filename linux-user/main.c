@@ -689,7 +689,6 @@ int main(int argc, char **argv, char **envp)
     cpu_type = parse_cpu_option(cpu_model);
 
     /* init tcg before creating CPUs and to get qemu_host_page_size */
-    printf("tb-size=%lu\n", arg_tb_size);
     tcg_exec_init(arg_tb_size * 1024 * 1024);
 
     /* Reserving *too* much vm space via mmap can run into problems
