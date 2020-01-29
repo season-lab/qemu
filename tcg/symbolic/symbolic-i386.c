@@ -842,13 +842,25 @@ static void qemu_divq_EAX(uint64_t packed_idx, uintptr_t rax, uintptr_t rdx,
         d->opkind = mode == 0 ? DIVU : DIV;
         d->op1    = rdxrax;
         SET_EXPR_OP(d->op2, d->op2_is_const, s_temps[t_0_idx], t0);
-        s_temps[t_rax_idx] = d;
+
+        Expr* d2   = new_expr();
+        d2->opkind = EXTRACT;
+        d2->op1    = d;
+        SET_EXPR_CONST_OP(d2->op2, d2->op2_is_const, 32);
+        SET_EXPR_CONST_OP(d2->op3, d2->op3_is_const, 0);
+        s_temps[t_rax_idx] = d2;
 
         Expr* r   = new_expr();
         r->opkind = mode == 0 ? REMU : REM;
         d->op1    = rdxrax;
         SET_EXPR_OP(r->op2, r->op2_is_const, s_temps[t_0_idx], t0);
-        s_temps[t_rdx_idx] = r;
+
+        Expr* r2   = new_expr();
+        r2->opkind = EXTRACT;
+        r2->op1    = r;
+        SET_EXPR_CONST_OP(r2->op2, r2->op2_is_const, 32);
+        SET_EXPR_CONST_OP(r2->op3, r2->op3_is_const, 0);
+        s_temps[t_rdx_idx] = r2;
     }
 
     // print_expr(e);

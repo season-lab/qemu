@@ -2910,7 +2910,7 @@ static inline void qemu_extract(TCGTemp* t_op_out, TCGTemp* t_op_a,
         tcg_ctx); // FixMe: we assume that Expr is zero-initialzed!
 
     TCGTemp* t_opkind = new_non_conflicting_temp(TCG_TYPE_I64);
-    tcg_movi(t_opkind, EXTRACT, 0, op_in, NULL, tcg_ctx);
+    tcg_movi(t_opkind, QZEXTRACT, 0, op_in, NULL, tcg_ctx);
     tcg_store_n(t_out, t_opkind, offsetof(Expr, opkind), 0, 1, sizeof(uint8_t),
                 op_in, NULL, tcg_ctx);
 
@@ -3006,8 +3006,8 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                            pc == s_config.symbolic_exec_stop_addr) {
                     instrument        = 0;
                     *next_query       = FINAL_QUERY;
-                    printf("Number of queries: %lu\n",  next_query - queue_query);
-                    printf("Number of expressions: %lu\n",  GET_EXPR_IDX(next_free_expr));
+                    printf("Number of queries: %lu\n",  (next_query - queue_query) - 1);
+                    printf("Number of expressions: %lu\n",  GET_EXPR_IDX(next_free_expr) - 1);
                     force_flush_cache = 1;
                 }
 

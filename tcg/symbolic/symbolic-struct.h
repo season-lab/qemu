@@ -32,6 +32,8 @@
 #define UNPACK_2(p) ((p >> 32) & 0xFFFF)
 #define UNPACK_3(p) ((p >> 48) & 0xFFFF)
 
+#define DEPOSIT_MASK(pos, len) (((((uintptr_t)1) << len) - 1) << pos)
+
 typedef enum OPKIND {
     RESERVED,
     //
@@ -41,10 +43,10 @@ typedef enum OPKIND {
     NEG,
     // binary
     ADD,
-    SUB,
+    SUB, // 5
     MUL,
     DIV,
-    DIVU,
+    DIVU, // 9
     REM,
     REMU,
     AND, // 11
@@ -76,6 +78,7 @@ typedef enum OPKIND {
     CONCAT,
     CONCAT8,  // CONCAT8(arg0, arg1): concat one byte (arg1) to arg0
     EXTRACT8, // EXTRACT8(arg0, i): extract i-th byte from arg0
+    EXTRACT,
     // ternary
     DEPOSIT,  // DEPOSIT(arg0, arg1, arg2, pos, len):
               //    arg0 = (arg1 & ~MASK(pos, len)) | ((arg2 << pos) & MASK(pos,
@@ -83,11 +86,11 @@ typedef enum OPKIND {
               // where: MASK(pos, len) build a mask of bits, where len bits are
               // set to one starting at position 8 (going towards msb). e.g.,
               // MASK(8, 4) = 0x0f00
-    EXTRACT,  // EXTRACT(arg0, arg1, pos, len):
+    QZEXTRACT,// EXTRACT(arg0, arg1, pos, len):
               //    arg0 = (arg1 << (N_BITS-(pos+len))) >> (N_BITS-len)
               // e.g., EXTRACT(arg0, arg1, 8, 4):
               //  when N_BITS=32 then arg0 = (arg1 << 20) >> 28
-    SEXTRACT, // same as EXTRACT but using arithmetic shift
+    QSEXTRACT,// same as EXTRACT but using arithmetic shift
     //
     CTZ, // count trailing zeros (x86: BSF, TZCNT)
     RCL,
