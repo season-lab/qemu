@@ -2391,8 +2391,7 @@ static void branch_helper(uintptr_t a, uintptr_t b, uintptr_t cond,
     next_query++;
     assert(*next_query == 0);
     assert(next_query < queue_query + EXPR_QUERY_CAPACITY);
-    printf("Submitted a query\n");
-    
+    // printf("Submitted a query\n");
     // uintptr_t query_id = next_query - queue_query;
     // if (query_id > 0 && query_id % 1000 == 0)
     //    printf("Submitted %ld queries\n", query_id);
