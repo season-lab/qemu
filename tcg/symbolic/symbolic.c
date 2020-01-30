@@ -69,6 +69,20 @@ typedef struct TCGHelperInfo {
     unsigned    sizemask;
 } TCGHelperInfo;
 
+// Pattern:
+//      movq    0xBASE(, %REG, 8), %REG
+//      jmpq    *%rax
+//
+typedef struct {
+    TCGTemp*  index;
+    TCGTemp*  addr;
+    TCGTemp*  mov;
+    uint8_t   scale_is_addr_size;
+    uintptr_t displacement;
+    uint8_t   has_done_load;
+    uint8_t   need_to_free_addr;
+} JumpTableFinder;
+
 // from tcg.c
 extern GHashTable* helper_table;
 extern const char* tcg_find_helper(TCGContext* s, uintptr_t val);
@@ -820,7 +834,8 @@ static inline void tcg_set_label(TCGLabel* label, TCGOp* op_in, TCGOp** op_out,
         *op_out = op;
 }
 
-static inline void print_something(char* str) { debug_printf("%s\n", str); }
+static inline void print_something(char* str) { printf("%s\n", str); }
+DEF_HELPER_INFO(print_something);
 
 // the string has to be statically allocated, otherwise it will crash!
 static inline void tcg_print_const_str(const char* str, TCGOp* op_in,
@@ -1245,6 +1260,103 @@ static inline void qemu_unop(OPKIND opkind, TCGTemp* t_op_out, TCGTemp* t_op_a,
     CHECK_TEMPS_COUNT(tcg_ctx);
 }
 
+static inline void qemu_pc_write(TCGTemp* t_op_a, TCGOp* op_in,
+                                 TCGContext* tcg_ctx)
+{
+    SAVE_TEMPS_COUNT(tcg_ctx);
+
+    size_t a = temp_idx(t_op_a);
+
+    TCGTemp* t_a = new_non_conflicting_temp(TCG_TYPE_PTR);
+    tcg_movi(t_a, (uintptr_t)&s_temps[a], 0, op_in, NULL, tcg_ctx);
+    tcg_load_n(t_a, t_a, 0, 0, 0, sizeof(uintptr_t), op_in, NULL, tcg_ctx);
+
+    TCGTemp* t_zero = new_non_conflicting_temp(TCG_TYPE_I64);
+    tcg_movi(t_zero, 0, 0, op_in, NULL, tcg_ctx); // ToDo: make this smarter
+
+    TCGLabel* label_a_concrete = gen_new_label();
+    tcg_brcond(label_a_concrete, t_a, t_zero, TCG_COND_EQ, 0, 1, op_in, NULL,
+               tcg_ctx);
+
+    TCGTemp* t_out = new_non_conflicting_temp(TCG_TYPE_I64);
+
+    // FixMe: we assume that Expr is zero-initialzed!
+    allocate_new_expr(t_out, op_in, tcg_ctx);
+
+    TCGTemp* t_opkind = new_non_conflicting_temp(TCG_TYPE_I64);
+    tcg_movi(t_opkind, SYMBOLIC_PC, 0, op_in, NULL, tcg_ctx);
+    tcg_store_n(t_out, t_opkind, offsetof(Expr, opkind), 0, 1, sizeof(uint8_t),
+                op_in, NULL, tcg_ctx);
+
+    tcg_store_n(t_out, t_a, offsetof(Expr, op1), 0, 1, sizeof(uintptr_t), op_in,
+                NULL, tcg_ctx);
+
+    TCGOp* op;
+    tcg_print_const_str("\nSymbolic PC\n", op_in, &op, tcg_ctx);
+    mark_insn_as_instrumentation(op);
+
+    tcg_set_label(label_a_concrete, op_in, NULL, tcg_ctx);
+
+    tcg_temp_free_internal(t_out);
+
+    CHECK_TEMPS_COUNT(tcg_ctx);
+}
+
+static inline void qemu_jump_table(TCGTemp* t_addr, TCGOp* op_in,
+                                   TCGContext* tcg_ctx)
+{
+    SAVE_TEMPS_COUNT(tcg_ctx);
+
+    size_t a = temp_idx(t_addr);
+
+    TCGTemp* t_a = new_non_conflicting_temp(TCG_TYPE_PTR);
+    tcg_movi(t_a, (uintptr_t)&s_temps[a], 0, op_in, NULL, tcg_ctx);
+    tcg_load_n(t_a, t_a, 0, 0, 0, sizeof(uintptr_t), op_in, NULL, tcg_ctx);
+
+    TCGTemp* t_zero = new_non_conflicting_temp(TCG_TYPE_I64);
+    tcg_movi(t_zero, 0, 0, op_in, NULL, tcg_ctx); // ToDo: make this smarter
+
+    TCGLabel* label_a_concrete = gen_new_label();
+    tcg_brcond(label_a_concrete, t_a, t_zero, TCG_COND_EQ, 0, 1, op_in, NULL,
+               tcg_ctx);
+
+    TCGOp* op;
+    tcg_print_const_str("\nSymbolic jump table\n", op_in, &op, tcg_ctx);
+    mark_insn_as_instrumentation(op);
+
+    TCGTemp* t_out = new_non_conflicting_temp(TCG_TYPE_I64);
+
+    // FixMe: we assume that Expr is zero-initialzed!
+    allocate_new_expr(t_out, op_in, tcg_ctx);
+
+    TCGTemp* t_opkind = new_non_conflicting_temp(TCG_TYPE_I64);
+    tcg_movi(t_opkind, SYMBOLIC_JUMP_TABLE_ACCESS, 0, op_in, NULL, tcg_ctx);
+    tcg_store_n(t_out, t_opkind, offsetof(Expr, opkind), 0, 1, sizeof(uint8_t),
+                op_in, NULL, tcg_ctx);
+
+    tcg_store_n(t_out, t_a, offsetof(Expr, op1), 0, 1, sizeof(uintptr_t), op_in,
+                NULL, tcg_ctx);
+
+    MARK_TEMP_AS_ALLOCATED(t_addr);
+    tcg_store_n(t_out, t_addr, offsetof(Expr, op2), 0, 0,
+                sizeof(uintptr_t), op_in, NULL, tcg_ctx);
+    MARK_TEMP_AS_NOT_ALLOCATED(t_addr);
+
+    TCGTemp* t_one = new_non_conflicting_temp(TCG_TYPE_I64);
+    tcg_movi(t_one, 1, 0, op_in, NULL, tcg_ctx);
+    tcg_store_n(t_out, t_one, offsetof(Expr, op2_is_const), 0, 1,
+                sizeof(uint8_t), op_in, NULL, tcg_ctx);
+
+    //add_void_call_1(print_expr, t_out, op_in, &op, tcg_ctx);
+    //mark_insn_as_instrumentation(op);
+
+    tcg_temp_free_internal(t_out);
+
+    tcg_set_label(label_a_concrete, op_in, NULL, tcg_ctx);
+
+    CHECK_TEMPS_COUNT(tcg_ctx);
+}
+
 static inline void allocate_l2_page(uintptr_t l1_entry_idx)
 {
     assert(l1_entry_idx < 1 << L1_PAGE_BITS);
@@ -1528,7 +1640,7 @@ static inline void qemu_load_helper(uintptr_t orig_addr,
     // assert((mem_op & MO_BE) == 0); // FixMe: extend to BE
 
     // number of bytes to load
-    size_t size = get_mem_op_size(mem_op);
+    size_t    size = get_mem_op_size(mem_op);
     uintptr_t addr = orig_addr + offset;
 
     uintptr_t  l1_page_idx = addr >> (L1_PAGE_BITS + L2_PAGE_BITS);
@@ -2259,12 +2371,12 @@ static TCGCond check_branch_cond_helper(uintptr_t a, uintptr_t b, TCGCond cond)
                 return TCG_COND_LEU;
             else
                 return TCG_COND_GTU;
-        case TCG_COND_GEU:
+        case TCG_COND_GTU:
             if (a > b)
                 return TCG_COND_GTU;
             else
                 return TCG_COND_LEU;
-        case TCG_COND_GTU:
+        case TCG_COND_GEU:
             if (a >= b)
                 return TCG_COND_GEU;
             else
@@ -2574,15 +2686,17 @@ static Expr* input_exprs[MAX_INPUT_SIZE] = {0};
 #define FP_CLOSED       1
 #define FP_ZERO_OFFSET  2
 // fp >= 0: offset in the inputfile
-static intptr_t input_fp[MAX_FP] = { 0 };
+static intptr_t input_fp[MAX_FP] = {0};
 
 static inline void read_from_input(intptr_t offset, uintptr_t addr, size_t size)
 {
     assert(offset >= 0 && "Invalid offset");
-    //printf("Offset=%ld size=%ld\n", offset, size);
+    // printf("Offset=%ld size=%ld\n", offset, size);
     assert((offset + size) < MAX_INPUT_SIZE && "Offset is too large");
 
-    printf("Reading %lu bytes from input at 0x%lx. Storing them at addr 0x%lx\n", size, offset, addr);
+    printf(
+        "Reading %lu bytes from input at 0x%lx. Storing them at addr 0x%lx\n",
+        size, offset, addr);
 
     uintptr_t  l1_page_idx = addr >> (L1_PAGE_BITS + L2_PAGE_BITS);
     l2_page_t* l2_page     = s_memory.table.entries[l1_page_idx];
@@ -2604,10 +2718,10 @@ static inline void read_from_input(intptr_t offset, uintptr_t addr, size_t size)
     for (size_t i = 0; i < size; i++) {
         Expr* e_byte = input_exprs[offset + i];
         if (e_byte == NULL) {
-            e_byte   = new_expr();
-            e_byte->opkind = IS_SYMBOLIC;
-            e_byte->op1    = (Expr*)(offset + i); // ID
-            e_byte->op2    = (Expr*)1;            // number of bytes
+            e_byte                  = new_expr();
+            e_byte->opkind          = IS_SYMBOLIC;
+            e_byte->op1             = (Expr*)(offset + i); // ID
+            e_byte->op2             = (Expr*)1;            // number of bytes
             input_exprs[offset + i] = e_byte;
         }
         l3_page->entries[l3_page_idx + i] = e_byte;
@@ -2618,19 +2732,20 @@ void qemu_syscall_helper(uintptr_t syscall_no, uintptr_t syscall_arg0,
                          uintptr_t syscall_arg1, uintptr_t syscall_arg2,
                          uintptr_t ret_val)
 {
-    int fp;
-    SyscallNo nr = (SyscallNo) syscall_no;
+    int       fp;
+    SyscallNo nr = (SyscallNo)syscall_no;
     switch (nr) {
         case SYS_OPEN:
         case SYS_OPENAT:
             fp = ((int)ret_val);
             if (s_config.symbolic_inject_input_mode == FROM_FILE && fp >= 0) {
-                const char* fname =
-                    nr == SYS_OPEN ? (const char *)syscall_arg0 : (const char *)syscall_arg1;
-                //printf("Opening file: %s vs %s\n", fname, s_config.inputfile);
+                const char* fname = nr == SYS_OPEN ? (const char*)syscall_arg0
+                                                   : (const char*)syscall_arg1;
+                // printf("Opening file: %s vs %s\n", fname,
+                // s_config.inputfile);
                 if (strcmp(fname, s_config.inputfile) == 0) {
                     input_fp[fp] = FP_ZERO_OFFSET; // offset 0
-                    //printf("Opening input file: %s\n", fname);
+                    // printf("Opening input file: %s\n", fname);
                 }
             }
             break;
@@ -2641,11 +2756,11 @@ void qemu_syscall_helper(uintptr_t syscall_no, uintptr_t syscall_arg0,
             break;
         //
         case SYS_SEEK:
-            fp           = syscall_arg0;
+            fp = syscall_arg0;
             if (s_config.symbolic_inject_input_mode == READ_FD_0 &&
                 fp == FD_STDIN && input_fp[fp] != FP_CLOSED) {
                 off_t offset = syscall_arg1;
-                int whence = syscall_arg2;
+                int   whence = syscall_arg2;
                 switch (whence) {
                     case SEEK_CUR:
                         if (input_fp[fp] == FP_UNINTIALIZED) {
@@ -2661,9 +2776,10 @@ void qemu_syscall_helper(uintptr_t syscall_no, uintptr_t syscall_arg0,
                     default:
                         tcg_abort();
                 }
-            } else if (s_config.symbolic_inject_input_mode == FROM_FILE && input_fp[fp] >= FP_ZERO_OFFSET) {
+            } else if (s_config.symbolic_inject_input_mode == FROM_FILE &&
+                       input_fp[fp] >= FP_ZERO_OFFSET) {
                 off_t offset = syscall_arg1;
-                int whence = syscall_arg2;
+                int   whence = syscall_arg2;
                 switch (whence) {
                     case SEEK_CUR:
                         input_fp[fp] += offset;
@@ -2690,11 +2806,14 @@ void qemu_syscall_helper(uintptr_t syscall_no, uintptr_t syscall_arg0,
                     // first read from stdin, set offset to zero
                     input_fp[fp] = FP_ZERO_OFFSET;
                 }
-                read_from_input(input_fp[fp] - FP_ZERO_OFFSET, syscall_arg1, ret_val);
+                read_from_input(input_fp[fp] - FP_ZERO_OFFSET, syscall_arg1,
+                                ret_val);
                 input_fp[fp] += ret_val;
 
-            } else if (s_config.symbolic_inject_input_mode == FROM_FILE && input_fp[fp] >= FP_ZERO_OFFSET) {
-                read_from_input(input_fp[fp] - FP_ZERO_OFFSET, syscall_arg1, ret_val);
+            } else if (s_config.symbolic_inject_input_mode == FROM_FILE &&
+                       input_fp[fp] >= FP_ZERO_OFFSET) {
+                read_from_input(input_fp[fp] - FP_ZERO_OFFSET, syscall_arg1,
+                                ret_val);
                 input_fp[fp] += ret_val;
             }
             break;
@@ -2967,12 +3086,19 @@ static void register_helpers(void)
 {
     g_hash_table_insert(helper_table, (gpointer)print_reg,
                         (gpointer)&helper_info_print_reg);
+    g_hash_table_insert(helper_table, (gpointer)print_something,
+                        (gpointer)&helper_info_print_something);
 }
+
+typedef struct {
+    uint8_t   is_alive;
+    uint8_t   is_const;
+    uintptr_t const_value;
+} TCGTempStaticState;
 
 #include "symbolic-i386.c"
 
 static int instrument = 0;
-static int first_load = 0;
 int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                                    uint8_t* tb_code, TCGContext* tcg_ctx)
 {
@@ -2980,6 +3106,11 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
     int force_flush_cache = 0;
 
     register_helpers();
+
+    JumpTableFinder jump_table_finder_curr_instr = {0};
+    JumpTableFinder jump_table_finder_prev_instr = {0};
+
+    TCGTempStaticState temp_static_state[TCG_MAX_TEMPS] = {0};
 
     TCGOp __attribute__((unused)) * op;
     uintptr_t pc = 0;
@@ -2996,6 +3127,11 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
 
             case INDEX_op_insn_start:
                 pc = op->args[0];
+
+                jump_table_finder_prev_instr = jump_table_finder_curr_instr;
+                memset(&jump_table_finder_curr_instr, 0,
+                       sizeof(JumpTableFinder));
+
                 if (instrument == 0 &&
                     pc == s_config.symbolic_exec_start_addr) {
                     // ToDo: we could start instrumenting when we inject
@@ -3004,10 +3140,12 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                     force_flush_cache = 1;
                 } else if (instrument == 1 &&
                            pc == s_config.symbolic_exec_stop_addr) {
-                    instrument        = 0;
-                    *next_query       = FINAL_QUERY;
-                    printf("Number of queries: %lu\n",  (next_query - queue_query) - 1);
-                    printf("Number of expressions: %lu\n",  GET_EXPR_IDX(next_free_expr) - 1);
+                    instrument  = 0;
+                    *next_query = FINAL_QUERY;
+                    printf("Number of queries: %lu\n",
+                           (next_query - queue_query) - 1);
+                    printf("Number of expressions: %lu\n",
+                           GET_EXPR_IDX(next_free_expr) - 1);
                     force_flush_cache = 1;
                 }
 
@@ -3038,6 +3176,10 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                                     tcg_ctx);
                     tcg_temp_free_internal(t_idx);
 #endif
+                    // static analysis
+                    temp_static_state[temp_idx(t)].is_alive    = 1;
+                    temp_static_state[temp_idx(t)].is_const    = 1;
+                    temp_static_state[temp_idx(t)].const_value = op->args[1];
                 }
                 break;
 
@@ -3064,6 +3206,19 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                     tcg_temp_free_internal(t_to_idx);
                     tcg_temp_free_internal(t_from_idx);
 #endif
+                    // jump table finder
+                    if (jump_table_finder_curr_instr.displacement > 0 &&
+                        jump_table_finder_curr_instr.scale_is_addr_size &&
+                        jump_table_finder_curr_instr.index &&
+                        jump_table_finder_curr_instr.has_done_load &&
+                        jump_table_finder_curr_instr.addr &&
+                        jump_table_finder_curr_instr.mov == from) {
+
+                        jump_table_finder_curr_instr.mov = to;
+                        assert(to != from);
+                        assert(jump_table_finder_curr_instr.addr != to);
+                        assert(jump_table_finder_curr_instr.addr != from);
+                    }
                 }
                 break;
 
@@ -3118,6 +3273,26 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                     tcg_temp_free_internal(t_a_idx);
                     tcg_temp_free_internal(t_b_idx);
 #endif
+                    // jump table finder
+                    if (op->opc == INDEX_op_shl_i64 &&
+                        t_a->name && // native register
+                        !temp_static_state[temp_idx(t_a)].is_const &&
+                        temp_static_state[temp_idx(t_b)].is_alive &&
+                        temp_static_state[temp_idx(t_b)].is_const &&
+                        temp_static_state[temp_idx(t_b)].const_value == 3) {
+
+                        jump_table_finder_curr_instr.index              = t_a;
+                        jump_table_finder_curr_instr.scale_is_addr_size = 1;
+                    }
+                    if (op->opc == INDEX_op_add_i64 &&
+                        temp_static_state[temp_idx(t_b)].is_alive &&
+                        temp_static_state[temp_idx(t_b)].is_const &&
+                        temp_static_state[temp_idx(t_b)].const_value > 0x1000) {
+
+                        jump_table_finder_curr_instr.displacement =
+                            temp_static_state[temp_idx(t_b)].const_value;
+                        jump_table_finder_curr_instr.addr = t_out;
+                    }
                 }
                 break;
 
@@ -3169,8 +3344,28 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                     tcg_temp_free_internal(t_ptr_idx);
                     tcg_temp_free_internal(t_val_idx);
 #endif
+                    // jump table finder
+                    if (jump_table_finder_curr_instr.displacement > 0 &&
+                        jump_table_finder_curr_instr.scale_is_addr_size &&
+                        jump_table_finder_curr_instr.index &&
+                        t_ptr == jump_table_finder_curr_instr.addr) {
 
-                    first_load = 1;
+                        jump_table_finder_curr_instr.has_done_load = 1;
+                        jump_table_finder_curr_instr.mov           = t_val;
+                        TCGTemp* t_addr =
+                            new_non_conflicting_temp(TCG_TYPE_PTR);
+                        MARK_TEMP_AS_ALLOCATED(t_ptr);
+                        tcg_mov(t_addr, t_ptr, 0, 0, op, NULL, tcg_ctx);
+                        MARK_TEMP_AS_NOT_ALLOCATED(t_ptr);
+
+                        assert(t_addr != t_val);
+
+                        move_temp(temp_idx(t_ptr), temp_idx(t_addr), op, tcg_ctx);
+
+                        jump_table_finder_curr_instr.addr              = t_addr;
+                        jump_table_finder_curr_instr.need_to_free_addr = 1;
+                        // printf("Jump table finder: load\n");
+                    }
                 }
                 break;
 
@@ -3246,7 +3441,31 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                 mark_temp_as_in_use(arg_temp(op->args[1]));
                 if (instrument) {
                     uintptr_t offset = (uintptr_t)op->args[2];
-                    if (is_xmm_offset(offset)) {
+                    if (is_eip_offset(offset)) {
+
+                        TCGTemp* t_value = arg_temp(op->args[0]);
+                        qemu_pc_write(t_value, op, tcg_ctx);
+
+                        if (jump_table_finder_prev_instr.scale_is_addr_size &&
+                            jump_table_finder_prev_instr.displacement &&
+                            jump_table_finder_prev_instr.addr &&
+                            jump_table_finder_prev_instr.index &&
+                            jump_table_finder_prev_instr.has_done_load &&
+                            jump_table_finder_prev_instr.mov == t_value) {
+
+                            // printf("\nJump Table?\n");
+                            qemu_jump_table(jump_table_finder_prev_instr.addr,
+                                            op, tcg_ctx);
+
+                            if (jump_table_finder_prev_instr
+                                    .need_to_free_addr) {
+                                tcg_temp_free_internal(
+                                    jump_table_finder_prev_instr.addr);
+                                clear_temp(temp_idx(jump_table_finder_prev_instr.addr), op, tcg_ctx);
+                            }
+                        }
+
+                    } else if (is_xmm_offset(offset)) {
                         // printf("store to xmm data (offset=%lu)\n", offset);
                         TCGTemp* t_val = arg_temp(op->args[0]);
                         TCGTemp* t_ptr = arg_temp(op->args[1]);
@@ -3871,9 +4090,13 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
         unsigned life = op->life;
         life /= DEAD_ARG;
         if (life) {
-            for (int i = 0; life; ++i, life >>= 1)
-                if (life & 1)
+            for (int i = 0; life; ++i, life >>= 1) {
+                if (life & 1) {
                     mark_temp_as_free(arg_temp(op->args[i]));
+                    temp_static_state[temp_idx(arg_temp(op->args[i]))]
+                        .is_alive = 0;
+                }
+            }
         }
     }
 

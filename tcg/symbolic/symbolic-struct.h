@@ -141,6 +141,9 @@ typedef enum OPKIND {
     EFLAGS_C_LOGIC,
     EFLAGS_C_SHL,
     EFLAGS_C_BMILG,
+    //
+    SYMBOLIC_PC,
+    SYMBOLIC_JUMP_TABLE_ACCESS,
 } OPKIND;
 
 typedef enum EXTENDKIND {
@@ -306,6 +309,9 @@ static inline const char* opkind_to_str(uint8_t opkind)
             return "EFLAGS_C_LOGIC";
         case EFLAGS_C_SHL:
             return "EFLAGS_C_SHL";
+
+        case SYMBOLIC_JUMP_TABLE_ACCESS:
+            return "SYMBOLIC_JUMP_TABLE_ACCESS";
 
         default:
             printf("\nstr(opkind=%u) is unknown\n", opkind);

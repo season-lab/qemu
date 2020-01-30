@@ -646,6 +646,15 @@ static inline int is_xmm_offset(uintptr_t offset)
     return 0;
 }
 
+static inline int is_eip_offset(uintptr_t offset)
+{
+    if (offset == offsetof(CPUX86State, eip)) {
+        return 1;
+    }
+    return 0;
+}
+
+
 static void qemu_xmm_pmovmskb(uintptr_t dst_idx, uint64_t* src_addr)
 {
     Expr** src_expr_addr = get_expr_addr((uintptr_t)src_addr, XMM_BYTES);
