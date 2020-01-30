@@ -2432,73 +2432,12 @@ static void branch_helper(uintptr_t a, uintptr_t b, uintptr_t cond,
 #endif
 
     Expr* branch_expr = new_expr();
-
     TCGCond sat_cond    = check_branch_cond_helper(a, b, cond);
     branch_expr->opkind = get_opkind_from_cond(sat_cond);
+    SET_EXPR_OP(branch_expr->op1, branch_expr->op1_is_const, expr_a, a);
+    SET_EXPR_OP(branch_expr->op2, branch_expr->op2_is_const, expr_b, b);
 
-    if (expr_a)
-        branch_expr->op1 = expr_a;
-    else {
-        branch_expr->op1          = (Expr*)(uintptr_t)a;
-        branch_expr->op1_is_const = 1;
-    }
-
-    if (expr_b)
-        branch_expr->op2 = expr_b;
-    else {
-        branch_expr->op2          = (Expr*)(uintptr_t)b;
-        branch_expr->op2_is_const = 1;
-    }
-
-    Expr* old_pi = NULL;
-    if (path_constraints == NULL) {
-        path_constraints = branch_expr;
-    } else {
-        old_pi              = path_constraints;
-        Expr* new_pi_expr   = new_expr();
-        new_pi_expr->opkind = AND;
-        new_pi_expr->op1    = branch_expr;
-        new_pi_expr->op2    = old_pi;
-        path_constraints    = new_pi_expr;
-    }
-#ifdef SYMBOLIC_DEBUG
-    printf("Branch at %lx\n", pc);
-    print_pi();
-#endif
-
-    // Invert branch and submit query
-
-    Expr* branch_neg_expr   = new_expr();
-    branch_neg_expr->opkind = get_opkind_from_neg_cond(sat_cond);
-
-    if (expr_a)
-        branch_neg_expr->op1 = expr_a;
-    else {
-        branch_neg_expr->op1          = (Expr*)(uintptr_t)a;
-        branch_neg_expr->op1_is_const = 1;
-    }
-
-    if (expr_b)
-        branch_neg_expr->op2 = expr_b;
-    else {
-        branch_neg_expr->op2          = (Expr*)(uintptr_t)b;
-        branch_neg_expr->op2_is_const = 1;
-    }
-
-    Expr* query = branch_neg_expr;
-    if (old_pi) {
-        query         = new_expr();
-        query->opkind = AND;
-        query->op1    = branch_neg_expr;
-        query->op2    = old_pi;
-    }
-    assert(*next_query == 0);
-
-#if 0
-    return;
-#endif
-
-    *next_query = query;
+    *next_query = branch_expr;
     assert(*next_query != 0);
     next_query++;
     assert(*next_query == 0);
