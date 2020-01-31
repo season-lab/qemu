@@ -80,17 +80,17 @@ typedef enum OPKIND {
     EXTRACT8, // EXTRACT8(arg0, i): extract i-th byte from arg0
     EXTRACT,
     // ternary
-    DEPOSIT,  // DEPOSIT(arg0, arg1, arg2, pos, len):
-              //    arg0 = (arg1 & ~MASK(pos, len)) | ((arg2 << pos) & MASK(pos,
-              //    len))
-              // where: MASK(pos, len) build a mask of bits, where len bits are
-              // set to one starting at position 8 (going towards msb). e.g.,
-              // MASK(8, 4) = 0x0f00
-    QZEXTRACT,// EXTRACT(arg0, arg1, pos, len):
-              //    arg0 = (arg1 << (N_BITS-(pos+len))) >> (N_BITS-len)
-              // e.g., EXTRACT(arg0, arg1, 8, 4):
-              //  when N_BITS=32 then arg0 = (arg1 << 20) >> 28
-    QSEXTRACT,// same as EXTRACT but using arithmetic shift
+    DEPOSIT, // DEPOSIT(arg0, arg1, arg2, pos, len):
+             //    arg0 = (arg1 & ~MASK(pos, len)) | ((arg2 << pos) & MASK(pos,
+             //    len))
+             // where: MASK(pos, len) build a mask of bits, where len bits are
+             // set to one starting at position 8 (going towards msb). e.g.,
+             // MASK(8, 4) = 0x0f00
+    QZEXTRACT, // EXTRACT(arg0, arg1, pos, len):
+               //    arg0 = (arg1 << (N_BITS-(pos+len))) >> (N_BITS-len)
+               // e.g., EXTRACT(arg0, arg1, 8, 4):
+               //  when N_BITS=32 then arg0 = (arg1 << 20) >> 28
+    QSEXTRACT, // same as EXTRACT but using arithmetic shift
     //
     CTZ, // count trailing zeros (x86: BSF, TZCNT)
     RCL,
@@ -101,8 +101,12 @@ typedef enum OPKIND {
     OR_3,
     XOR_3,
     // XMM
-    CMPB,
-    PMOVMSKB, // 45
+    PMOVMSKB, // 44
+    CMP_EQ,
+    CMP_GT,
+    CMP_GE,
+    CMP_LE,
+    CMP_LT,
     MIN,
     //
     EFLAGS_ALL_ADD,
@@ -165,6 +169,11 @@ typedef struct Expr {
     uint8_t      op2_is_const;
     uint8_t      op3_is_const;
 } Expr;
+
+typedef struct Query {
+    Expr* query;
+    uintptr_t    address;
+} Query;
 
 extern Expr* pool;
 #define GET_EXPR_IDX(e) ((((uintptr_t)e) - ((uintptr_t)pool)) / sizeof(Expr))
@@ -254,7 +263,7 @@ static inline const char* opkind_to_str(uint8_t opkind)
         case XOR_3:
             return "XOR_3";
 
-        case CMPB:
+        case CMP_EQ:
             return "CMPB";
         case PMOVMSKB:
             return "PMOVMSKB";

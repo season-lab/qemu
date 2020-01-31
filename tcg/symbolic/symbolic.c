@@ -56,8 +56,8 @@ Expr* next_free_expr = NULL;
 Expr* last_expr      = NULL; // ToDo: unsafe
 
 // query pool
-Expr** queue_query = NULL;
-Expr** next_query  = NULL;
+Query* queue_query = NULL;
+Query* next_query  = NULL;
 
 TCGContext* internal_tcg_context = NULL;
 
@@ -200,7 +200,7 @@ void init_symbolic_mode(void)
     assert(expr_pool_shm_id > 0);
 
     int query_shm_id = shmget(QUERY_SHM_KEY, // IPC_PRIVATE,
-                              sizeof(Expr*) * EXPR_QUERY_CAPACITY, 0666);
+                              sizeof(Query) * EXPR_QUERY_CAPACITY, 0666);
     assert(query_shm_id > 0);
 
     // printf("POOL_SHM_ID=%d QUERY_SHM_ID=%d\n", expr_pool_shm_id,
@@ -230,7 +230,7 @@ void init_symbolic_mode(void)
     struct timespec polling_time;
     polling_time.tv_sec  = 0;
     polling_time.tv_nsec = 10;
-    while (*next_query != (void*)SHM_READY) {
+    while (next_query[0].query != (void*)SHM_READY) {
         nanosleep(&polling_time, NULL);
     }
     next_query++;
@@ -1338,8 +1338,8 @@ static inline void qemu_jump_table(TCGTemp* t_addr, TCGOp* op_in,
                 NULL, tcg_ctx);
 
     MARK_TEMP_AS_ALLOCATED(t_addr);
-    tcg_store_n(t_out, t_addr, offsetof(Expr, op2), 0, 0,
-                sizeof(uintptr_t), op_in, NULL, tcg_ctx);
+    tcg_store_n(t_out, t_addr, offsetof(Expr, op2), 0, 0, sizeof(uintptr_t),
+                op_in, NULL, tcg_ctx);
     MARK_TEMP_AS_NOT_ALLOCATED(t_addr);
 
     TCGTemp* t_one = new_non_conflicting_temp(TCG_TYPE_I64);
@@ -1347,8 +1347,8 @@ static inline void qemu_jump_table(TCGTemp* t_addr, TCGOp* op_in,
     tcg_store_n(t_out, t_one, offsetof(Expr, op2_is_const), 0, 1,
                 sizeof(uint8_t), op_in, NULL, tcg_ctx);
 
-    //add_void_call_1(print_expr, t_out, op_in, &op, tcg_ctx);
-    //mark_insn_as_instrumentation(op);
+    // add_void_call_1(print_expr, t_out, op_in, &op, tcg_ctx);
+    // mark_insn_as_instrumentation(op);
 
     tcg_temp_free_internal(t_out);
 
@@ -2431,16 +2431,17 @@ static void branch_helper(uintptr_t a, uintptr_t b, uintptr_t cond,
     print_temp(b_idx);
 #endif
 
-    Expr* branch_expr = new_expr();
+    Expr*   branch_expr = new_expr();
     TCGCond sat_cond    = check_branch_cond_helper(a, b, cond);
     branch_expr->opkind = get_opkind_from_cond(sat_cond);
     SET_EXPR_OP(branch_expr->op1, branch_expr->op1_is_const, expr_a, a);
     SET_EXPR_OP(branch_expr->op2, branch_expr->op2_is_const, expr_b, b);
 
-    *next_query = branch_expr;
-    assert(*next_query != 0);
+    next_query[0].query   = branch_expr;
+    next_query[0].address = pc;
+    assert(next_query[0].query != 0);
     next_query++;
-    assert(*next_query == 0);
+    assert(next_query[0].query == 0);
     assert(next_query < queue_query + EXPR_QUERY_CAPACITY);
     // printf("Submitted a query\n");
     // uintptr_t query_id = next_query - queue_query;
@@ -3079,8 +3080,8 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                     force_flush_cache = 1;
                 } else if (instrument == 1 &&
                            pc == s_config.symbolic_exec_stop_addr) {
-                    instrument  = 0;
-                    *next_query = FINAL_QUERY;
+                    instrument          = 0;
+                    next_query[0].query = FINAL_QUERY;
                     printf("Number of queries: %lu\n",
                            (next_query - queue_query) - 1);
                     printf("Number of expressions: %lu\n",
@@ -3299,7 +3300,8 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
 
                         assert(t_addr != t_val);
 
-                        move_temp(temp_idx(t_ptr), temp_idx(t_addr), op, tcg_ctx);
+                        move_temp(temp_idx(t_ptr), temp_idx(t_addr), op,
+                                  tcg_ctx);
 
                         jump_table_finder_curr_instr.addr              = t_addr;
                         jump_table_finder_curr_instr.need_to_free_addr = 1;
@@ -3392,7 +3394,7 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                             jump_table_finder_prev_instr.has_done_load &&
                             jump_table_finder_prev_instr.mov == t_value) {
 
-                            // printf("\nJump Table?\n");
+                            // printf("\nJump Table at %lx?\n", pc);
                             qemu_jump_table(jump_table_finder_prev_instr.addr,
                                             op, tcg_ctx);
 
@@ -3400,7 +3402,9 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                                     .need_to_free_addr) {
                                 tcg_temp_free_internal(
                                     jump_table_finder_prev_instr.addr);
-                                clear_temp(temp_idx(jump_table_finder_prev_instr.addr), op, tcg_ctx);
+                                clear_temp(
+                                    temp_idx(jump_table_finder_prev_instr.addr),
+                                    op, tcg_ctx);
                             }
                         }
 
@@ -3709,26 +3713,56 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
 
                     } else if (strcmp(helper_name, "pxor_xmm") == 0 ||
                                strcmp(helper_name, "por_xmm") == 0 ||
+                               strcmp(helper_name, "paddb_xmm") == 0 ||
+                               strcmp(helper_name, "paddw_xmm") == 0 ||
+                               strcmp(helper_name, "paddl_xmm") == 0 ||
+                               strcmp(helper_name, "paddq_xmm") == 0 ||
                                strcmp(helper_name, "psubb_xmm") == 0 ||
+                               strcmp(helper_name, "psubw_xmm") == 0 ||
+                               strcmp(helper_name, "psubl_xmm") == 0 ||
+                               strcmp(helper_name, "psubq_xmm") == 0 ||
                                strcmp(helper_name, "pcmpeqb_xmm") == 0 ||
+                               strcmp(helper_name, "pcmpeqw_xmm") == 0 ||
+                               strcmp(helper_name, "pcmpeql_xmm") == 0 ||
+                               strcmp(helper_name, "pcmpeqq_xmm") == 0 ||
+                               strcmp(helper_name, "pcmpgtb_xmm") == 0 ||
+                               strcmp(helper_name, "pcmpgtw_xmm") == 0 ||
+                               strcmp(helper_name, "pcmpgtl_xmm") == 0 ||
+                               strcmp(helper_name, "pcmpgtq_xmm") == 0 ||
                                strcmp(helper_name, "pminub_xmm") == 0) {
 
-                        OPKIND opkind;
+                        OPKIND    opkind;
+                        uintptr_t slice;
                         switch (helper_name[1]) {
                             case 'x':
                                 opkind = XOR;
+                                slice  = 1;
                                 break;
                             case 'o':
                                 opkind = OR;
+                                slice  = 1;
+                                break;
+                            case 'a':
+                                opkind = SUB;
+                                slice  = suffix_to_slice(helper_name[4], 0);
                                 break;
                             case 's':
                                 opkind = SUB;
+                                slice  = suffix_to_slice(helper_name[4], 0);
                                 break;
                             case 'c':
-                                opkind = CMPB;
+                                if (helper_name[5] == 'q') {
+                                    opkind = CMP_EQ;
+                                } else if (helper_name[4] == 'g' && helper_name[5] == 't') {
+                                    opkind = CMP_GT;
+                                } else {
+                                    tcg_abort();
+                                }
+                                slice  = suffix_to_slice(helper_name[6], 0);
                                 break;
                             case 'm':
                                 opkind = MIN;
+                                slice  = suffix_to_slice(helper_name[5], 0);
                                 break;
                             default:
                                 tcg_abort();
@@ -3740,14 +3774,17 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                                  tcg_ctx);
                         TCGTemp* t_dst_addr = arg_temp(op->args[1]);
                         TCGTemp* t_src_addr = arg_temp(op->args[2]);
+                        TCGTemp* t_slice =
+                            new_non_conflicting_temp(TCG_TYPE_PTR);
+                        tcg_movi(t_slice, slice, 0, op, NULL, tcg_ctx);
                         MARK_TEMP_AS_ALLOCATED(t_dst_addr);
                         MARK_TEMP_AS_ALLOCATED(t_src_addr);
-                        add_void_call_3(qemu_xmm_op_bytewise, t_opkind,
-                                        t_dst_addr, t_src_addr, op, NULL,
-                                        tcg_ctx);
+                        add_void_call_4(qemu_xmm_op, t_opkind, t_dst_addr,
+                                        t_src_addr, t_slice, op, NULL, tcg_ctx);
                         MARK_TEMP_AS_NOT_ALLOCATED(t_dst_addr);
                         MARK_TEMP_AS_NOT_ALLOCATED(t_src_addr);
                         tcg_temp_free_internal(t_opkind);
+                        tcg_temp_free_internal(t_slice);
 
                     } else if (strcmp(helper_name, "pmovmskb_xmm") == 0) {
 
@@ -3763,37 +3800,49 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                         MARK_TEMP_AS_NOT_ALLOCATED(t_src_addr);
                         tcg_temp_free_internal(t_dst_idx);
 
-                    } else if (strcmp(helper_name, "pslldq_xmm") == 0) {
+                    } else if (strcmp(helper_name, "psllb_xmm") == 0 ||
+                                strcmp(helper_name, "psllw_xmm") == 0 ||
+                                strcmp(helper_name, "pslld_xmm") == 0 ||
+                                strcmp(helper_name, "psllq_xmm") == 0 ||
+                                strcmp(helper_name, "pslldq_xmm") == 0 ||
+                                strcmp(helper_name, "psrlb_xmm") == 0 ||
+                                strcmp(helper_name, "psrlw_xmm") == 0 ||
+                                strcmp(helper_name, "psrld_xmm") == 0 ||
+                                strcmp(helper_name, "psrlq_xmm") == 0 ||
+                                strcmp(helper_name, "psrldq_xmm") == 0) {
+
+                        OPKIND    opkind;
+                        uintptr_t slice;
+                        switch (helper_name[2]) {
+                            case 'l':
+                                opkind = SHL;
+                                slice  = suffix_to_slice(helper_name[4], helper_name[5]);
+                                break;
+                            case 'r':
+                                opkind = SHR;
+                                slice  = suffix_to_slice(helper_name[4], helper_name[5]);
+                                break;
+                            default:
+                                tcg_abort();
+                        }
 
                         TCGTemp* t_opkind =
                             new_non_conflicting_temp(TCG_TYPE_PTR);
-                        tcg_movi(t_opkind, (uintptr_t)SHL, 0, op, NULL,
+                        tcg_movi(t_opkind, (uintptr_t)opkind, 0, op, NULL,
                                  tcg_ctx);
                         TCGTemp* t_dst_addr = arg_temp(op->args[1]);
                         TCGTemp* t_src_addr = arg_temp(op->args[2]);
-                        MARK_TEMP_AS_ALLOCATED(t_dst_addr);
-                        MARK_TEMP_AS_ALLOCATED(t_src_addr);
-                        add_void_call_3(qemu_xmm_shift, t_opkind, t_dst_addr,
-                                        t_src_addr, op, NULL, tcg_ctx);
-                        MARK_TEMP_AS_NOT_ALLOCATED(t_dst_addr);
-                        MARK_TEMP_AS_NOT_ALLOCATED(t_src_addr);
-                        tcg_temp_free_internal(t_opkind);
-
-                    } else if (strcmp(helper_name, "psrldq_xmm") == 0) {
-
-                        TCGTemp* t_opkind =
+                        TCGTemp* t_slice =
                             new_non_conflicting_temp(TCG_TYPE_PTR);
-                        tcg_movi(t_opkind, (uintptr_t)SHR, 0, op, NULL,
-                                 tcg_ctx);
-                        TCGTemp* t_dst_addr = arg_temp(op->args[1]);
-                        TCGTemp* t_src_addr = arg_temp(op->args[2]);
+                        tcg_movi(t_slice, slice, 0, op, NULL, tcg_ctx);
                         MARK_TEMP_AS_ALLOCATED(t_dst_addr);
                         MARK_TEMP_AS_ALLOCATED(t_src_addr);
-                        add_void_call_3(qemu_xmm_shift, t_opkind, t_dst_addr,
-                                        t_src_addr, op, NULL, tcg_ctx);
+                        add_void_call_4(qemu_xmm_op, t_opkind, t_dst_addr,
+                                        t_src_addr, t_slice, op, NULL, tcg_ctx);
                         MARK_TEMP_AS_NOT_ALLOCATED(t_dst_addr);
                         MARK_TEMP_AS_NOT_ALLOCATED(t_src_addr);
                         tcg_temp_free_internal(t_opkind);
+                        tcg_temp_free_internal(t_slice);
 
                     } else if (strcmp(helper_name, "pshufd_xmm") == 0) {
 
@@ -3829,7 +3878,11 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                     } else if (strcmp(helper_name, "punpcklbw_xmm") == 0 ||
                                strcmp(helper_name, "punpcklwd_xmm") == 0 ||
                                strcmp(helper_name, "punpckldq_xmm") == 0 ||
-                               strcmp(helper_name, "punpcklqdq_xmm") == 0) {
+                               strcmp(helper_name, "punpcklqdq_xmm") == 0 ||
+                               strcmp(helper_name, "punpckhbw_xmm") == 0 ||
+                               strcmp(helper_name, "punpckhwd_xmm") == 0 ||
+                               strcmp(helper_name, "punpckhdq_xmm") == 0 ||
+                               strcmp(helper_name, "punpckhqdq_xmm") == 0) {
 
                         TCGTemp* t_dst_addr = arg_temp(op->args[0]);
                         TCGTemp* t_src_addr = arg_temp(op->args[1]);
@@ -3852,18 +3905,32 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                                 tcg_abort();
                         }
 
+                        uint8_t lowbytes;
+                        if (helper_name[6] == 'l') {
+                            lowbytes = 1;
+                        } else if (helper_name[6] == 'h') {
+                            lowbytes = 0;
+                        } else {
+                            tcg_abort();
+                        }
+
                         TCGTemp* t_slice =
                             new_non_conflicting_temp(TCG_TYPE_PTR);
                         tcg_movi(t_slice, (uintptr_t)slice, 0, op, NULL,
                                  tcg_ctx);
 
+                        TCGTemp* t_lowbytes =
+                            new_non_conflicting_temp(TCG_TYPE_PTR);
+                        tcg_movi(t_lowbytes, lowbytes, 0, op, NULL, tcg_ctx);
+
                         MARK_TEMP_AS_ALLOCATED(t_dst_addr);
                         MARK_TEMP_AS_ALLOCATED(t_src_addr);
-                        add_void_call_3(qemu_xmm_punpckl, t_dst_addr,
+                        add_void_call_3(qemu_xmm_punpck, t_dst_addr,
                                         t_src_addr, t_slice, op, NULL, tcg_ctx);
                         MARK_TEMP_AS_NOT_ALLOCATED(t_dst_addr);
                         MARK_TEMP_AS_NOT_ALLOCATED(t_src_addr);
                         tcg_temp_free_internal(t_slice);
+                        tcg_temp_free_internal(t_lowbytes);
 
                     } else {
 

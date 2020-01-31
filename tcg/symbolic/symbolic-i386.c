@@ -534,8 +534,27 @@ static inline Expr* build_concat_expr(Expr** exprs, void* addr, size_t size,
     return dst_expr;
 }
 
-static void qemu_xmm_op_bytewise(uintptr_t opkind, uint64_t* dst_addr,
-                                 uint64_t* src_addr)
+static inline size_t suffix_to_slice(char suffix, char suffix2)
+{
+    if (suffix == 'b') {
+        return 1;
+    } else if (suffix == 'w') {
+        return 2;
+    } else if (suffix == 'l') {
+        return 4;
+    } else if (suffix == 'q') {
+        return 8;
+    } else if (suffix == 'd' && suffix2 == 'q') {
+        return 16;
+    } else if (suffix == 'd' && suffix2 != 'q') {
+        return 8;
+    } else {
+        tcg_abort();
+    }
+}
+
+static void qemu_xmm_op(uintptr_t opkind, uint8_t* dst_addr,
+                                 uint8_t* src_addr, uintptr_t slice)
 {
     Expr** dst_expr_addr = get_expr_addr((uintptr_t)dst_addr, XMM_BYTES);
     Expr** src_expr_addr = get_expr_addr((uintptr_t)src_addr, XMM_BYTES);
@@ -552,40 +571,56 @@ static void qemu_xmm_op_bytewise(uintptr_t opkind, uint64_t* dst_addr,
         }
     }
 #if 0
-    printf("qemu_xmm_op_bytewise: opkind=%s src_addr=%p dst_addr=%p\n",
+    printf("qemu_xmm_op: opkind=%s src_addr=%p dst_addr=%p\n",
           opkind_to_str(opkind), src_addr, dst_addr);
 #endif
-    for (size_t i = 0; i < XMM_BYTES; i++) {
-        if (dst_expr_addr[i] == NULL && src_expr_addr[i] == NULL)
+    for (size_t i = 0; i < XMM_BYTES; i += slice) {
+
+        uint8_t src_is_not_null = 0;
+        uint8_t dst_is_not_null = 0;
+        for (size_t k = 0; k < slice && !src_is_not_null && !dst_is_not_null; k++) {
+            src_is_not_null |= src_expr_addr[i] != NULL;
+            dst_is_not_null |= dst_expr_addr[i] != NULL;
+        }
+        if (!src_is_not_null && !dst_is_not_null) {
+            // no need to clear dst since it is already fully concrete
             continue;
+        }
 
         // printf("qemu_xmm_op=%s bytewise: symbolic reg\n",
         // opkind_to_str(opkind));
 
+        Expr* src_slice;
+        Expr* dst_slice;
+        if (slice > 1) {
+            // ToDo: optimize when one of the two is fully concrete
+            src_slice = build_concat_expr(&src_expr_addr[i], &src_addr[i], slice, 0);
+            dst_slice = build_concat_expr(&dst_expr_addr[i], &dst_addr[i], slice, 0);
+        } else {
+            src_slice = src_expr_addr[i] ? src_expr_addr[i] : (Expr *)(uintptr_t) src_addr[i];
+            dst_slice = dst_expr_addr[i] ? dst_expr_addr[i] : (Expr *)(uintptr_t) dst_addr[i];
+        }
+
         Expr* e   = new_expr();
         e->opkind = opkind;
+        e->op1 = dst_slice;
+        e->op2 = src_slice;
+        SET_EXPR_CONST_OP(e->op3, e->op3_is_const, slice);
 
-        e->op1 = dst_expr_addr[i];
-        if (e->op1 == NULL) {
-            uint8_t* byte_addr = ((uint8_t*)dst_addr) + i;
-            uint8_t  byte      = *byte_addr;
-            e->op1             = (Expr*)((uintptr_t)byte);
-            e->op1_is_const    = 1;
+        if (slice > 1) {
+            for (size_t k = 0; k < slice; k++) {
+                Expr* e_byte   = new_expr();
+                e_byte->opkind = EXTRACT8;
+                e_byte->op1 = e;
+                SET_EXPR_CONST_OP(e_byte->op2, e_byte->op2_is_const, k);
+            }
+        } else {
+            dst_expr_addr[i] = e;
         }
-
-        e->op2 = src_expr_addr[i];
-        if (e->op2 == NULL) {
-            uint8_t* byte_addr = ((uint8_t*)src_addr) + i;
-            uint8_t  byte      = *byte_addr;
-            e->op2             = (Expr*)((uintptr_t)byte);
-            e->op2_is_const    = 1;
-        }
-
-        // print_expr(e);
-        dst_expr_addr[i] = e;
     }
 }
 
+#if 0
 static void qemu_xmm_shift(uintptr_t opkind, uint64_t* dst_addr,
                            uint64_t* src_addr)
 {
@@ -637,6 +672,7 @@ static void qemu_xmm_shift(uintptr_t opkind, uint64_t* dst_addr,
         dst_expr_addr[i] = e_byte;
     }
 }
+#endif
 
 static inline int is_xmm_offset(uintptr_t offset)
 {
@@ -749,13 +785,14 @@ static void qemu_xmm_pshufd(uint64_t* dst_addr, uint64_t* src_addr,
     }
 }
 
-static void qemu_xmm_punpckl(uint64_t* dst_addr, uint64_t* src_addr, uintptr_t slice)
+static void qemu_xmm_punpck(uint64_t* dst_addr, uint64_t* src_addr, uintptr_t slice, uint8_t lowbytes)
 {
     Expr** dst_expr_addr = get_expr_addr((uintptr_t)dst_addr, XMM_BYTES);
     Expr** src_expr_addr = get_expr_addr((uintptr_t)src_addr, XMM_BYTES);
 
     if (src_expr_addr == NULL) {
         if (dst_expr_addr != NULL) {
+            // FixMe: wrong
             for (size_t i = 0; i < XMM_BYTES; i++) {
                 dst_expr_addr[i] = NULL;
             }
@@ -770,6 +807,7 @@ static void qemu_xmm_punpckl(uint64_t* dst_addr, uint64_t* src_addr, uintptr_t s
 
     if (!src_is_not_null) {
         if (dst_expr_addr != NULL) {
+            // FixMe: wrong
             for (size_t i = 0; i < XMM_BYTES; i++) {
                 dst_expr_addr[i] = NULL;
             }
@@ -782,13 +820,20 @@ static void qemu_xmm_punpckl(uint64_t* dst_addr, uint64_t* src_addr, uintptr_t s
         dst_exprs[i] = dst_expr_addr[i];
     }
 
+    size_t base_index;
+    if (lowbytes) {
+        base_index = 0;
+    } else {
+        base_index = XMM_BYTES / 2;
+    }
+
     uint8_t count = 0;
     for (size_t i = 0; i < XMM_BYTES; i += (2 * slice)) {
         for (size_t k = 0; k < slice; k++) {
-            dst_expr_addr[i + k] = dst_exprs[(count * slice) + k];
+            dst_expr_addr[i + k] = dst_exprs[base_index + (count * slice) + k];
         }
         for (size_t k = 0; k < slice; k++) {
-            dst_expr_addr[i + slice + k] = src_expr_addr[(count * slice) + k];
+            dst_expr_addr[i + slice + k] = src_expr_addr[base_index + (count * slice) + k];
         }
         count++;
     }
