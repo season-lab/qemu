@@ -404,6 +404,13 @@ static inline TranslationBlock *tb_find(CPUState *cpu,
     uint32_t flags;
 
     tb = tb_lookup__cpu_state(cpu, &pc, &cs_base, &flags, cf_mask);
+
+#if 1 // SYMBOLIC_INSTRUMENTATION
+    if (qemu_loglevel_mask(CPU_LOG_TB_OP)) {
+        tb = NULL;
+    }
+#endif
+
     if (tb == NULL) {
         mmap_lock();
         tb = tb_gen_code(cpu, pc, cs_base, flags, cf_mask);

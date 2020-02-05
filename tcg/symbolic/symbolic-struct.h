@@ -328,7 +328,7 @@ static inline const char* opkind_to_str(uint8_t opkind)
     }
 }
 
-#define MAX_PRINT_CHECK 1024
+#define MAX_PRINT_CHECK (1024 * 1024)
 uint8_t            printed[MAX_PRINT_CHECK];
 static inline void print_expr_internal(Expr* expr, uint8_t reset)
 {
@@ -337,6 +337,10 @@ static inline void print_expr_internal(Expr* expr, uint8_t reset)
             printed[i] = 0;
 
     printf("expr:");
+    if (expr == NULL) {
+        printf(" NULL\n");
+        return;
+    }
     // printf(" addr=%p", expr);
     printf(" id=%lu", GET_EXPR_IDX(expr));
     if (expr) {

@@ -477,12 +477,16 @@ static void qemu_cc_compute_c(uint64_t packed_idx, uintptr_t dst,
     }
 }
 
-static Expr** get_expr_addr(uintptr_t addr, size_t size)
+static Expr** get_expr_addr(uintptr_t addr, size_t size, uint8_t allocate)
 {
     uintptr_t  l1_page_idx = addr >> (L1_PAGE_BITS + L2_PAGE_BITS);
     l2_page_t* l2_page     = s_memory.table.entries[l1_page_idx];
     if (l2_page == NULL) {
-        return NULL;
+        if (!allocate) {
+            return NULL;
+        }
+        l2_page                             = g_malloc0(sizeof(l2_page_t));
+        s_memory.table.entries[l1_page_idx] = l2_page;
     }
 
     uintptr_t l2_page_idx = (addr >> L2_PAGE_BITS) & 0xFFFF;
@@ -491,7 +495,11 @@ static Expr** get_expr_addr(uintptr_t addr, size_t size)
 
     l3_page_t* l3_page = l2_page->entries[l2_page_idx];
     if (l3_page == NULL) {
-        return NULL;
+        if (!allocate) {
+            return NULL;
+        }
+        l3_page                       = g_malloc0(sizeof(l3_page_t));
+        l2_page->entries[l2_page_idx] = l3_page;
     }
 
     return &l3_page->entries[l3_page_idx];
@@ -553,11 +561,11 @@ static inline size_t suffix_to_slice(char suffix, char suffix2)
     }
 }
 
-static void qemu_xmm_op(uintptr_t opkind, uint8_t* dst_addr,
-                                 uint8_t* src_addr, uintptr_t slice)
+static void qemu_xmm_op(uintptr_t opkind, uint8_t* dst_addr, uint8_t* src_addr,
+                        uintptr_t slice)
 {
-    Expr** dst_expr_addr = get_expr_addr((uintptr_t)dst_addr, XMM_BYTES);
-    Expr** src_expr_addr = get_expr_addr((uintptr_t)src_addr, XMM_BYTES);
+    Expr** dst_expr_addr = get_expr_addr((uintptr_t)dst_addr, XMM_BYTES, 0);
+    Expr** src_expr_addr = get_expr_addr((uintptr_t)src_addr, XMM_BYTES, 0);
     if (dst_expr_addr == NULL && src_expr_addr == NULL) {
         // printf("qemu_xmm_op_bytewise: both regs are concrete\n");
         return;
@@ -568,17 +576,17 @@ static void qemu_xmm_op(uintptr_t opkind, uint8_t* dst_addr,
         // xmm reg will be concrete
         for (size_t i = 0; i < XMM_BYTES; i++) {
             dst_expr_addr[i] = NULL;
+            return;
         }
     }
-#if 0
-    printf("qemu_xmm_op: opkind=%s src_addr=%p dst_addr=%p\n",
-          opkind_to_str(opkind), src_addr, dst_addr);
-#endif
+
     for (size_t i = 0; i < XMM_BYTES; i += slice) {
 
         uint8_t src_is_not_null = 0;
         uint8_t dst_is_not_null = 0;
-        for (size_t k = 0; k < slice && !src_is_not_null && !dst_is_not_null; k++) {
+        assert(src_expr_addr && dst_expr_addr);
+        for (size_t k = 0; k < slice && !src_is_not_null && !dst_is_not_null;
+             k++) {
             src_is_not_null |= src_expr_addr[i] != NULL;
             dst_is_not_null |= dst_expr_addr[i] != NULL;
         }
@@ -587,32 +595,39 @@ static void qemu_xmm_op(uintptr_t opkind, uint8_t* dst_addr,
             continue;
         }
 
-        // printf("qemu_xmm_op=%s bytewise: symbolic reg\n",
-        // opkind_to_str(opkind));
+#if 1
+        printf("qemu_xmm_op: opkind=%s src_addr=%p dst_addr=%p slice=%lu count=%ld\n",
+            opkind_to_str(opkind), src_addr, dst_addr, slice, i);
+#endif
 
         Expr* src_slice;
         Expr* dst_slice;
         if (slice > 1) {
             // ToDo: optimize when one of the two is fully concrete
-            src_slice = build_concat_expr(&src_expr_addr[i], &src_addr[i], slice, 0);
-            dst_slice = build_concat_expr(&dst_expr_addr[i], &dst_addr[i], slice, 0);
+            src_slice =
+                build_concat_expr(&src_expr_addr[i], &src_addr[i], slice, 0);
+            dst_slice =
+                build_concat_expr(&dst_expr_addr[i], &dst_addr[i], slice, 0);
         } else {
-            src_slice = src_expr_addr[i] ? src_expr_addr[i] : (Expr *)(uintptr_t) src_addr[i];
-            dst_slice = dst_expr_addr[i] ? dst_expr_addr[i] : (Expr *)(uintptr_t) dst_addr[i];
+            src_slice = src_expr_addr[i] ? src_expr_addr[i]
+                                         : (Expr*)(uintptr_t)src_addr[i];
+            dst_slice = dst_expr_addr[i] ? dst_expr_addr[i]
+                                         : (Expr*)(uintptr_t)dst_addr[i];
         }
 
         Expr* e   = new_expr();
         e->opkind = opkind;
-        e->op1 = dst_slice;
-        e->op2 = src_slice;
+        e->op1    = dst_slice;
+        e->op2    = src_slice;
         SET_EXPR_CONST_OP(e->op3, e->op3_is_const, slice);
 
         if (slice > 1) {
             for (size_t k = 0; k < slice; k++) {
                 Expr* e_byte   = new_expr();
                 e_byte->opkind = EXTRACT8;
-                e_byte->op1 = e;
+                e_byte->op1    = e;
                 SET_EXPR_CONST_OP(e_byte->op2, e_byte->op2_is_const, k);
+                dst_expr_addr[i + k] = e_byte;
             }
         } else {
             dst_expr_addr[i] = e;
@@ -690,10 +705,9 @@ static inline int is_eip_offset(uintptr_t offset)
     return 0;
 }
 
-
 static void qemu_xmm_pmovmskb(uintptr_t dst_idx, uint64_t* src_addr)
 {
-    Expr** src_expr_addr = get_expr_addr((uintptr_t)src_addr, XMM_BYTES);
+    Expr** src_expr_addr = get_expr_addr((uintptr_t)src_addr, XMM_BYTES, 0);
     if (src_expr_addr == NULL) {
         s_temps[dst_idx] = NULL;
         return;
@@ -709,6 +723,8 @@ static void qemu_xmm_pmovmskb(uintptr_t dst_idx, uint64_t* src_addr)
         return;
     }
 
+    printf("Helper qemu_xmm_pmovmskb: symbolic op\n");
+
     Expr* src_expr   = build_concat_expr(src_expr_addr, src_addr, XMM_BYTES, 0);
     Expr* e          = new_expr();
     e->opkind        = PMOVMSKB;
@@ -721,7 +737,7 @@ static void qemu_xmm_pmovmskb(uintptr_t dst_idx, uint64_t* src_addr)
 
 static void qemu_xmm_movl_mm_T0(uint64_t* dst_addr, uintptr_t src_idx)
 {
-    Expr** dst_expr_addr = get_expr_addr((uintptr_t)dst_addr, XMM_BYTES);
+    Expr** dst_expr_addr = get_expr_addr((uintptr_t)dst_addr, XMM_BYTES, 0);
     if (s_temps[src_idx] == NULL) {
         if (dst_expr_addr == NULL) {
             return;
@@ -731,6 +747,8 @@ static void qemu_xmm_movl_mm_T0(uint64_t* dst_addr, uintptr_t src_idx)
         }
         return;
     }
+
+    printf("Helper qemu_xmm_movl_mm_T0: symbolic op\n");
 
     // src is 32 bit
     for (size_t i = 0; i < sizeof(uint32_t); i++) {
@@ -749,8 +767,8 @@ static void qemu_xmm_movl_mm_T0(uint64_t* dst_addr, uintptr_t src_idx)
 static void qemu_xmm_pshufd(uint64_t* dst_addr, uint64_t* src_addr,
                             uintptr_t order)
 {
-    Expr** dst_expr_addr = get_expr_addr((uintptr_t)dst_addr, XMM_BYTES);
-    Expr** src_expr_addr = get_expr_addr((uintptr_t)src_addr, XMM_BYTES);
+    Expr** dst_expr_addr = get_expr_addr((uintptr_t)dst_addr, XMM_BYTES, 0);
+    Expr** src_expr_addr = get_expr_addr((uintptr_t)src_addr, XMM_BYTES, 0);
 
     if (src_expr_addr == NULL) {
         if (dst_expr_addr != NULL) {
@@ -774,6 +792,8 @@ static void qemu_xmm_pshufd(uint64_t* dst_addr, uint64_t* src_addr,
         }
         return;
     }
+
+    printf("Helper qemu_xmm_pshufd: symbolic op\n");
 
     uint8_t count = 0;
     for (size_t i = 0; i < XMM_BYTES; i += sizeof(uint32_t)) {
@@ -785,35 +805,31 @@ static void qemu_xmm_pshufd(uint64_t* dst_addr, uint64_t* src_addr,
     }
 }
 
-static void qemu_xmm_punpck(uint64_t* dst_addr, uint64_t* src_addr, uintptr_t slice, uint8_t lowbytes)
+static void qemu_xmm_punpck(uint64_t* dst_addr, uint64_t* src_addr,
+                            uintptr_t slice, uint8_t lowbytes)
 {
-    Expr** dst_expr_addr = get_expr_addr((uintptr_t)dst_addr, XMM_BYTES);
-    Expr** src_expr_addr = get_expr_addr((uintptr_t)src_addr, XMM_BYTES);
+    Expr** dst_expr_addr = get_expr_addr((uintptr_t)dst_addr, XMM_BYTES, 0);
+    Expr** src_expr_addr = get_expr_addr((uintptr_t)src_addr, XMM_BYTES, 0);
 
-    if (src_expr_addr == NULL) {
-        if (dst_expr_addr != NULL) {
-            // FixMe: wrong
-            for (size_t i = 0; i < XMM_BYTES; i++) {
-                dst_expr_addr[i] = NULL;
-            }
-        }
+    if (src_expr_addr == NULL && dst_expr_addr == NULL) {
         return;
     }
 
     int src_is_not_null = 0;
-    for (size_t i = 0; i < XMM_BYTES && src_is_not_null == 0; i++) {
+    for (size_t i = 0; i < XMM_BYTES && src_is_not_null == 0 && src_expr_addr; i++) {
         src_is_not_null |= src_expr_addr[i] != NULL;
     }
 
-    if (!src_is_not_null) {
-        if (dst_expr_addr != NULL) {
-            // FixMe: wrong
-            for (size_t i = 0; i < XMM_BYTES; i++) {
-                dst_expr_addr[i] = NULL;
-            }
-        }
+    int dst_is_not_null = 0;
+    for (size_t i = 0; i < XMM_BYTES && dst_is_not_null == 0 && dst_expr_addr; i++) {
+        dst_is_not_null |= dst_expr_addr[i] != NULL;
+    }
+
+    if (!src_is_not_null && !dst_is_not_null) {
         return;
     }
+
+    printf("Helper qemu_xmm_punpck: symbolic op\n");
 
     Expr* dst_exprs[XMM_BYTES];
     for (size_t i = 0; i < XMM_BYTES; i++) {
@@ -833,9 +849,74 @@ static void qemu_xmm_punpck(uint64_t* dst_addr, uint64_t* src_addr, uintptr_t sl
             dst_expr_addr[i + k] = dst_exprs[base_index + (count * slice) + k];
         }
         for (size_t k = 0; k < slice; k++) {
-            dst_expr_addr[i + slice + k] = src_expr_addr[base_index + (count * slice) + k];
+            dst_expr_addr[i + slice + k] =
+                src_expr_addr[base_index + (count * slice) + k];
         }
         count++;
+    }
+}
+
+#define XO(X) offsetof(X86XSaveArea, X)
+
+static Expr* xmm_save_state[XMM_BYTES * 16];
+
+static void qemu_fxsave(CPUX86State* env, uintptr_t ptr)
+{
+    int          i, nb_xmm_regs;
+    target_ulong addr;
+
+    if (env->hflags & HF_CS64_MASK) {
+        nb_xmm_regs = 16;
+    } else {
+        nb_xmm_regs = 8;
+    }
+
+    // addr = ptr + XO(legacy.xmm_regs);
+    addr = 0;
+
+    for (i = 0; i < nb_xmm_regs; i++) {
+        Expr** src_expr_addr =
+            get_expr_addr((uintptr_t) & (env->xmm_regs[i]), XMM_BYTES, 0);
+
+        for (size_t k = 0; k < XMM_BYTES; k++) {
+            if (src_expr_addr == NULL) {
+                xmm_save_state[addr + k] = NULL;
+            } else {
+                xmm_save_state[addr + k] = src_expr_addr[k];
+            }
+        }
+
+        addr += XMM_BYTES;
+    }
+}
+
+static void qemu_fxrstor(CPUX86State* env, uintptr_t ptr)
+{
+    int          i, nb_xmm_regs;
+    target_ulong addr;
+
+    if (env->hflags & HF_CS64_MASK) {
+        nb_xmm_regs = 16;
+    } else {
+        nb_xmm_regs = 8;
+    }
+
+    // addr = ptr + XO(legacy.xmm_regs);
+    addr = 0;
+
+    for (i = 0; i < nb_xmm_regs; i++) {
+
+        Expr** dst_expr_addr =
+            get_expr_addr((uintptr_t) & (env->xmm_regs[i]), XMM_BYTES, 0);
+        for (size_t k = 0; k < XMM_BYTES; k++) {
+            if (dst_expr_addr) {
+                dst_expr_addr[k] = xmm_save_state[addr + k];
+            } else {
+                assert(xmm_save_state[addr + k] == NULL);
+            }
+        }
+
+        addr += XMM_BYTES;
     }
 }
 
@@ -918,4 +999,152 @@ static void qemu_divq_EAX(uint64_t packed_idx, uintptr_t rax, uintptr_t rdx,
     }
 
     // print_expr(e);
+}
+
+static inline void xmm_memmove(uint8_t* src, uint8_t* dst, uintptr_t size,
+                               uintptr_t rdx_idx)
+{
+    src = src - size;
+    dst = dst - size;
+
+    assert(src != dst);
+
+    if (s_temps[rdx_idx]) {
+        Expr* e   = new_expr();
+        e->opkind = SUB;
+        e->op1    = s_temps[rdx_idx];
+        SET_EXPR_CONST_OP(e->op2, e->op2_is_const, size);
+        s_temps[rdx_idx] = e;
+    }
+
+    Expr** src_exprs = get_expr_addr((uintptr_t)src, size, 0);
+    Expr** dst_exprs = get_expr_addr((uintptr_t)dst, size, 0);
+
+    printf("Memmove\n");
+    for (size_t i = 0; i < size; i++) {
+        dst_exprs[i] = src_exprs[i];
+        print_expr(dst_exprs[i]);
+    }
+}
+
+static inline void instrument_memmove_xmm(TCGOp* op, TCGContext* tcg_ctx)
+{
+    TCGTemp* t_rsi  = tcg_find_temp_arch_reg(tcg_ctx, "rsi");
+    TCGTemp* t_rdi  = tcg_find_temp_arch_reg(tcg_ctx, "rdi");
+    TCGTemp* t_rdx  = tcg_find_temp_arch_reg(tcg_ctx, "rdx");
+    TCGTemp* t_size = new_non_conflicting_temp(TCG_TYPE_PTR);
+    tcg_movi(t_size, (uintptr_t)0x40, 0, op, NULL, tcg_ctx);
+    TCGTemp* t_rdx_idx = new_non_conflicting_temp(TCG_TYPE_PTR);
+    tcg_movi(t_rdx_idx, (uintptr_t)temp_idx(t_rdx), 0, op, NULL, tcg_ctx);
+    MARK_TEMP_AS_ALLOCATED(t_rsi);
+    MARK_TEMP_AS_ALLOCATED(t_rdi);
+    add_void_call_4(xmm_memmove, t_rsi, t_rdi, t_size, t_rdx_idx, op, NULL,
+                    tcg_ctx);
+    MARK_TEMP_AS_NOT_ALLOCATED(t_rsi);
+    MARK_TEMP_AS_NOT_ALLOCATED(t_rdi);
+    tcg_temp_free_internal(t_size);
+    tcg_temp_free_internal(t_rdx);
+}
+
+#define TEST_OPCODE(pattern, opc, index, failure)                              \
+    if (pattern[index] == opc) {                                               \
+        index += 1;                                                            \
+    } else {                                                                   \
+        failure = 1;                                                           \
+    }
+
+static inline int detect_memmove_xmm(TCGContext* tcg_ctx)
+{
+    /*
+        0x4000d2e67f:  0f 10 06                 movups   (%rsi), %xmm0
+        0x4000d2e682:  0f 10 4e 10              movups   0x10(%rsi), %xmm1
+        0x4000d2e686:  0f 10 56 20              movups   0x20(%rsi), %xmm2
+        0x4000d2e68a:  0f 10 5e 30              movups   0x30(%rsi), %xmm3
+        0x4000d2e68e:  48 83 c6 40              addq     $0x40, %rsi
+        0x4000d2e692:  48 83 ea 40              subq     $0x40, %rdx
+        0x4000d2e696:  0f 29 07                 movaps   %xmm0, (%rdi)
+        0x4000d2e699:  0f 29 4f 10              movaps   %xmm1, 0x10(%rdi)
+        0x4000d2e69d:  0f 29 57 20              movaps   %xmm2, 0x20(%rdi)
+        0x4000d2e6a1:  0f 29 5f 30              movaps   %xmm3, 0x30(%rdi)
+        0x4000d2e6a5:  48 83 c7 40              addq     $0x40, %rdi
+        0x4000d2e6a9:  48 83 fa 40              cmpq     $0x40, %rdx
+        0x4000d2e6ad:  77 d0                    ja       0x4000d2e67f
+    */
+
+    TCGOpcode pattern[] = {
+        INDEX_op_qemu_ld_i64, INDEX_op_st_i64,
+        INDEX_op_movi_i64,    INDEX_op_add_i64,
+        INDEX_op_qemu_ld_i64, INDEX_op_st_i64, /* NEXT */
+        INDEX_op_movi_i64,    INDEX_op_add_i64,
+        INDEX_op_qemu_ld_i64, INDEX_op_st_i64,
+        INDEX_op_movi_i64,    INDEX_op_add_i64,
+        INDEX_op_qemu_ld_i64, INDEX_op_st_i64, /* NEXT */
+        INDEX_op_movi_i64,    INDEX_op_add_i64,
+        INDEX_op_qemu_ld_i64, INDEX_op_st_i64,
+        INDEX_op_movi_i64,    INDEX_op_add_i64,
+        INDEX_op_qemu_ld_i64, INDEX_op_st_i64, /* NEXT */
+        INDEX_op_movi_i64,    INDEX_op_add_i64,
+        INDEX_op_qemu_ld_i64, INDEX_op_st_i64,
+        INDEX_op_movi_i64,    INDEX_op_add_i64,
+        INDEX_op_qemu_ld_i64, INDEX_op_st_i64, /* NEXT */
+        INDEX_op_movi_i64,    INDEX_op_add_i64,
+        INDEX_op_mov_i64,     INDEX_op_discard,
+        INDEX_op_discard, /* NEXT */
+        INDEX_op_movi_i64,    INDEX_op_sub_i64,
+        INDEX_op_mov_i64,     INDEX_op_mov_i64,
+        INDEX_op_mov_i64, /* NEXT */
+        INDEX_op_ld_i64,      INDEX_op_qemu_st_i64,
+        INDEX_op_movi_i64,    INDEX_op_add_i64,
+        INDEX_op_ld_i64,      INDEX_op_qemu_st_i64, /* NEXT */
+        INDEX_op_movi_i64,    INDEX_op_add_i64,
+        INDEX_op_ld_i64,      INDEX_op_qemu_st_i64,
+        INDEX_op_movi_i64,    INDEX_op_add_i64,
+        INDEX_op_ld_i64,      INDEX_op_qemu_st_i64, /* NEXT */
+        INDEX_op_movi_i64,    INDEX_op_add_i64,
+        INDEX_op_ld_i64,      INDEX_op_qemu_st_i64,
+        INDEX_op_movi_i64,    INDEX_op_add_i64,
+        INDEX_op_ld_i64,      INDEX_op_qemu_st_i64, /* NEXT */
+        INDEX_op_movi_i64,    INDEX_op_add_i64,
+        INDEX_op_ld_i64,      INDEX_op_qemu_st_i64,
+        INDEX_op_movi_i64,    INDEX_op_add_i64,
+        INDEX_op_ld_i64,      INDEX_op_qemu_st_i64, /* NEXT */
+        INDEX_op_movi_i64,    INDEX_op_add_i64,
+        INDEX_op_mov_i64,     INDEX_op_discard, /* NEXT */
+        INDEX_op_movi_i64,    INDEX_op_mov_i64,
+        INDEX_op_sub_i64, /* NEXT */
+    };
+
+    uint8_t start       = 0;
+    size_t  index       = 0;
+    size_t  pattern_len = sizeof(pattern) / sizeof(TCGOpcode);
+    TCGOp*  op;
+    QTAILQ_FOREACH(op, &tcg_ctx->ops, link)
+    {
+        uint8_t failure = 0;
+        switch (op->opc) {
+            case INDEX_op_insn_start:
+                start = 1;
+                break;
+            default:
+                if (start && index < pattern_len) {
+#if 0
+                    printf("Current=%s expected=%s\n",
+                           tcg_op_defs[op->opc].name,
+                           tcg_op_defs[pattern[index]].name);
+#endif
+                    TEST_OPCODE(pattern, op->opc, index, failure);
+                }
+        }
+        if (start && failure) {
+            // printf("Pattern not found\n");
+            break;
+        }
+    }
+
+    if (index == pattern_len) {
+        return pattern_len;
+    }
+
+    // printf("Pattern not found (index=%lu)\n", index);
+    return -1;
 }
