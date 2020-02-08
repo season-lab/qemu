@@ -41,17 +41,19 @@ typedef enum OPKIND {
     IS_SYMBOLIC,
     // unary
     NEG,
+    NOT,
     // binary
     ADD,
-    SUB, // 5
+    SUB, // 6
     MUL,
+    MULU,
     DIV,
-    DIVU, // 9
+    DIVU, // 10
     REM,
     REMU,
-    AND, // 11
+    AND, // 13
     OR,
-    XOR, // 13
+    XOR, // 15
     SHL,
     SHR,
     SAR,
@@ -59,15 +61,15 @@ typedef enum OPKIND {
     ROTL,
     ROTR,
     //
-    EQ, // 20
+    EQ, // 22
     NE,
     // signed
-    LT, // 22
+    LT, // 24
     LE,
     GE,
     GT,
     // unsigned
-    LTU, // 26
+    LTU, // 28
     LEU,
     GEU,
     GTU,
@@ -75,7 +77,7 @@ typedef enum OPKIND {
     ZEXT, // ZEXT(arg0, n): zero-extend arg0 from the n-1 msb bits
     SEXT, // SEXT(arg0, n): sign-extend arg0 from the n-1 msb bits
     // binary
-    CONCAT,
+    CONCAT, // 34
     CONCAT8,  // CONCAT8(arg0, arg1): concat one byte (arg1) to arg0
     EXTRACT8, // EXTRACT8(arg0, i): extract i-th byte from arg0
     EXTRACT,
@@ -95,19 +97,22 @@ typedef enum OPKIND {
     CTZ, // count trailing zeros (x86: BSF, TZCNT)
     RCL,
     //
-    ITE, // 39
+    ITE, // 41
     ITE_EQ_ZERO,
     ITE_NE_ZERO,
     OR_3,
     XOR_3,
     // XMM
-    PMOVMSKB, // 44
+    PMOVMSKB, // 46
     CMP_EQ,
     CMP_GT,
     CMP_GE,
     CMP_LE,
     CMP_LT,
     MIN,
+    // double binop
+    MUL_HIGH, // 55
+    MULU_HIGH,
     //
     EFLAGS_ALL_ADD,
     EFLAGS_ALL_ADCB,
@@ -183,10 +188,16 @@ static inline const char* opkind_to_str(uint8_t opkind)
     switch (opkind) {
         case IS_SYMBOLIC:
             return "symbolic_data";
+        case NOT:
+            return "~";
+        case NEG:
+            return "-";
         case ADD:
             return "+";
         case SUB:
             return "-";
+        case MUL:
+            return "*";
         case DIV:
             return "/";
         case DIVU:
@@ -242,7 +253,12 @@ static inline const char* opkind_to_str(uint8_t opkind)
         case SEXT:
             return "SIGN-EXTEND";
 
+        case CONCAT:
+            return "..";
+
         case EXTRACT8:
+            return "EXTRACT8";
+        case EXTRACT:
             return "EXTRACT";
         case CONCAT8:
             return "CONCAT";
@@ -251,6 +267,9 @@ static inline const char* opkind_to_str(uint8_t opkind)
             return "CTZ";
         case RCL:
             return "RCL";
+
+        case DEPOSIT:
+            return "DEPOSIT";
 
         case ITE:
             return "ITE";
@@ -267,6 +286,11 @@ static inline const char* opkind_to_str(uint8_t opkind)
             return "CMPB";
         case PMOVMSKB:
             return "PMOVMSKB";
+
+        case MUL_HIGH:
+            return "MUL_HIGH";
+        case MULU_HIGH:
+            return "MULU_HIGH";
 
         case EFLAGS_ALL_ADD:
         case EFLAGS_ALL_ADCB:
@@ -378,6 +402,9 @@ static inline void print_expr_internal(Expr* expr, uint8_t reset)
             printf("\n");
 
             // FixMe: this makes a mess
+
+            assert(expr != expr->op1);
+            assert(expr != expr->op2);
 
             if (!expr->op1_is_const && expr->op1 != NULL) {
                 assert(GET_EXPR_IDX(expr->op1) < MAX_PRINT_CHECK);
