@@ -405,10 +405,8 @@ static inline TranslationBlock *tb_find(CPUState *cpu,
 
     tb = tb_lookup__cpu_state(cpu, &pc, &cs_base, &flags, cf_mask);
 
-#if 1 // SYMBOLIC_INSTRUMENTATION
-    if (qemu_loglevel_mask(CPU_LOG_TB_OP)) {
-        tb = NULL;
-    }
+#if 0 // SYMBOLIC_INSTRUMENTATION
+    tb = NULL;
 #endif
 
     if (tb == NULL) {

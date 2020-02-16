@@ -194,13 +194,44 @@ static inline void         set_instrumentation_mode(InstrumentationMode mode)
 void init_symbolic_mode(void)
 {
 #ifndef DISABLE_SOLVER
-    int expr_pool_shm_id = shmget(EXPR_POOL_SHM_KEY, // IPC_PRIVATE,
+    struct timespec polling_time;
+    polling_time.tv_sec  = 0;
+    polling_time.tv_nsec = 10;
+
+    int max_attempts = 10;
+
+    int expr_pool_shm_id;
+    do {
+        expr_pool_shm_id = shmget(EXPR_POOL_SHM_KEY, // IPC_PRIVATE,
                                   sizeof(Expr) * EXPR_POOL_CAPACITY, 0666);
 
+        if (expr_pool_shm_id > 0) {
+            break;
+        }
+
+        if (max_attempts-- > 0) {
+            nanosleep(&polling_time, NULL);
+        } else {
+            break;
+        }
+    } while (1);
     assert(expr_pool_shm_id > 0);
 
-    int query_shm_id = shmget(QUERY_SHM_KEY, // IPC_PRIVATE,
+    int query_shm_id;
+    do {
+        query_shm_id = shmget(QUERY_SHM_KEY, // IPC_PRIVATE,
                               sizeof(Query) * EXPR_QUERY_CAPACITY, 0666);
+
+        if (query_shm_id > 0) {
+            break;
+        }
+
+        if (max_attempts-- > 0) {
+            nanosleep(&polling_time, NULL);
+        } else {
+            break;
+        }
+    } while (1);
     assert(query_shm_id > 0);
 
     // printf("POOL_SHM_ID=%d QUERY_SHM_ID=%d\n", expr_pool_shm_id,
@@ -230,9 +261,6 @@ void init_symbolic_mode(void)
     next_query     = queue_query;
 
 #ifndef DISABLE_SOLVER
-    struct timespec polling_time;
-    polling_time.tv_sec  = 0;
-    polling_time.tv_nsec = 10;
     while (next_query[0].query != (void*)SHM_READY) {
         nanosleep(&polling_time, NULL);
     }
@@ -1008,7 +1036,7 @@ static inline void move_temp(size_t from, size_t to, size_t size, TCGOp* op_in,
         TCGTemp* t_out = new_non_conflicting_temp(TCG_TYPE_I64);
 
         tcg_binop(t_out, t_zero, t_zero, 0, 0, 0, XOR, op_in, NULL,
-              tcg_ctx); // force TCG to allocate the temp into a reg
+                  tcg_ctx); // force TCG to allocate the temp into a reg
 
         TCGLabel* label_a_concrete = gen_new_label();
         tcg_brcond(label_a_concrete, t_from, t_zero, TCG_COND_EQ, 0, 0, op_in,
@@ -1065,6 +1093,7 @@ static inline void clear_temp_helper(uintptr_t temp_idx)
     if (s_temps[temp_idx])
         printf("Clearing temp %lu\n", temp_idx);
 #endif
+    assert(temp_idx < TCG_MAX_TEMPS);
     s_temps[temp_idx] = 0;
 }
 
@@ -1108,7 +1137,7 @@ static inline void qemu_binop_helper(uintptr_t opkind, uintptr_t packed_idx,
     uintptr_t out_idx = UNPACK_0(packed_idx);
     uintptr_t a_idx   = UNPACK_1(packed_idx);
     uintptr_t b_idx   = UNPACK_2(packed_idx);
-    uintptr_t size   = UNPACK_3(packed_idx);
+    uintptr_t size    = UNPACK_3(packed_idx);
 
     Expr* expr_a = s_temps[a_idx];
     Expr* expr_b = s_temps[b_idx];
@@ -1303,10 +1332,6 @@ static inline void qemu_unop_helper(uintptr_t opkind, uintptr_t t_out_idx,
     unop_expr->opkind  = (OPKIND)opkind;
     unop_expr->op1     = expr_a;
     s_temps[t_out_idx] = unop_expr;
-
-    if (opkind == NOT) {
-        print_expr(unop_expr);
-    }
 }
 
 static inline void qemu_unop(OPKIND opkind, TCGTemp* t_op_out, TCGTemp* t_op_a,
@@ -1737,6 +1762,64 @@ static inline size_t get_mem_op_signextend(TCGMemOp mem_op)
     return mem_op & MO_SIGN;
 }
 
+#define IS_LIKELY_CONST_BASE(c) (c > 0x10000 && c < (0xFFFFFFFFFFFF - 0x10000))
+
+static inline uintptr_t find_const_base(Expr* e)
+{
+    uintptr_t base = 0;
+    if (e->opkind == ADD || e->opkind == SUB) {
+        if (e->op1_is_const) {
+            if (IS_LIKELY_CONST_BASE(CONST(e->op1))) {
+                return CONST(e->op1);
+            } else {
+                base = find_const_base(e->op2);
+            }
+        } else if (e->op2_is_const) {
+            if (IS_LIKELY_CONST_BASE(CONST(e->op2))) {
+                return CONST(e->op2);
+            } else {
+                base = find_const_base(e->op1);
+            }
+        } else {
+            base = find_const_base(e->op1) + find_const_base(e->op2);
+        }
+    }
+    return base;
+}
+
+
+static uintptr_t           symbolic_access_id = MAX_INPUT_SIZE;
+
+#if 0
+typedef struct {
+    uintptr_t base;
+    uintptr_t offset;
+    uintptr_t size;
+    uintptr_t hit_time;
+} ConstantMemorySlice;
+
+#define NUM_MEM_SLICES 8
+#define SLICE_SIZE     0x100
+static size_t              mem_slice_in_use = 0;
+static uintptr_t           hit_time         = 1;
+static ConstantMemorySlice const_mem_slices[NUM_MEM_SLICES];
+static uintptr_t           slices_count       = 0;
+static uintptr_t           slices_updates     = 0;
+#endif
+
+typedef struct {
+    uintptr_t base;
+    Expr* dump;
+    uint32_t  used;
+    uint8_t   status;
+} MemorySlice;
+
+#define SLICE_SIZE     0x100
+#define HASH_ADDR(a)   ((a >> 8) ^ (a << 8))
+#define CONST_MAP_SIZE 0x1000
+static MemorySlice const_mem_map[CONST_MAP_SIZE] = {0};
+static uintptr_t   slices_count                  = 0;
+
 static inline void qemu_load_helper(uintptr_t orig_addr,
                                     uintptr_t mem_op_offset, uintptr_t addr_idx,
                                     uintptr_t val_idx)
@@ -1749,6 +1832,136 @@ static inline void qemu_load_helper(uintptr_t orig_addr,
     // number of bytes to load
     size_t    size = get_mem_op_size(mem_op);
     uintptr_t addr = orig_addr + offset;
+
+    if (s_temps[addr_idx]) {
+        // printf("\nSymbolic Access\n");
+        uintptr_t base = find_const_base(s_temps[addr_idx]);
+        if (IS_LIKELY_CONST_BASE(base)) {
+
+#if 1
+            // printf("Detected base: 0x%lx\n", base);
+#endif
+
+            Expr* initial_free_expr = next_free_expr;
+            uintptr_t base_addr = orig_addr;
+            size_t n_slice = 1;
+            if (orig_addr - base < 0x800) {
+                base_addr = base;
+                n_slice = 0x800 / SLICE_SIZE;
+            }
+
+            uint8_t read_from_slice = 1;
+            Expr* slices_addrs[(0x800 / SLICE_SIZE) + 1] = {0};
+            for (size_t i = 0; i < n_slice; i++) {
+                uintptr_t norm_addr = (base_addr / SLICE_SIZE) * SLICE_SIZE;
+                uintptr_t hash_addr = HASH_ADDR(norm_addr);
+                uintptr_t idx       = hash_addr % CONST_MAP_SIZE;
+                uint8_t   status    = const_mem_map[idx].status;
+
+                if (status == 0) {
+                    assert(const_mem_map[idx].base == 0);
+                    const_mem_map[idx].status = 1;
+                    const_mem_map[idx].used   = 1;
+                    const_mem_map[idx].base   = norm_addr;
+                    const_mem_map[idx].dump = next_free_expr;
+
+                    slices_addrs[i] = next_free_expr;
+                    memcpy(next_free_expr, (void *) norm_addr, SLICE_SIZE);
+                    next_free_expr += SLICE_SIZE;
+#if 0
+                    printf("Taking a memory slice #%lu at 0x%lx\n", idx, norm_addr);
+#endif
+                    slices_count += 1;
+                } else if (status == 1) {
+                    // reusing taken snapshot
+                    const_mem_map[idx].used   += 1;
+                    slices_addrs[i] = const_mem_map[idx].dump;
+                } else {
+                    // memory is not constant
+                    read_from_slice = 0;
+                    break;
+                }
+
+                base_addr += SLICE_SIZE;
+            }
+
+            if (read_from_slice) {
+
+                size_t k = 0;
+                while (slices_addrs[k]) {
+                    Expr* s           = new_expr();
+                    s->opkind         = MEMORY_SLICE;
+                    s->op1            = slices_addrs[k];
+                    s->op2            = EXPR_CONST_OP(symbolic_access_id);
+                    k += 1;
+                }
+
+                Expr* e           = new_expr();
+                e->opkind         = IS_SYMBOLIC;
+                e->op1            = EXPR_CONST_OP(symbolic_access_id);
+                e->op2            = EXPR_CONST_OP(size);
+
+                // printf("Generating new symbolic for slice access: %lu\n", symbolic_access_id);
+
+                symbolic_access_id += 1;
+                s_temps[val_idx] = e;
+                return;
+            } else {
+                memset(initial_free_expr, 0, ((char *)next_free_expr) - ((char*)initial_free_expr));
+                next_free_expr = initial_free_expr;
+            }
+        }
+#if 0
+        if (IS_LIKELY_CONST_BASE(base)) {
+            // printf("Symbolic Access: base=%lx\n", base);
+            int       found        = 0;
+            int       min_hit_time = 0;
+            uintptr_t offset = ((orig_addr - base) / SLICE_SIZE) * SLICE_SIZE;
+            for (size_t k = 0; k < mem_slice_in_use; k++) {
+                if (base == const_mem_slices[k].base) {
+                    if (const_mem_slices[k].offset == offset) {
+                        found                        = 1;
+                        const_mem_slices[k].hit_time = hit_time++;
+                        break;
+                    }
+                }
+                if (const_mem_slices[k].hit_time <
+                    const_mem_slices[min_hit_time].hit_time) {
+                    min_hit_time = k;
+                }
+            }
+            if (!found) {
+                size_t index = mem_slice_in_use;
+                if (mem_slice_in_use == NUM_MEM_SLICES) {
+                    index = min_hit_time;
+                } else {
+                    mem_slice_in_use++;
+                }
+                slices_count += 1;
+                const_mem_slices[index].base     = base;
+                const_mem_slices[index].size     = SLICE_SIZE;
+                const_mem_slices[index].offset   = offset;
+                const_mem_slices[index].hit_time = hit_time++;
+                printf("Taking a memory slice at %lx (offset=%lx)\n", base,
+                       offset);
+            }
+        } else {
+            printf("Symbolic Load\n");
+            //print_expr(s_temps[addr_idx]);
+
+#if 0
+        Expr* e           = new_expr();
+        e->opkind         = IS_SYMBOLIC;
+        e->op1            = EXPR_CONST_OP(symbolic_access_id);
+        e->op2            = EXPR_CONST_OP(size);
+        s_temps[addr_idx] = e;
+        return;
+#endif
+        symbolic_access_id++;
+        }
+        // print_expr(s_temps[addr_idx]);
+#endif
+    }
 
     uintptr_t  l1_page_idx = addr >> (L1_PAGE_BITS + L2_PAGE_BITS);
     l2_page_t* l2_page     = s_memory.table.entries[l1_page_idx];
@@ -1795,33 +2008,47 @@ static inline void qemu_load_helper(uintptr_t orig_addr,
 
     Expr* e = NULL;
     for (size_t i = 0; i < size; i++) {
-        if (i == 0) {
-            if (exprs[i] == NULL) {
-                // allocate a new expr for the concrete value
-                e                  = new_expr();
-                e->opkind          = IS_CONST;
-                uint8_t* byte_addr = ((uint8_t*)addr) + i;
-                uint8_t  byte      = *byte_addr;
-                e->op1             = (Expr*)((uintptr_t)byte);
-            } else
-                e = exprs[i];
+        if (exprs[i] != NULL && exprs[i]->opkind == EXTRACT8 &&
+            CONST(exprs[i]->op2) == size - i - 1) {
+            // ToDo: we are assuming that size(op1) == size
+            //       which my be not true.
+            e = exprs[i]->op1;
         } else {
-            Expr* n_expr   = new_expr();
-            n_expr->opkind = CONCAT8;
+            e = NULL;
+            break;
+        }
+    }
 
-            n_expr->op1 = e;
-
-            if (exprs[i] == NULL) {
-                // fetch the concrete value, embed it in the expr
-                uint8_t* byte_addr   = ((uint8_t*)addr) + i;
-                uint8_t  byte        = *byte_addr;
-                n_expr->op2          = (Expr*)((uintptr_t)byte);
-                n_expr->op2_is_const = 1;
+    if (e == NULL) {
+        for (size_t i = 0; i < size; i++) {
+            if (i == 0) {
+                if (exprs[i] == NULL) {
+                    // allocate a new expr for the concrete value
+                    e                  = new_expr();
+                    e->opkind          = IS_CONST;
+                    uint8_t* byte_addr = ((uint8_t*)addr) + i;
+                    uint8_t  byte      = *byte_addr;
+                    e->op1             = (Expr*)((uintptr_t)byte);
+                } else
+                    e = exprs[i];
             } else {
-                n_expr->op2 = exprs[i];
-            }
+                Expr* n_expr   = new_expr();
+                n_expr->opkind = CONCAT8;
 
-            e = n_expr;
+                n_expr->op1 = e;
+
+                if (exprs[i] == NULL) {
+                    // fetch the concrete value, embed it in the expr
+                    uint8_t* byte_addr   = ((uint8_t*)addr) + i;
+                    uint8_t  byte        = *byte_addr;
+                    n_expr->op2          = (Expr*)((uintptr_t)byte);
+                    n_expr->op2_is_const = 1;
+                } else {
+                    n_expr->op2 = exprs[i];
+                }
+
+                e = n_expr;
+            }
         }
     }
 
@@ -2052,6 +2279,53 @@ static inline void qemu_store_helper(uintptr_t orig_addr,
 {
     TCGMemOp  mem_op = get_mem_op(mem_op_offset);
     uintptr_t offset = get_mem_offset(mem_op_offset);
+
+#if 0
+    if (s_temps[addr_idx]) {
+        // printf("\nSymbolic Access\n");
+        uintptr_t base = find_const_base(s_temps[addr_idx]);
+        
+        if (IS_LIKELY_CONST_BASE(base)) {
+            printf("Symbolic Store: base=%lx\n", base);
+        } else {
+            printf("Symbolic Store\n");
+            //print_expr(s_temps[addr_idx]);
+        }
+        // print_expr(s_temps[addr_idx]);
+    }
+#endif
+
+    uintptr_t norm_addr = (orig_addr / SLICE_SIZE) * SLICE_SIZE;
+    uintptr_t hash_addr = HASH_ADDR(norm_addr);
+    uintptr_t idx       = hash_addr % CONST_MAP_SIZE;
+    uint8_t   status    = const_mem_map[idx].status;
+    if (status == 0 && s_temps[val_idx]) {
+        const_mem_map[idx].status = 2;
+        const_mem_map[idx].base = norm_addr;
+    } else if (status == 1) {
+#if 0
+        if (norm_addr != const_mem_map[idx].base) {
+            printf("Hash conflict: %lx vs %lx\n", norm_addr, const_mem_map[idx].base);
+        }
+        printf("Invalidating memory slice #%lu at 0x%lu used %u times\n", idx, norm_addr, const_mem_map[idx].used);
+#endif
+        const_mem_map[idx].status = 2;
+    }
+
+#if 0
+    for (size_t k = 0; k < mem_slice_in_use; k++) {
+        if (orig_addr >=
+                const_mem_slices[k].base + const_mem_slices[k].offset &&
+            orig_addr <= (const_mem_slices[k].base + const_mem_slices[k].size +
+                          const_mem_slices[k].offset)) {
+            printf("Updating memory slice %lx (offset=%lx, disp=%lx)\n",
+                   const_mem_slices[k].base, const_mem_slices[k].offset,
+                   orig_addr - const_mem_slices[k].base -
+                       const_mem_slices[k].offset);
+            slices_updates += 1;
+        }
+    }
+#endif
 
     // assert((mem_op & MO_BE) == 0); // FixMe: extend to BE
 
@@ -2624,13 +2898,13 @@ static void branch_helper(uintptr_t a, uintptr_t b, uintptr_t cond,
     branch_expr->opkind = get_opkind_from_cond(sat_cond);
     SET_EXPR_OP(branch_expr->op1, branch_expr->op1_is_const, expr_a, a);
     SET_EXPR_OP(branch_expr->op2, branch_expr->op2_is_const, expr_b, b);
-
     branch_expr->op3 = (Expr*)size;
 
+#if 1
     next_query[0].query   = branch_expr;
     next_query[0].address = pc;
-    assert(next_query[0].query != 0);
     next_query++;
+#endif
     assert(next_query[0].query == 0);
     assert(next_query < queue_query + EXPR_QUERY_CAPACITY);
 
@@ -2638,11 +2912,12 @@ static void branch_helper(uintptr_t a, uintptr_t b, uintptr_t cond,
     // uintptr_t query_id = next_query - queue_query;
     // if (query_id > 0 && query_id % 1000 == 0)
     //    printf("Submitted %ld queries\n", query_id);
-
-    // printf("Branch at %lx\n", pc);
-    // print_expr(branch_expr);
 #if 0
-    if (pc == 0x4132c3) {
+    printf("Branch at %lx\n", pc);
+    print_expr(branch_expr);
+#endif
+#if 0
+    if (pc == 0x4134DC) {
         exit(0);
     }
 #endif
@@ -2817,8 +3092,7 @@ static inline TCGTemp* tcg_find_temp_arch_reg(TCGContext* tcg_ctx,
     tcg_abort();
 }
 
-#define FD_STDIN       0
-#define MAX_INPUT_SIZE 4096
+#define FD_STDIN 0
 static Expr* input_exprs[MAX_INPUT_SIZE] = {0};
 #define MAX_FP          128
 #define FP_UNINTIALIZED 0
@@ -3391,12 +3665,6 @@ static void register_helpers(void)
                         (gpointer)&helper_info_print_something);
 }
 
-typedef struct {
-    uint8_t   is_alive;
-    uint8_t   is_const;
-    uintptr_t const_value;
-} TCGTempStaticState;
-
 #include "symbolic-i386.c"
 
 static inline void qemu_memmove(uintptr_t src, uintptr_t dst,
@@ -3431,6 +3699,162 @@ static inline void qemu_memmove(uintptr_t src, uintptr_t dst,
     }
 }
 
+typedef struct {
+    uint8_t   is_alive;
+    uint8_t   is_const;
+    uintptr_t const_value;
+} TCGTempStaticState;
+
+static inline int detect_load_loop(TCGContext* tcg_ctx)
+{
+    uintptr_t first_instr   = 0;
+    uintptr_t current_instr = 0;
+    uintptr_t base          = 0;
+    uintptr_t scale         = 1;
+    TCGTemp*  t_offset      = NULL;
+    TCGTemp*  t_addr        = NULL;
+    uintptr_t is_loop       = 0;
+    int       has_done_load = 0;
+
+    TCGTempStaticState temp_static_state[TCG_MAX_TEMPS] = {0};
+
+    TCGOp* op;
+    QTAILQ_FOREACH(op, &tcg_ctx->ops, link)
+    {
+        if (op->opc == INDEX_op_insn_start) {
+            current_instr = op->args[0];
+            if (!first_instr) {
+                first_instr = current_instr;
+            }
+        }
+        if (!current_instr) {
+            continue;
+        }
+
+        uintptr_t arg0, arg1, arg2;
+        switch (op->opc) {
+            case INDEX_op_movi_i64:
+                arg0 = temp_idx(arg_temp(op->args[0]));
+                arg1 = op->args[1];
+                temp_static_state[arg0].is_alive    = 1;
+                temp_static_state[arg0].is_const    = 1;
+                temp_static_state[arg0].const_value = (uintptr_t)arg1;
+                break;
+            case INDEX_op_mov_i64:
+                arg0 = temp_idx(arg_temp(op->args[0]));
+                arg1 = temp_idx(arg_temp(op->args[1]));
+                temp_static_state[arg0].is_alive = 1;
+                temp_static_state[arg0].is_const =
+                    temp_static_state[arg1].is_const;
+                temp_static_state[arg0].const_value =
+                    temp_static_state[arg1].const_value;
+                break;
+            case INDEX_op_shl_i64:
+                arg0 = temp_idx(arg_temp(op->args[0]));
+                arg1 = temp_idx(arg_temp(op->args[1]));
+                arg2 = temp_idx(arg_temp(op->args[2]));
+                if (temp_static_state[arg1].is_alive &&
+                    !temp_static_state[arg1].is_const &&
+                    temp_static_state[arg2].is_alive &&
+                    temp_static_state[arg2].is_const) {
+
+                    scale    = 1 << temp_static_state[arg2].const_value;
+                    t_offset = arg_temp(op->args[0]);
+                    temp_static_state[arg0].is_alive = 1;
+                    temp_static_state[arg0].is_const = 0;
+                }
+                break;
+            case INDEX_op_add_i64:
+                arg0 = temp_idx(arg_temp(op->args[0]));
+                arg1 = temp_idx(arg_temp(op->args[1]));
+                arg2 = temp_idx(arg_temp(op->args[2]));
+                if (temp_static_state[arg1].is_alive &&
+                    temp_static_state[arg2].is_alive &&
+                    temp_static_state[arg1].is_const +
+                            temp_static_state[arg2].is_const ==
+                        1 &&
+                    base == 0) {
+
+                    base = temp_static_state[arg1].is_const
+                               ? temp_static_state[arg1].const_value
+                               : temp_static_state[arg2].const_value;
+
+                    if (base < 0x1000 || base > (0xFFFFFFFFFFFF - 0x1000)) {
+                        base = 0;
+                    } else {
+                        TCGTemp* t_offset_tmp = temp_static_state[arg1].is_const
+                                                    ? arg_temp(op->args[2])
+                                                    : arg_temp(op->args[1]);
+
+                        if (t_offset != t_offset_tmp) {
+                            scale = 1;
+                        }
+                        t_offset = t_offset_tmp;
+
+                        temp_static_state[arg0].is_alive = 1;
+                        temp_static_state[arg0].is_const = 0;
+                        t_addr = arg_temp(op->args[0]);
+                        assert(t_addr);
+                    }
+                }
+                break;
+            case INDEX_op_qemu_ld_i64:
+                arg0 = temp_idx(arg_temp(op->args[0])); // val
+                arg1 = temp_idx(arg_temp(op->args[1])); // ptr
+                if (t_addr == arg_temp(op->args[1])) {
+                    printf("Load from base %lx with scale=%lu\n", base, scale);
+                    has_done_load = 1;
+                }
+                break;
+            case INDEX_op_st_i64:
+                arg0 = temp_idx(arg_temp(op->args[0])); // val
+                arg1 = temp_idx(arg_temp(op->args[1])); // ptr
+                arg2 = op->args[2];                     // offset
+                if (is_eip_offset(arg2) && temp_static_state[arg0].is_alive &&
+                    temp_static_state[arg0].is_const) {
+
+                    uintptr_t addr = temp_static_state[arg0].const_value;
+                    if (addr >= first_instr && addr < current_instr) {
+                        is_loop = addr;
+                        // printf("Detected loop: 0x%lx\n", is_loop);
+                    }
+                }
+                break;
+            default:;
+                unsigned life = op->life;
+                life /= DEAD_ARG;
+                if (life) {
+                    for (int i = 0; life; ++i, life >>= 1) {
+                        if (life & 1) {
+                            temp_static_state[temp_idx(arg_temp(op->args[i]))]
+                                .is_alive = 0;
+                            if (arg_temp(op->args[i]) == t_addr) {
+                                t_addr = NULL;
+                            }
+                            if (arg_temp(op->args[i]) == t_offset) {
+                                t_offset = NULL;
+                            }
+                        } else if (!temp_static_state[temp_idx(arg_temp(
+                                                          op->args[i]))]
+                                        .is_alive) {
+                            temp_static_state[temp_idx(arg_temp(op->args[i]))]
+                                .is_alive = 1;
+                            temp_static_state[temp_idx(arg_temp(op->args[i]))]
+                                .is_const = 0;
+                        }
+                    }
+                }
+                break;
+        }
+    }
+
+    if (base && scale && is_loop && has_done_load) {
+        printf("Detected load loop: 0x%lx\n", is_loop);
+    }
+
+    return 0;
+}
+
 static int instrument = 0;
 int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                                    uint8_t* tb_code, TCGContext* tcg_ctx)
@@ -3444,6 +3868,10 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
     JumpTableFinder jump_table_finder_prev_instr = {0};
 
     TCGTempStaticState temp_static_state[TCG_MAX_TEMPS] = {0};
+
+    if (instrument) {
+        detect_load_loop(tcg_ctx);
+    }
 
 #if 0
     int ops_to_skip = -1;
@@ -3506,6 +3934,17 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                            (next_query - queue_query) - 1);
                     printf("Number of expressions: %lu\n",
                            GET_EXPR_IDX(next_free_expr) - 1);
+                    printf("Number of memory slices: %lu\n", slices_count);
+#if 0
+                    for (size_t i = 0; i < CONST_MAP_SIZE; i++) {
+                        if (const_mem_map[i].used > 0) {
+                            printf("Memory slice #%lu used %u times\n", i, const_mem_map[i].used);
+                        }
+                    }
+#endif
+#if 0
+                    printf("Number of update to slices: %lu\n", slices_updates);
+#endif
                     force_flush_cache = 1;
                 }
 
@@ -3636,12 +4075,13 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                              tcg_ctx);
 
                     uint64_t v = 0;
-                    v = PACK_0(v, temp_idx(t_out));
-                    v = PACK_1(v, temp_idx(t_a));
-                    v = PACK_2(v, temp_idx(t_b));
-                    v = PACK_3(v, size);
+                    v          = PACK_0(v, temp_idx(t_out));
+                    v          = PACK_1(v, temp_idx(t_a));
+                    v          = PACK_2(v, temp_idx(t_b));
+                    v          = PACK_3(v, size);
 
-                    TCGTemp* t_packed_idx = new_non_conflicting_temp(TCG_TYPE_PTR);
+                    TCGTemp* t_packed_idx =
+                        new_non_conflicting_temp(TCG_TYPE_PTR);
                     tcg_movi(t_packed_idx, v, 0, op, NULL, tcg_ctx);
 
                     MARK_TEMP_AS_ALLOCATED(t_a);
@@ -3949,6 +4389,28 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                                     temp_idx(jump_table_finder_prev_instr.addr),
                                     op, tcg_ctx);
                             }
+                        }
+
+                        #define MALLOC_PLT_STUB 0x400770
+
+                        if (temp_static_state[temp_idx(t_value)].is_alive
+                               && temp_static_state[temp_idx(t_value)].is_const
+                               && temp_static_state[temp_idx(t_value)].const_value == MALLOC_PLT_STUB) {
+                            // printf("Call to malloc at %lx\n", pc);
+                            // tcg_abort();
+
+                            TCGTemp* t_rdi =
+                                tcg_find_temp_arch_reg(tcg_ctx, "rdi");
+#if 1
+                            clear_temp(temp_idx(t_rdi), op, tcg_ctx);
+#else
+                            TCGTemp* t_idx = new_non_conflicting_temp(TCG_TYPE_PTR);
+                            tcg_movi(t_idx, (uintptr_t)temp_idx(t_rdi), 0, op, NULL,
+                                    tcg_ctx);
+                            add_void_call_1(clear_temp_helper, t_idx, op, NULL,
+                                            tcg_ctx);
+                            tcg_temp_free_internal(t_idx);
+#endif
                         }
 
                     } else if (is_xmm_offset(offset)) {

@@ -1074,6 +1074,7 @@ static inline void instrument_memmove_xmm(TCGOp* op, TCGContext* tcg_ctx)
         failure = 1;                                                           \
     }
 
+#if 0
 static inline int detect_memmove_xmm(TCGContext* tcg_ctx)
 {
     /*
@@ -1169,3 +1170,4 @@ static inline int detect_memmove_xmm(TCGContext* tcg_ctx)
     // printf("Pattern not found (index=%lu)\n", index);
     return -1;
 }
+#endif

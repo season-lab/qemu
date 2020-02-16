@@ -153,6 +153,7 @@ typedef enum OPKIND {
     //
     SYMBOLIC_PC,
     SYMBOLIC_JUMP_TABLE_ACCESS,
+    MEMORY_SLICE,
 } OPKIND;
 
 typedef enum EXTENDKIND {
@@ -261,7 +262,7 @@ static inline const char* opkind_to_str(uint8_t opkind)
         case EXTRACT:
             return "EXTRACT";
         case CONCAT8:
-            return "CONCAT";
+            return "CONCAT8";
 
         case CTZ:
             return "CTZ";
@@ -365,6 +366,11 @@ static inline void print_expr_internal(Expr* expr, uint8_t reset)
         printf(" NULL\n");
         return;
     }
+
+    assert(expr->op1_is_const == 0 || expr->op1_is_const == 1);
+    assert(expr->op2_is_const == 0 || expr->op2_is_const == 1);
+    assert(expr->op3_is_const == 0 || expr->op3_is_const == 1);
+
     // printf(" addr=%p", expr);
     printf(" id=%lu", GET_EXPR_IDX(expr));
     if (expr) {
@@ -466,5 +472,9 @@ static inline void print_expr(Expr* expr)
             SET_EXPR_CONST_OP(op, op_is_const, c_arg);                         \
         }                                                                      \
     } while (0);
+
+#define CONST(op) ((uintptr_t) op)
+
+#define MAX_INPUT_SIZE 4096
 
 #endif // SYMBOLIC_STRUCT_H

@@ -4239,12 +4239,24 @@ int tcg_gen_code(TCGContext *s, TranslationBlock *tb)
     atomic_set(&prof->la_time, prof->la_time + profile_getclock());
 #endif
 
+#ifdef DEBUG_DISAS 
+    if (unlikely(qemu_loglevel_mask(CPU_LOG_TB_OP_OPT)
+                 && qemu_log_in_addr_range(tb->pc))) {
+        qemu_log_lock();
+        qemu_log("OP after optimization and liveness analysis:\n");
+        tcg_dump_ops(s, true);
+        qemu_log("\n");
+        qemu_log_unlock();
+    }
+#endif
+
 #ifdef TCG_INSTRUMENTATION
     if (symbolic_mode) {
         symbolic_force_flush_cache = parse_translation_block(tb, tb->pc, tb->tc.ptr, tcg_ctx);
     }
 #endif
 
+#if 0
 #ifdef DEBUG_DISAS
     if (unlikely(qemu_loglevel_mask(CPU_LOG_TB_OP_OPT)
                  && qemu_log_in_addr_range(tb->pc))) {
@@ -4254,6 +4266,7 @@ int tcg_gen_code(TCGContext *s, TranslationBlock *tb)
         qemu_log("\n");
         qemu_log_unlock();
     }
+#endif
 #endif
 
     tcg_reg_alloc_start(s);
