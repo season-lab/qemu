@@ -3431,6 +3431,26 @@ static inline void qemu_extract_helper(uintptr_t packed_idx, uintptr_t a)
     s_temps[out_idx] = e;
 }
 
+static inline void qemu_extract2_helper(uintptr_t packed_idx, uintptr_t a, uintptr_t b)
+{
+    uintptr_t out_idx = UNPACK_0(packed_idx);
+    uintptr_t a_idx   = UNPACK_1(packed_idx);
+    uintptr_t b_idx   = UNPACK_2(packed_idx);
+    uintptr_t pos     = UNPACK_2(packed_idx);
+
+    if (s_temps[a_idx] == NULL && s_temps[b_idx]) {
+        s_temps[out_idx] = NULL;
+        return;
+    }
+
+    Expr* e   = new_expr();
+    e->opkind = QZEXTRACT2;
+    SET_EXPR_OP(e->op1, e->op1_is_const, s_temps[a_idx], a);
+    SET_EXPR_OP(e->op2, e->op2_is_const, s_temps[b_idx], b);
+    SET_EXPR_CONST_OP(e->op3, e->op3_is_const, pos);
+    s_temps[out_idx] = e;
+}
+
 static inline void qemu_extract(TCGTemp* t_op_out, TCGTemp* t_op_a,
                                 uintptr_t pos, uintptr_t len, TCGOp* op_in,
                                 TCGContext* tcg_ctx)
@@ -5163,6 +5183,34 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                     MARK_TEMP_AS_NOT_ALLOCATED(t_a);
                     tcg_temp_free_internal(t_packed_idx);
 #endif
+                }
+                break;
+
+            case INDEX_op_extract2_i64:
+                mark_temp_as_in_use(arg_temp(op->args[0]));
+                mark_temp_as_in_use(arg_temp(op->args[1]));
+                if (instrument) {
+                    TCGTemp* t_out = arg_temp(op->args[0]);
+                    TCGTemp* t_a   = arg_temp(op->args[1]);
+                    TCGTemp* t_b   = arg_temp(op->args[2]);
+                    uintptr_t pos = (uintptr_t)op->args[3];
+                    uint64_t v1 = 0;
+                    v1          = PACK_0(v1, temp_idx(t_out));
+                    v1          = PACK_1(v1, temp_idx(t_a));
+                    v1          = PACK_2(v1, temp_idx(t_b));
+                    v1          = PACK_3(v1, pos);
+
+                    TCGTemp* t_packed_idx =
+                        new_non_conflicting_temp(TCG_TYPE_PTR);
+                    tcg_movi(t_packed_idx, (uintptr_t)v1, 0, op, NULL, tcg_ctx);
+
+                    MARK_TEMP_AS_ALLOCATED(t_a);
+                    MARK_TEMP_AS_ALLOCATED(t_b);
+                    add_void_call_3(qemu_extract2_helper, t_packed_idx, t_a, t_b, op,
+                                    NULL, tcg_ctx);
+                    MARK_TEMP_AS_NOT_ALLOCATED(t_a);
+                    MARK_TEMP_AS_NOT_ALLOCATED(t_b);
+                    tcg_temp_free_internal(t_packed_idx);
                 }
                 break;
 

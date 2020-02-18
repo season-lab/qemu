@@ -93,17 +93,18 @@ typedef enum OPKIND {
                // e.g., EXTRACT(arg0, arg1, 8, 4):
                //  when N_BITS=32 then arg0 = (arg1 << 20) >> 28
     QSEXTRACT, // same as EXTRACT but using arithmetic shift
+    QZEXTRACT2,
     //
     CTZ, // count trailing zeros (x86: BSF, TZCNT)
     RCL,
     //
-    ITE, // 41
+    ITE, // 42
     ITE_EQ_ZERO,
     ITE_NE_ZERO,
     OR_3,
     XOR_3,
     // XMM
-    PMOVMSKB, // 46
+    PMOVMSKB, // 47
     CMP_EQ,
     CMP_GT,
     CMP_GE,
@@ -111,7 +112,7 @@ typedef enum OPKIND {
     CMP_LT,
     MIN,
     // double binop
-    MUL_HIGH, // 55
+    MUL_HIGH, // 56
     MULU_HIGH,
     //
     EFLAGS_ALL_ADD,
@@ -272,6 +273,8 @@ static inline const char* opkind_to_str(uint8_t opkind)
 
         case DEPOSIT:
             return "DEPOSIT";
+        case QZEXTRACT2:
+            return "QZEXTRACT2";
 
         case ITE:
             return "ITE";
