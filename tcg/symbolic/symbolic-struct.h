@@ -352,6 +352,8 @@ static inline const char* opkind_to_str(uint8_t opkind)
             return "SYMBOLIC_JUMP_TABLE_ACCESS";
         case SYMBOLIC_PC:
             return "SYMBOLIC_PC";
+        case MEMORY_SLICE:
+            return "MEMORY_SLICE";
 
         default:
             printf("\nstr(opkind=%u) is unknown\n", opkind);
