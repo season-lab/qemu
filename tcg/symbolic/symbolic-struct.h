@@ -182,7 +182,8 @@ typedef struct Query {
 } Query;
 
 extern Expr* pool;
-#define GET_EXPR_IDX(e) ((((uintptr_t)e) - ((uintptr_t)pool)) / sizeof(Expr))
+#define GET_EXPR_IDX(e) (((Expr *)e) - ((Expr *)pool))
+#define GET_QUERY_IDX(q) ((((Query *)q) - ((Query *)query_queue)) - 1)
 
 static inline const char* opkind_to_str(uint8_t opkind)
 {
