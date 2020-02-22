@@ -32,7 +32,7 @@
 #define UNPACK_2(p) ((p >> 32) & 0xFFFF)
 #define UNPACK_3(p) ((p >> 48) & 0xFFFF)
 
-#define DEPOSIT_MASK(pos, len) (((((uintptr_t)1) << len) - 1) << pos)
+#define DEPOSIT_MASK(pos, len) (((((uintptr_t)1LU) << len) - 1) << pos)
 
 typedef enum OPKIND {
     RESERVED,
@@ -155,6 +155,9 @@ typedef enum OPKIND {
     SYMBOLIC_PC,
     SYMBOLIC_JUMP_TABLE_ACCESS,
     MEMORY_SLICE,
+    MEMORY_SLICE_ACCESS,
+    SYMBOLIC_LOAD,
+    SYMBOLIC_STORE,
 } OPKIND;
 
 typedef enum EXTENDKIND {
@@ -407,7 +410,7 @@ static inline void print_expr_internal(Expr* expr, uint8_t reset)
                     printf(" E_%lu", GET_EXPR_IDX(expr->op2));
             }
 
-            if (expr->opkind == EFLAGS_C_ADCQ && !expr->op3_is_const) {
+            if (expr->opkind == EFLAGS_C_ADCQ || expr->op3_is_const) {
                 if (expr->op3_is_const)
                     printf(" 0x%lx", (uintptr_t)expr->op3);
                 else

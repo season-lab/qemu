@@ -196,9 +196,9 @@ void init_symbolic_mode(void)
 #ifndef DISABLE_SOLVER
     struct timespec polling_time;
     polling_time.tv_sec  = 0;
-    polling_time.tv_nsec = 10;
+    polling_time.tv_nsec = 50;
 
-    int max_attempts = 10;
+    int max_attempts = 100;
 
     int expr_pool_shm_id;
     do {
@@ -1423,13 +1423,25 @@ static inline void qemu_pc_write(TCGTemp* t_op_a, TCGOp* op_in,
     tcg_store_n(t_out, t_a, offsetof(Expr, op1), 0, 1, sizeof(uintptr_t), op_in,
                 NULL, tcg_ctx);
 
+    TCGTemp* t_query_addr = new_non_conflicting_temp(TCG_TYPE_I64);
+    tcg_movi(t_query_addr, (uintptr_t) &next_query, 0, op_in, NULL, tcg_ctx);
+
+    TCGTemp* t_query = new_non_conflicting_temp(TCG_TYPE_I64);
+    tcg_load_n(t_query_addr, t_query, 0, 0, 0, sizeof(uintptr_t), op_in, NULL, tcg_ctx);
+
+    tcg_store_n(t_query, t_out, offsetof(Query, query), 0, 1, sizeof(uintptr_t), op_in, NULL, tcg_ctx);
+
+    TCGTemp* t_query_size = new_non_conflicting_temp(TCG_TYPE_I64);
+    tcg_movi(t_query_size, sizeof(Query), 0, op_in, NULL, tcg_ctx);
+    tcg_binop(t_query, t_query, t_query_size, 0, 0, 1, ADD, op_in, NULL, tcg_ctx);
+
+    tcg_store_n(t_query_addr, t_query, 0, 1, 1, sizeof(uintptr_t), op_in, NULL, tcg_ctx);
+
     TCGOp* op;
     tcg_print_const_str("\nSymbolic PC\n", op_in, &op, tcg_ctx);
     mark_insn_as_instrumentation(op);
 
     tcg_set_label(label_a_concrete, op_in, NULL, tcg_ctx);
-
-    tcg_temp_free_internal(t_out);
 
     CHECK_TEMPS_COUNT(tcg_ctx);
 }
@@ -1787,29 +1799,11 @@ static inline uintptr_t find_const_base(Expr* e)
     return base;
 }
 
-
-static uintptr_t           symbolic_access_id = MAX_INPUT_SIZE;
-
-#if 0
-typedef struct {
-    uintptr_t base;
-    uintptr_t offset;
-    uintptr_t size;
-    uintptr_t hit_time;
-} ConstantMemorySlice;
-
-#define NUM_MEM_SLICES 8
-#define SLICE_SIZE     0x100
-static size_t              mem_slice_in_use = 0;
-static uintptr_t           hit_time         = 1;
-static ConstantMemorySlice const_mem_slices[NUM_MEM_SLICES];
-static uintptr_t           slices_count       = 0;
-static uintptr_t           slices_updates     = 0;
-#endif
+static uintptr_t symbolic_access_id = MAX_INPUT_SIZE;
 
 typedef struct {
     uintptr_t base;
-    Expr* dump;
+    Expr*     dump;
     uint32_t  used;
     uint8_t   status;
 } MemorySlice;
@@ -1819,6 +1813,66 @@ typedef struct {
 #define CONST_MAP_SIZE 0x1000
 static MemorySlice const_mem_map[CONST_MAP_SIZE] = {0};
 static uintptr_t   slices_count                  = 0;
+
+static inline Expr* get_base_expr(Expr* e)
+{
+    if (e->opkind == ADD) {
+        if (e->op1_is_const) {
+            return get_base_expr(e->op2);
+        } else if (e->op2_is_const) {
+            return get_base_expr(e->op1);
+        }
+    }
+    return e;
+}
+
+static Expr* last_load_concretization = NULL;
+static inline void load_concretization(Expr* addr_expr, uintptr_t addr)
+{
+    Expr* base_expr = get_base_expr(addr_expr);
+
+    if (last_load_concretization != base_expr) {
+        Expr* e   = new_expr();
+        e->opkind = SYMBOLIC_LOAD;
+        e->op1    = addr_expr;
+        SET_EXPR_CONST_OP(e->op2, e->op2_is_const, addr);
+        last_load_concretization = base_expr;
+
+        // printf("\nSymbolic Load (base_expr=%lu)\n",  GET_EXPR_IDX(base_expr));
+        // print_expr(addr_expr);
+
+        next_query[0].query   = e;
+        next_query[0].address = 0;
+        next_query++;
+
+    } else {
+        // printf("Symbolic Load (already concretized)\n");
+    }
+}
+
+static Expr* last_store_concretization = NULL;
+static inline void store_concretization(Expr* addr_expr, uintptr_t addr)
+{
+    Expr* base_expr = get_base_expr(addr_expr);
+
+    if (last_store_concretization != base_expr) {
+        Expr* e   = new_expr();
+        e->opkind = SYMBOLIC_STORE;
+        e->op1    = addr_expr;
+        SET_EXPR_CONST_OP(e->op2, e->op2_is_const, addr);
+        last_store_concretization = base_expr;
+
+        // printf("\nSymbolic Store (base_expr=%lu)\n",  GET_EXPR_IDX(base_expr));
+        // print_expr(addr_expr);
+
+        next_query[0].query   = e;
+        next_query[0].address = 0;
+        next_query++;
+
+    } else {
+        // printf("Symbolic Store (already concretized)\n");
+    }
+}
 
 static inline void qemu_load_helper(uintptr_t orig_addr,
                                     uintptr_t mem_op_offset, uintptr_t addr_idx,
@@ -1842,16 +1896,16 @@ static inline void qemu_load_helper(uintptr_t orig_addr,
             // printf("Detected base: 0x%lx\n", base);
 #endif
 
-            Expr* initial_free_expr = next_free_expr;
-            uintptr_t base_addr = orig_addr;
-            size_t n_slice = 1;
+            Expr*     initial_free_expr = next_free_expr;
+            uintptr_t base_addr         = orig_addr;
+            size_t    n_slice           = 1;
             if (orig_addr - base < 0x800) {
                 base_addr = base;
-                n_slice = 0x800 / SLICE_SIZE;
+                n_slice   = 0x800 / SLICE_SIZE;
             }
 
-            uint8_t read_from_slice = 1;
-            Expr* slices_addrs[(0x800 / SLICE_SIZE) + 1] = {0};
+            uint8_t read_from_slice                        = 1;
+            Expr*   slices_addrs[(0x800 / SLICE_SIZE) + 1] = {0};
             for (size_t i = 0; i < n_slice; i++) {
                 uintptr_t norm_addr = (base_addr / SLICE_SIZE) * SLICE_SIZE;
                 uintptr_t hash_addr = HASH_ADDR(norm_addr);
@@ -1863,10 +1917,10 @@ static inline void qemu_load_helper(uintptr_t orig_addr,
                     const_mem_map[idx].status = 1;
                     const_mem_map[idx].used   = 1;
                     const_mem_map[idx].base   = norm_addr;
-                    const_mem_map[idx].dump = next_free_expr;
+                    const_mem_map[idx].dump   = next_free_expr;
 
                     slices_addrs[i] = next_free_expr;
-                    memcpy(next_free_expr, (void *) norm_addr, SLICE_SIZE);
+                    memcpy(next_free_expr, (void*)norm_addr, SLICE_SIZE);
                     next_free_expr += SLICE_SIZE;
 #if 0
                     printf("Taking a memory slice #%lu at 0x%lx\n", idx, norm_addr);
@@ -1874,7 +1928,7 @@ static inline void qemu_load_helper(uintptr_t orig_addr,
                     slices_count += 1;
                 } else if (status == 1) {
                     // reusing taken snapshot
-                    const_mem_map[idx].used   += 1;
+                    const_mem_map[idx].used += 1;
                     slices_addrs[i] = const_mem_map[idx].dump;
                 } else {
                     // memory is not constant
@@ -1889,78 +1943,43 @@ static inline void qemu_load_helper(uintptr_t orig_addr,
 
                 size_t k = 0;
                 while (slices_addrs[k]) {
-                    Expr* s           = new_expr();
-                    s->opkind         = MEMORY_SLICE;
-                    s->op1            = slices_addrs[k];
-                    s->op2            = EXPR_CONST_OP(symbolic_access_id);
+                    Expr* s   = new_expr();
+                    s->opkind = MEMORY_SLICE;
+                    s->op1    = slices_addrs[k];
+                    s->op2    = EXPR_CONST_OP(symbolic_access_id);
                     k += 1;
                 }
 
-                Expr* e           = new_expr();
-                e->opkind         = IS_SYMBOLIC;
-                e->op1            = EXPR_CONST_OP(symbolic_access_id);
-                e->op2            = EXPR_CONST_OP(size);
-
-                // printf("Generating new symbolic for slice access: %lu\n", symbolic_access_id);
+                Expr* e   = new_expr();
+                e->opkind = IS_SYMBOLIC;
+                e->op1    = EXPR_CONST_OP(symbolic_access_id);
+                e->op2    = EXPR_CONST_OP(size);
+                // printf("Generating new symbolic for slice access: %lu\n",
+                // symbolic_access_id);
 
                 symbolic_access_id += 1;
                 s_temps[val_idx] = e;
+
+                e   = new_expr();
+                e->opkind = MEMORY_SLICE_ACCESS;
+                e->op1    = s_temps[addr_idx];
+                e->op2    = EXPR_CONST_OP(addr);
+
+                next_query[0].query = e;
+                next_query[0].address = 0;
+                next_query++;
+
                 return;
             } else {
-                memset(initial_free_expr, 0, ((char *)next_free_expr) - ((char*)initial_free_expr));
+                memset(initial_free_expr, 0,
+                       ((char*)next_free_expr) - ((char*)initial_free_expr));
                 next_free_expr = initial_free_expr;
-            }
-        }
-#if 0
-        if (IS_LIKELY_CONST_BASE(base)) {
-            // printf("Symbolic Access: base=%lx\n", base);
-            int       found        = 0;
-            int       min_hit_time = 0;
-            uintptr_t offset = ((orig_addr - base) / SLICE_SIZE) * SLICE_SIZE;
-            for (size_t k = 0; k < mem_slice_in_use; k++) {
-                if (base == const_mem_slices[k].base) {
-                    if (const_mem_slices[k].offset == offset) {
-                        found                        = 1;
-                        const_mem_slices[k].hit_time = hit_time++;
-                        break;
-                    }
-                }
-                if (const_mem_slices[k].hit_time <
-                    const_mem_slices[min_hit_time].hit_time) {
-                    min_hit_time = k;
-                }
-            }
-            if (!found) {
-                size_t index = mem_slice_in_use;
-                if (mem_slice_in_use == NUM_MEM_SLICES) {
-                    index = min_hit_time;
-                } else {
-                    mem_slice_in_use++;
-                }
-                slices_count += 1;
-                const_mem_slices[index].base     = base;
-                const_mem_slices[index].size     = SLICE_SIZE;
-                const_mem_slices[index].offset   = offset;
-                const_mem_slices[index].hit_time = hit_time++;
-                printf("Taking a memory slice at %lx (offset=%lx)\n", base,
-                       offset);
+
+                load_concretization(s_temps[addr_idx], orig_addr);
             }
         } else {
-            printf("Symbolic Load\n");
-            //print_expr(s_temps[addr_idx]);
-
-#if 0
-        Expr* e           = new_expr();
-        e->opkind         = IS_SYMBOLIC;
-        e->op1            = EXPR_CONST_OP(symbolic_access_id);
-        e->op2            = EXPR_CONST_OP(size);
-        s_temps[addr_idx] = e;
-        return;
-#endif
-        symbolic_access_id++;
+            load_concretization(s_temps[addr_idx], orig_addr);
         }
-        // print_expr(s_temps[addr_idx]);
-#endif
     }
 
     uintptr_t  l1_page_idx = addr >> (L1_PAGE_BITS + L2_PAGE_BITS);
@@ -1980,7 +1999,7 @@ static inline void qemu_load_helper(uintptr_t orig_addr,
     }
 
     uintptr_t l3_page_idx = addr & 0xFFFF;
-    assert(l3_page_idx + size < 1 << L3_PAGE_BITS); // ToDo: cross page access
+    assert(l3_page_idx + size <= 1 << L3_PAGE_BITS); // ToDo: cross page access
 
     assert(size <= 8);
     Expr*   exprs[8]         = {NULL};
@@ -2273,6 +2292,36 @@ static inline void qemu_load(TCGTemp* t_addr, TCGTemp* t_val, uintptr_t offset,
     CHECK_TEMPS_COUNT(tcg_ctx);
 }
 
+static inline void qemu_multi_page_store(l3_page_t* l3_page,
+                                         uintptr_t l3_page_idx, uintptr_t size,
+                                         Expr* v)
+{
+
+    assert(0);
+
+    uintptr_t pa_size  = 1 << L3_PAGE_BITS;
+    ssize_t   new_size = (ssize_t)size;
+
+    if (v == NULL) {
+        for (size_t i = l3_page_idx; i < pa_size; i++) {
+            l3_page->entries[i] = NULL;
+            new_size--;
+        }
+    } else {
+        for (size_t i = l3_page_idx; i < pa_size; i++) {
+            Expr* e                           = new_expr();
+            e->opkind                         = EXTRACT8;
+            e->op1                            = v;
+            size_t idx                        = i;
+            e->op2                            = (Expr*)idx;
+            l3_page->entries[l3_page_idx + i] = e;
+            new_size--;
+        }
+    }
+
+    assert(new_size > 0);
+}
+
 static inline void qemu_store_helper(uintptr_t orig_addr,
                                      uintptr_t mem_op_offset,
                                      uintptr_t addr_idx, uintptr_t val_idx)
@@ -2280,20 +2329,8 @@ static inline void qemu_store_helper(uintptr_t orig_addr,
     TCGMemOp  mem_op = get_mem_op(mem_op_offset);
     uintptr_t offset = get_mem_offset(mem_op_offset);
 
-#if 0
-    if (s_temps[addr_idx]) {
-        // printf("\nSymbolic Access\n");
-        uintptr_t base = find_const_base(s_temps[addr_idx]);
-        
-        if (IS_LIKELY_CONST_BASE(base)) {
-            printf("Symbolic Store: base=%lx\n", base);
-        } else {
-            printf("Symbolic Store\n");
-            //print_expr(s_temps[addr_idx]);
-        }
-        // print_expr(s_temps[addr_idx]);
-    }
-#endif
+    size_t    size = get_mem_op_size(mem_op);
+    uintptr_t addr = orig_addr + offset;
 
     uintptr_t norm_addr = (orig_addr / SLICE_SIZE) * SLICE_SIZE;
     uintptr_t hash_addr = HASH_ADDR(norm_addr);
@@ -2301,7 +2338,7 @@ static inline void qemu_store_helper(uintptr_t orig_addr,
     uint8_t   status    = const_mem_map[idx].status;
     if (status == 0 && s_temps[val_idx]) {
         const_mem_map[idx].status = 2;
-        const_mem_map[idx].base = norm_addr;
+        const_mem_map[idx].base   = norm_addr;
     } else if (status == 1) {
 #if 0
         if (norm_addr != const_mem_map[idx].base) {
@@ -2312,27 +2349,9 @@ static inline void qemu_store_helper(uintptr_t orig_addr,
         const_mem_map[idx].status = 2;
     }
 
-#if 0
-    for (size_t k = 0; k < mem_slice_in_use; k++) {
-        if (orig_addr >=
-                const_mem_slices[k].base + const_mem_slices[k].offset &&
-            orig_addr <= (const_mem_slices[k].base + const_mem_slices[k].size +
-                          const_mem_slices[k].offset)) {
-            printf("Updating memory slice %lx (offset=%lx, disp=%lx)\n",
-                   const_mem_slices[k].base, const_mem_slices[k].offset,
-                   orig_addr - const_mem_slices[k].base -
-                       const_mem_slices[k].offset);
-            slices_updates += 1;
-        }
+    if (s_temps[addr_idx]) {
+        store_concretization(s_temps[addr_idx], orig_addr);
     }
-#endif
-
-    // assert((mem_op & MO_BE) == 0); // FixMe: extend to BE
-
-    // number of bytes to load
-    size_t size = get_mem_op_size(mem_op);
-
-    uintptr_t addr = orig_addr + offset;
 
     uintptr_t  l1_page_idx = addr >> (L1_PAGE_BITS + L2_PAGE_BITS);
     l2_page_t* l2_page     = s_memory.table.entries[l1_page_idx];
@@ -2355,7 +2374,10 @@ static inline void qemu_store_helper(uintptr_t orig_addr,
     }
 
     uintptr_t l3_page_idx = addr & 0xFFFF;
-    assert(l3_page_idx + size < 1 << L3_PAGE_BITS); // ToDo: cross page access
+    if (l3_page_idx + size > 1 << L3_PAGE_BITS) {
+        qemu_multi_page_store(l3_page, l3_page_idx, size, s_temps[val_idx]);
+        return;
+    }
 
     if (s_temps[val_idx] == NULL) {
         for (size_t i = 0; i < size; i++)
@@ -2367,13 +2389,6 @@ static inline void qemu_store_helper(uintptr_t orig_addr,
             printf("Storing %lu bytes: *%p + %lu = t[%ld]\n", size,
                    (void*)orig_addr, offset, s_temps[val_idx] ? val_idx : -1);
         }
-#endif
-
-#if 0
-        if (mem_op & MO_BE)
-            printf("Big endian\n");
-        else
-            printf("Little endian\n");
 #endif
 
         for (size_t i = 0; i < size; i++) {
@@ -3431,14 +3446,15 @@ static inline void qemu_extract_helper(uintptr_t packed_idx, uintptr_t a)
     s_temps[out_idx] = e;
 }
 
-static inline void qemu_extract2_helper(uintptr_t packed_idx, uintptr_t a, uintptr_t b)
+static inline void qemu_extract2_helper(uintptr_t packed_idx, uintptr_t a,
+                                        uintptr_t b)
 {
     uintptr_t out_idx = UNPACK_0(packed_idx);
     uintptr_t a_idx   = UNPACK_1(packed_idx);
     uintptr_t b_idx   = UNPACK_2(packed_idx);
     uintptr_t pos     = UNPACK_2(packed_idx);
 
-    if (s_temps[a_idx] == NULL && s_temps[b_idx]) {
+    if (s_temps[a_idx] == NULL && s_temps[b_idx] == NULL) {
         s_temps[out_idx] = NULL;
         return;
     }
@@ -3875,6 +3891,8 @@ static inline int detect_load_loop(TCGContext* tcg_ctx)
     return 0;
 }
 
+#define MALLOC_PLT_STUB 0x400770
+
 static int instrument = 0;
 int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                                    uint8_t* tb_code, TCGContext* tcg_ctx)
@@ -3973,6 +3991,11 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                     if (pc == s_config.symbolic_exec_reg_instr_addr)
                         make_reg_symbolic(s_config.symbolic_exec_reg_name, op,
                                           tcg_ctx);
+                }
+
+                if (pc == MALLOC_PLT_STUB) {
+                    TCGTemp* t_rdi = tcg_find_temp_arch_reg(tcg_ctx, "rdi");
+                    clear_temp(temp_idx(t_rdi), op, tcg_ctx);
                 }
                 break;
 
@@ -4411,11 +4434,10 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                             }
                         }
 
-                        #define MALLOC_PLT_STUB 0x400770
-
-                        if (temp_static_state[temp_idx(t_value)].is_alive
-                               && temp_static_state[temp_idx(t_value)].is_const
-                               && temp_static_state[temp_idx(t_value)].const_value == MALLOC_PLT_STUB) {
+                        if (temp_static_state[temp_idx(t_value)].is_alive &&
+                            temp_static_state[temp_idx(t_value)].is_const &&
+                            temp_static_state[temp_idx(t_value)].const_value ==
+                                MALLOC_PLT_STUB) {
                             // printf("Call to malloc at %lx\n", pc);
                             // tcg_abort();
 
@@ -4424,9 +4446,10 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
 #if 1
                             clear_temp(temp_idx(t_rdi), op, tcg_ctx);
 #else
-                            TCGTemp* t_idx = new_non_conflicting_temp(TCG_TYPE_PTR);
-                            tcg_movi(t_idx, (uintptr_t)temp_idx(t_rdi), 0, op, NULL,
-                                    tcg_ctx);
+                            TCGTemp* t_idx =
+                                new_non_conflicting_temp(TCG_TYPE_PTR);
+                            tcg_movi(t_idx, (uintptr_t)temp_idx(t_rdi), 0, op,
+                                     NULL, tcg_ctx);
                             add_void_call_1(clear_temp_helper, t_idx, op, NULL,
                                             tcg_ctx);
                             tcg_temp_free_internal(t_idx);
@@ -5190,15 +5213,15 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                 mark_temp_as_in_use(arg_temp(op->args[0]));
                 mark_temp_as_in_use(arg_temp(op->args[1]));
                 if (instrument) {
-                    TCGTemp* t_out = arg_temp(op->args[0]);
-                    TCGTemp* t_a   = arg_temp(op->args[1]);
-                    TCGTemp* t_b   = arg_temp(op->args[2]);
-                    uintptr_t pos = (uintptr_t)op->args[3];
-                    uint64_t v1 = 0;
-                    v1          = PACK_0(v1, temp_idx(t_out));
-                    v1          = PACK_1(v1, temp_idx(t_a));
-                    v1          = PACK_2(v1, temp_idx(t_b));
-                    v1          = PACK_3(v1, pos);
+                    TCGTemp*  t_out = arg_temp(op->args[0]);
+                    TCGTemp*  t_a   = arg_temp(op->args[1]);
+                    TCGTemp*  t_b   = arg_temp(op->args[2]);
+                    uintptr_t pos   = (uintptr_t)op->args[3];
+                    uint64_t  v1    = 0;
+                    v1              = PACK_0(v1, temp_idx(t_out));
+                    v1              = PACK_1(v1, temp_idx(t_a));
+                    v1              = PACK_2(v1, temp_idx(t_b));
+                    v1              = PACK_3(v1, pos);
 
                     TCGTemp* t_packed_idx =
                         new_non_conflicting_temp(TCG_TYPE_PTR);
@@ -5206,8 +5229,8 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
 
                     MARK_TEMP_AS_ALLOCATED(t_a);
                     MARK_TEMP_AS_ALLOCATED(t_b);
-                    add_void_call_3(qemu_extract2_helper, t_packed_idx, t_a, t_b, op,
-                                    NULL, tcg_ctx);
+                    add_void_call_3(qemu_extract2_helper, t_packed_idx, t_a,
+                                    t_b, op, NULL, tcg_ctx);
                     MARK_TEMP_AS_NOT_ALLOCATED(t_a);
                     MARK_TEMP_AS_NOT_ALLOCATED(t_b);
                     tcg_temp_free_internal(t_packed_idx);

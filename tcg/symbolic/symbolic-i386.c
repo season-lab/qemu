@@ -491,7 +491,7 @@ static Expr** get_expr_addr(uintptr_t addr, size_t size, uint8_t allocate)
 
     uintptr_t l2_page_idx = (addr >> L2_PAGE_BITS) & 0xFFFF;
     uintptr_t l3_page_idx = addr & 0xFFFF;
-    assert(l3_page_idx + size < 1 << L3_PAGE_BITS); // ToDo: cross page access
+    assert(l3_page_idx + size <= 1 << L3_PAGE_BITS); // ToDo: cross page access
 
     l3_page_t* l3_page = l2_page->entries[l2_page_idx];
     if (l3_page == NULL) {
