@@ -228,3 +228,12 @@ DEF_HELPER_3(rcrq, tl, env, tl, tl)
 #endif
 
 DEF_HELPER_1(rdrand, tl, env)
+
+#include "../../tcg/symbolic/symbolic-instrumentation.h"
+
+#ifdef SYMBOLIC_INSTRUMENTATION
+#if SYMBOLIC_CALLSTACK_INSTRUMENTATION
+DEF_HELPER_1(instrument_call, void, tl)
+DEF_HELPER_1(instrument_ret, void, tl)
+#endif
+#endif

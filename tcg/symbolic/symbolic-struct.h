@@ -77,7 +77,7 @@ typedef enum OPKIND {
     ZEXT, // ZEXT(arg0, n): zero-extend arg0 from the n-1 msb bits
     SEXT, // SEXT(arg0, n): sign-extend arg0 from the n-1 msb bits
     // binary
-    CONCAT, // 34
+    CONCAT,   // 34
     CONCAT8,  // CONCAT8(arg0, arg1): concat one byte (arg1) to arg0
     EXTRACT8, // EXTRACT8(arg0, i): extract i-th byte from arg0
     EXTRACT,
@@ -181,13 +181,17 @@ typedef struct Expr {
 } Expr;
 
 typedef struct Query {
-    Expr* query;
-    uintptr_t    address;
+    Expr*     query;
+    uintptr_t address;
+    uint8_t   arg0;
+    uint8_t   arg1;
+    uint8_t   arg2;
+    uint8_t   arg3;
 } Query;
 
 extern Expr* pool;
-#define GET_EXPR_IDX(e) (((Expr *)e) - ((Expr *)pool))
-#define GET_QUERY_IDX(q) ((((Query *)q) - ((Query *)query_queue)) - 1)
+#define GET_EXPR_IDX(e)  (((Expr*)e) - ((Expr*)pool))
+#define GET_QUERY_IDX(q) ((((Query*)q) - ((Query*)query_queue)) - 1)
 
 static inline const char* opkind_to_str(uint8_t opkind)
 {
@@ -484,7 +488,7 @@ static inline void print_expr(Expr* expr)
         }                                                                      \
     } while (0);
 
-#define CONST(op) ((uintptr_t) op)
+#define CONST(op) ((uintptr_t)op)
 
 #define MAX_INPUT_SIZE 4096
 

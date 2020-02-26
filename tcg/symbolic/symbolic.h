@@ -108,10 +108,6 @@ void init_symbolic_mode(void);
 int  parse_translation_block(TranslationBlock* tb, uintptr_t pc,
                              uint8_t* tb_code, TCGContext* tcg_ctx);
 
-void qemu_syscall_helper(uintptr_t syscall_no, uintptr_t syscall_arg0,
-                         uintptr_t syscall_arg1, uintptr_t syscall_arg2,
-                         uintptr_t ret_val);
-
 typedef enum {
     INSTRUMENT_BEFORE,
     INSTRUMENT_AFTER,

@@ -13,12 +13,15 @@
 
 //#define SYMBOLIC_DEBUG
 //#define DISABLE_SOLVER
+#define SYMBOLIC_COSTANT_ACCESS 1
 
 #define QUEUE_OP_MAX_SIZE 128
 size_t        op_to_add_size               = 0;
 TCGOp*        op_to_add[QUEUE_OP_MAX_SIZE] = {0};
 extern TCGOp* tcg_op_alloc(TCGOpcode opc);
 extern TCGOp* tcg_op_insert_before_op(TCGContext* s, TCGOp* op, TCGOp* new_op);
+
+uintptr_t symbolic_pc;
 
 // symbolic temps
 Expr* s_temps[TCG_MAX_TEMPS] = {0};
@@ -46,6 +49,10 @@ typedef struct s_memory_t {
 } s_memory_t;
 
 s_memory_t s_memory = {0};
+
+#define BITMAP_SIZE (1 << 16)
+static uint8_t bitmap[BITMAP_SIZE] = { 0 };
+static uint16_t prev_loc = 0;
 
 // path constraints
 Expr* path_constraints = NULL;
@@ -866,6 +873,76 @@ static inline void tcg_set_label(TCGLabel* label, TCGOp* op_in, TCGOp** op_out,
         *op_out = op;
 }
 
+#define CALLSTACK_MAX_SIZE 0x1000
+
+typedef struct {
+    uint16_t address; // hash of the address
+} CallStackEntry;
+
+typedef struct {
+    CallStackEntry entries[CALLSTACK_MAX_SIZE];
+    intptr_t       depth;
+    uint16_t       hash;
+} CallStack;
+
+static CallStack callstack = {.depth = 0};
+
+void helper_instrument_call(target_ulong pc);
+void helper_instrument_call(target_ulong pc)
+{
+    // printf("CALL from %lx\n", (uintptr_t) pc);
+    pc = (pc >> 4) ^ (pc << 8);
+    pc &= BITMAP_SIZE - 1;
+    callstack.entries[callstack.depth].address = pc;
+    callstack.hash ^= pc;
+    callstack.depth += 1;
+    if (callstack.depth >= CALLSTACK_MAX_SIZE) {
+        tcg_abort();
+    }
+}
+
+void helper_instrument_ret(target_ulong pc);
+void helper_instrument_ret(target_ulong pc)
+{
+    // printf("RET to %lx\n", (uintptr_t) pc);
+
+    intptr_t initial_depth          = callstack.depth;
+    uint16_t initial_callstack_hash = callstack.hash;
+
+    pc = (pc >> 4) ^ (pc << 8);
+    pc &= BITMAP_SIZE - 1;
+
+    callstack.depth -= 1;
+    while (callstack.depth >= 0 &&
+           callstack.entries[callstack.depth].address != pc) {
+
+        callstack.hash ^= callstack.entries[callstack.depth].address;
+        callstack.depth -= 1;
+        // printf("Skipping RET address\n");
+    }
+
+    if (callstack.depth >= 0) {
+        callstack.hash ^= pc;
+        // printf("Found RET address\n");
+    } else { // not found
+        callstack.depth = initial_depth;
+        callstack.hash  = initial_callstack_hash;
+        // printf("RET address not found. Restoring\n");
+    }
+}
+
+static inline void visitTB(uintptr_t cur_loc)
+{
+    cur_loc = (cur_loc >> 4) ^ (cur_loc << 8);
+    cur_loc &= BITMAP_SIZE - 1;
+
+    uintptr_t index = (cur_loc ^ prev_loc ^ callstack.hash);
+    index &= BITMAP_SIZE - 1;
+    bitmap[index]++;
+
+    prev_loc = cur_loc >> 1;
+}
+
 static inline void print_something(char* str) { printf("%s\n", str); }
 DEF_HELPER_INFO(print_something);
 
@@ -1424,18 +1501,22 @@ static inline void qemu_pc_write(TCGTemp* t_op_a, TCGOp* op_in,
                 NULL, tcg_ctx);
 
     TCGTemp* t_query_addr = new_non_conflicting_temp(TCG_TYPE_I64);
-    tcg_movi(t_query_addr, (uintptr_t) &next_query, 0, op_in, NULL, tcg_ctx);
+    tcg_movi(t_query_addr, (uintptr_t)&next_query, 0, op_in, NULL, tcg_ctx);
 
     TCGTemp* t_query = new_non_conflicting_temp(TCG_TYPE_I64);
-    tcg_load_n(t_query_addr, t_query, 0, 0, 0, sizeof(uintptr_t), op_in, NULL, tcg_ctx);
+    tcg_load_n(t_query_addr, t_query, 0, 0, 0, sizeof(uintptr_t), op_in, NULL,
+               tcg_ctx);
 
-    tcg_store_n(t_query, t_out, offsetof(Query, query), 0, 1, sizeof(uintptr_t), op_in, NULL, tcg_ctx);
+    tcg_store_n(t_query, t_out, offsetof(Query, query), 0, 1, sizeof(uintptr_t),
+                op_in, NULL, tcg_ctx);
 
     TCGTemp* t_query_size = new_non_conflicting_temp(TCG_TYPE_I64);
     tcg_movi(t_query_size, sizeof(Query), 0, op_in, NULL, tcg_ctx);
-    tcg_binop(t_query, t_query, t_query_size, 0, 0, 1, ADD, op_in, NULL, tcg_ctx);
+    tcg_binop(t_query, t_query, t_query_size, 0, 0, 1, ADD, op_in, NULL,
+              tcg_ctx);
 
-    tcg_store_n(t_query_addr, t_query, 0, 1, 1, sizeof(uintptr_t), op_in, NULL, tcg_ctx);
+    tcg_store_n(t_query_addr, t_query, 0, 1, 1, sizeof(uintptr_t), op_in, NULL,
+                tcg_ctx);
 
     TCGOp* op;
     tcg_print_const_str("\nSymbolic PC\n", op_in, &op, tcg_ctx);
@@ -1799,7 +1880,9 @@ static inline uintptr_t find_const_base(Expr* e)
     return base;
 }
 
+#if SYMBOLIC_COSTANT_ACCESS
 static uintptr_t symbolic_access_id = MAX_INPUT_SIZE;
+#endif
 
 typedef struct {
     uintptr_t base;
@@ -1826,7 +1909,7 @@ static inline Expr* get_base_expr(Expr* e)
     return e;
 }
 
-static Expr* last_load_concretization = NULL;
+static Expr*       last_load_concretization = NULL;
 static inline void load_concretization(Expr* addr_expr, uintptr_t addr)
 {
     Expr* base_expr = get_base_expr(addr_expr);
@@ -1838,7 +1921,7 @@ static inline void load_concretization(Expr* addr_expr, uintptr_t addr)
         SET_EXPR_CONST_OP(e->op2, e->op2_is_const, addr);
         last_load_concretization = base_expr;
 
-        // printf("\nSymbolic Load (base_expr=%lu)\n",  GET_EXPR_IDX(base_expr));
+        // printf("\nSymbolic Load (base_expr=%lu)\n", GET_EXPR_IDX(base_expr));
         // print_expr(addr_expr);
 
         next_query[0].query   = e;
@@ -1850,7 +1933,7 @@ static inline void load_concretization(Expr* addr_expr, uintptr_t addr)
     }
 }
 
-static Expr* last_store_concretization = NULL;
+static Expr*       last_store_concretization = NULL;
 static inline void store_concretization(Expr* addr_expr, uintptr_t addr)
 {
     Expr* base_expr = get_base_expr(addr_expr);
@@ -1862,8 +1945,8 @@ static inline void store_concretization(Expr* addr_expr, uintptr_t addr)
         SET_EXPR_CONST_OP(e->op2, e->op2_is_const, addr);
         last_store_concretization = base_expr;
 
-        // printf("\nSymbolic Store (base_expr=%lu)\n",  GET_EXPR_IDX(base_expr));
-        // print_expr(addr_expr);
+        // printf("\nSymbolic Store (base_expr=%lu)\n",
+        // GET_EXPR_IDX(base_expr)); print_expr(addr_expr);
 
         next_query[0].query   = e;
         next_query[0].address = 0;
@@ -1887,13 +1970,13 @@ static inline void qemu_load_helper(uintptr_t orig_addr,
     size_t    size = get_mem_op_size(mem_op);
     uintptr_t addr = orig_addr + offset;
 
+#if SYMBOLIC_COSTANT_ACCESS
     if (s_temps[addr_idx]) {
         // printf("\nSymbolic Access\n");
         uintptr_t base = find_const_base(s_temps[addr_idx]);
         if (IS_LIKELY_CONST_BASE(base)) {
-
-#if 1
-            // printf("Detected base: 0x%lx\n", base);
+#if 0
+            printf("Detected base: 0x%lx\n", base);
 #endif
 
             Expr*     initial_free_expr = next_free_expr;
@@ -1954,18 +2037,35 @@ static inline void qemu_load_helper(uintptr_t orig_addr,
                 e->opkind = IS_SYMBOLIC;
                 e->op1    = EXPR_CONST_OP(symbolic_access_id);
                 e->op2    = EXPR_CONST_OP(size);
+                switch (size) {
+                    case 1:
+                        e->op3 = EXPR_CONST_OP(*((uint8_t*)addr));
+                        break;
+                    case 2:
+                        e->op3 = EXPR_CONST_OP(*((uint16_t*)addr));
+                        break;
+                    case 4:
+                        e->op3 = EXPR_CONST_OP(*((uint32_t*)addr));
+                        break;
+                    case 8:
+                        e->op3 = EXPR_CONST_OP(*((uint64_t*)addr));
+                        break;
+                    default:
+                        tcg_abort();
+                }
+
                 // printf("Generating new symbolic for slice access: %lu\n",
                 // symbolic_access_id);
 
                 symbolic_access_id += 1;
                 s_temps[val_idx] = e;
 
-                e   = new_expr();
+                e         = new_expr();
                 e->opkind = MEMORY_SLICE_ACCESS;
                 e->op1    = s_temps[addr_idx];
                 e->op2    = EXPR_CONST_OP(addr);
 
-                next_query[0].query = e;
+                next_query[0].query   = e;
                 next_query[0].address = 0;
                 next_query++;
 
@@ -1981,6 +2081,7 @@ static inline void qemu_load_helper(uintptr_t orig_addr,
             load_concretization(s_temps[addr_idx], orig_addr);
         }
     }
+#endif
 
     uintptr_t  l1_page_idx = addr >> (L1_PAGE_BITS + L2_PAGE_BITS);
     l2_page_t* l2_page     = s_memory.table.entries[l1_page_idx];
@@ -2918,6 +3019,7 @@ static void branch_helper(uintptr_t a, uintptr_t b, uintptr_t cond,
 #if 1
     next_query[0].query   = branch_expr;
     next_query[0].address = pc;
+    next_query[0].arg0 = cond == sat_cond; // taken?
     next_query++;
 #endif
     assert(next_query[0].query == 0);
@@ -5040,7 +5142,8 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                     } else {
 
                         const char* helper_whitelist[] = {
-                            "lookup_tb_ptr", "rechecking_single_step"};
+                            "lookup_tb_ptr", "rechecking_single_step",
+                            "instrument_call", "instrument_ret"};
 
                         int helper_is_whitelisted = 0;
                         for (size_t i = 0;
