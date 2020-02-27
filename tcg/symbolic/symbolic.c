@@ -190,6 +190,21 @@ static inline void    load_configuration(void)
         assert(s_config.symbolic_exec_reg_name == NULL &&
                "Need to specify symbolic exec register address.");
     }
+
+    var = getenv("SYMBOLIC_EXEC_PLT_STUB_MALLOC");
+    if (var) {
+        s_config.plt_stub_malloc = (uintptr_t)strtoll(var, NULL, 16);
+    }
+
+    var = getenv("SYMBOLIC_EXEC_PLT_STUB_REALLOC");
+    if (var) {
+        s_config.plt_stub_realloc = (uintptr_t)strtoll(var, NULL, 16);
+    }
+
+    var = getenv("SYMBOLIC_EXEC_PLT_STUB_FREE");
+    if (var) {
+        s_config.plt_stub_free = (uintptr_t)strtoll(var, NULL, 16);
+    }
 }
 
 static InstrumentationMode instrumentation_mode = INSTRUMENT_BEFORE;
@@ -205,7 +220,7 @@ void init_symbolic_mode(void)
     polling_time.tv_sec  = 0;
     polling_time.tv_nsec = 50;
 
-    int max_attempts = 100;
+    int max_attempts = 1000;
 
     int expr_pool_shm_id;
     do {
@@ -3993,8 +4008,6 @@ static inline int detect_load_loop(TCGContext* tcg_ctx)
     return 0;
 }
 
-#define MALLOC_PLT_STUB 0x400770
-
 static int instrument = 0;
 int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                                    uint8_t* tb_code, TCGContext* tcg_ctx)
@@ -4095,7 +4108,7 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                                           tcg_ctx);
                 }
 
-                if (pc == MALLOC_PLT_STUB) {
+                if (pc == s_config.plt_stub_malloc || pc == s_config.plt_stub_realloc || pc == s_config.plt_stub_free) {
                     TCGTemp* t_rdi = tcg_find_temp_arch_reg(tcg_ctx, "rdi");
                     clear_temp(temp_idx(t_rdi), op, tcg_ctx);
                 }
@@ -4538,8 +4551,9 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
 
                         if (temp_static_state[temp_idx(t_value)].is_alive &&
                             temp_static_state[temp_idx(t_value)].is_const &&
-                            temp_static_state[temp_idx(t_value)].const_value ==
-                                MALLOC_PLT_STUB) {
+                            (temp_static_state[temp_idx(t_value)].const_value ==  s_config.plt_stub_malloc ||
+                            temp_static_state[temp_idx(t_value)].const_value ==  s_config.plt_stub_realloc ||
+                            temp_static_state[temp_idx(t_value)].const_value ==  s_config.plt_stub_free)) {
                             // printf("Call to malloc at %lx\n", pc);
                             // tcg_abort();
 

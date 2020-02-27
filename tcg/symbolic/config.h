@@ -18,6 +18,10 @@ typedef struct SymbolicConfig {
     uintptr_t                  symbolic_exec_buffer_addr;
     uintptr_t                  symbolic_exec_buffer_instr_addr;
     const char*                inputfile;
+    //
+    uintptr_t plt_stub_malloc;
+    uintptr_t plt_stub_realloc;
+    uintptr_t plt_stub_free;
 } SymbolicConfig;
 
 #endif // SYMBOLIC_CONFIG_H

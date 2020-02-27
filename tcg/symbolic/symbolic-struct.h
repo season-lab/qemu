@@ -490,6 +490,6 @@ static inline void print_expr(Expr* expr)
 
 #define CONST(op) ((uintptr_t)op)
 
-#define MAX_INPUT_SIZE 4096
+#define MAX_INPUT_SIZE (4096 * 16)
 
 #endif // SYMBOLIC_STRUCT_H
