@@ -361,6 +361,10 @@ static inline const char* opkind_to_str(uint8_t opkind)
             return "SYMBOLIC_PC";
         case MEMORY_SLICE:
             return "MEMORY_SLICE";
+        case SYMBOLIC_LOAD:
+            return "SYMBOLIC_LOAD";
+        case SYMBOLIC_STORE:
+            return "SYMBOLIC_STORE";
 
         default:
             printf("\nstr(opkind=%u) is unknown\n", opkind);
@@ -491,5 +495,7 @@ static inline void print_expr(Expr* expr)
 #define CONST(op) ((uintptr_t)op)
 
 #define MAX_INPUT_SIZE (4096 * 16)
+#define MAX_NUM_SLICES 8
+#define SLICE_SIZE     0x100
 
 #endif // SYMBOLIC_STRUCT_H

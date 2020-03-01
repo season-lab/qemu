@@ -51,8 +51,8 @@ typedef struct s_memory_t {
 s_memory_t s_memory = {0};
 
 #define BITMAP_SIZE (1 << 16)
-static uint8_t bitmap[BITMAP_SIZE] = { 0 };
-static uint16_t prev_loc = 0;
+static uint8_t  bitmap[BITMAP_SIZE] = {0};
+static uint16_t prev_loc            = 0;
 
 // path constraints
 Expr* path_constraints = NULL;
@@ -204,6 +204,11 @@ static inline void    load_configuration(void)
     var = getenv("SYMBOLIC_EXEC_PLT_STUB_FREE");
     if (var) {
         s_config.plt_stub_free = (uintptr_t)strtoll(var, NULL, 16);
+    }
+
+    var = getenv("SYMBOLIC_EXEC_PLT_STUB_PRINTF");
+    if (var) {
+        s_config.plt_stub_printf = (uintptr_t)strtoll(var, NULL, 16);
     }
 }
 
@@ -1491,6 +1496,12 @@ static inline void qemu_pc_write(TCGTemp* t_op_a, TCGOp* op_in,
 
     size_t a = temp_idx(t_op_a);
 
+    // This is an hack to avoid SIGSEGV :/
+    TCGTemp* t_op_a_copy = new_non_conflicting_temp(TCG_TYPE_PTR);
+    MARK_TEMP_AS_ALLOCATED(t_op_a);
+    tcg_mov(t_op_a_copy, t_op_a, 0, 0, op_in, NULL, tcg_ctx);
+    MARK_TEMP_AS_NOT_ALLOCATED(t_op_a);
+
     TCGTemp* t_a = new_non_conflicting_temp(TCG_TYPE_PTR);
     tcg_movi(t_a, (uintptr_t)&s_temps[a], 0, op_in, NULL, tcg_ctx);
     tcg_load_n(t_a, t_a, 0, 0, 0, sizeof(uintptr_t), op_in, NULL, tcg_ctx);
@@ -1511,6 +1522,8 @@ static inline void qemu_pc_write(TCGTemp* t_op_a, TCGOp* op_in,
     tcg_movi(t_opkind, SYMBOLIC_PC, 0, op_in, NULL, tcg_ctx);
     tcg_store_n(t_out, t_opkind, offsetof(Expr, opkind), 0, 1, sizeof(uint8_t),
                 op_in, NULL, tcg_ctx);
+
+    tcg_store_n(t_out, t_op_a_copy, offsetof(Expr, op2), 0, 1, sizeof(uintptr_t), op_in, NULL, tcg_ctx);
 
     tcg_store_n(t_out, t_a, offsetof(Expr, op1), 0, 1, sizeof(uintptr_t), op_in,
                 NULL, tcg_ctx);
@@ -1533,10 +1546,11 @@ static inline void qemu_pc_write(TCGTemp* t_op_a, TCGOp* op_in,
     tcg_store_n(t_query_addr, t_query, 0, 1, 1, sizeof(uintptr_t), op_in, NULL,
                 tcg_ctx);
 
+#if 0
     TCGOp* op;
     tcg_print_const_str("\nSymbolic PC\n", op_in, &op, tcg_ctx);
     mark_insn_as_instrumentation(op);
-
+#endif
     tcg_set_label(label_a_concrete, op_in, NULL, tcg_ctx);
 
     CHECK_TEMPS_COUNT(tcg_ctx);
@@ -1587,10 +1601,26 @@ static inline void qemu_jump_table(TCGTemp* t_addr, TCGOp* op_in,
     tcg_store_n(t_out, t_one, offsetof(Expr, op2_is_const), 0, 1,
                 sizeof(uint8_t), op_in, NULL, tcg_ctx);
 
+    TCGTemp* t_query_addr = new_non_conflicting_temp(TCG_TYPE_I64);
+    tcg_movi(t_query_addr, (uintptr_t)&next_query, 0, op_in, NULL, tcg_ctx);
+
+    TCGTemp* t_query = new_non_conflicting_temp(TCG_TYPE_I64);
+    tcg_load_n(t_query_addr, t_query, 0, 0, 0, sizeof(uintptr_t), op_in, NULL,
+               tcg_ctx);
+
+    tcg_store_n(t_query, t_out, offsetof(Query, query), 0, 1, sizeof(uintptr_t),
+                op_in, NULL, tcg_ctx);
+
+    TCGTemp* t_query_size = new_non_conflicting_temp(TCG_TYPE_I64);
+    tcg_movi(t_query_size, sizeof(Query), 0, op_in, NULL, tcg_ctx);
+    tcg_binop(t_query, t_query, t_query_size, 0, 0, 1, ADD, op_in, NULL,
+              tcg_ctx);
+
+    tcg_store_n(t_query_addr, t_query, 0, 1, 1, sizeof(uintptr_t), op_in, NULL,
+                tcg_ctx);
+
     // add_void_call_1(print_expr, t_out, op_in, &op, tcg_ctx);
     // mark_insn_as_instrumentation(op);
-
-    tcg_temp_free_internal(t_out);
 
     tcg_set_label(label_a_concrete, op_in, NULL, tcg_ctx);
 
@@ -1906,7 +1936,6 @@ typedef struct {
     uint8_t   status;
 } MemorySlice;
 
-#define SLICE_SIZE     0x100
 #define HASH_ADDR(a)   ((a >> 8) ^ (a << 8))
 #define CONST_MAP_SIZE 0x1000
 static MemorySlice const_mem_map[CONST_MAP_SIZE] = {0};
@@ -1997,13 +2026,13 @@ static inline void qemu_load_helper(uintptr_t orig_addr,
             Expr*     initial_free_expr = next_free_expr;
             uintptr_t base_addr         = orig_addr;
             size_t    n_slice           = 1;
-            if (orig_addr - base < 0x800) {
+            if (orig_addr - base < (SLICE_SIZE * MAX_NUM_SLICES)) {
                 base_addr = base;
-                n_slice   = 0x800 / SLICE_SIZE;
+                n_slice   = MAX_NUM_SLICES;
             }
 
             uint8_t read_from_slice                        = 1;
-            Expr*   slices_addrs[(0x800 / SLICE_SIZE) + 1] = {0};
+            Expr*   slices_addrs[MAX_NUM_SLICES + 1] = {0};
             for (size_t i = 0; i < n_slice; i++) {
                 uintptr_t norm_addr = (base_addr / SLICE_SIZE) * SLICE_SIZE;
                 uintptr_t hash_addr = HASH_ADDR(norm_addr);
@@ -2018,8 +2047,11 @@ static inline void qemu_load_helper(uintptr_t orig_addr,
                     const_mem_map[idx].dump   = next_free_expr;
 
                     slices_addrs[i] = next_free_expr;
+
+                    memcpy(next_free_expr, &norm_addr, sizeof(uintptr_t));
+                    next_free_expr = (Expr*)(((uint8_t*)next_free_expr) + sizeof(uintptr_t));
                     memcpy(next_free_expr, (void*)norm_addr, SLICE_SIZE);
-                    next_free_expr += SLICE_SIZE;
+                    next_free_expr += SLICE_SIZE / sizeof(Expr);
 #if 0
                     printf("Taking a memory slice #%lu at 0x%lx\n", idx, norm_addr);
 #endif
@@ -2039,14 +2071,11 @@ static inline void qemu_load_helper(uintptr_t orig_addr,
 
             if (read_from_slice) {
 
-                size_t k = 0;
-                while (slices_addrs[k]) {
-                    Expr* s   = new_expr();
-                    s->opkind = MEMORY_SLICE;
-                    s->op1    = slices_addrs[k];
-                    s->op2    = EXPR_CONST_OP(symbolic_access_id);
-                    k += 1;
-                }
+                Expr* q   = new_expr();
+                q->opkind = MEMORY_SLICE_ACCESS;
+                q->op1    = s_temps[addr_idx];
+                q->op2    = EXPR_CONST_OP(addr);
+                q->op3    = EXPR_CONST_OP(symbolic_access_id);
 
                 Expr* e   = new_expr();
                 e->opkind = IS_SYMBOLIC;
@@ -2072,15 +2101,19 @@ static inline void qemu_load_helper(uintptr_t orig_addr,
                 // printf("Generating new symbolic for slice access: %lu\n",
                 // symbolic_access_id);
 
+                size_t k = 0;
+                while (slices_addrs[k]) {
+                    Expr* s   = new_expr();
+                    s->opkind = MEMORY_SLICE;
+                    s->op1    = slices_addrs[k];
+                    s->op2    = EXPR_CONST_OP(symbolic_access_id);
+                    k += 1;
+                }
+
                 symbolic_access_id += 1;
                 s_temps[val_idx] = e;
 
-                e         = new_expr();
-                e->opkind = MEMORY_SLICE_ACCESS;
-                e->op1    = s_temps[addr_idx];
-                e->op2    = EXPR_CONST_OP(addr);
-
-                next_query[0].query   = e;
+                next_query[0].query   = q;
                 next_query[0].address = 0;
                 next_query++;
 
@@ -3034,7 +3067,7 @@ static void branch_helper(uintptr_t a, uintptr_t b, uintptr_t cond,
 #if 1
     next_query[0].query   = branch_expr;
     next_query[0].address = pc;
-    next_query[0].arg0 = cond == sat_cond; // taken?
+    next_query[0].arg0    = cond == sat_cond; // taken?
     next_query++;
 #endif
     assert(next_query[0].query == 0);
@@ -4108,9 +4141,23 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                                           tcg_ctx);
                 }
 
-                if (pc == s_config.plt_stub_malloc || pc == s_config.plt_stub_realloc || pc == s_config.plt_stub_free) {
+                if (pc == s_config.plt_stub_malloc ||
+                    pc == s_config.plt_stub_realloc ||
+                    pc == s_config.plt_stub_free ||
+                    pc == s_config.plt_stub_printf) {
+
                     TCGTemp* t_rdi = tcg_find_temp_arch_reg(tcg_ctx, "rdi");
                     clear_temp(temp_idx(t_rdi), op, tcg_ctx);
+                    TCGTemp* t_rsi = tcg_find_temp_arch_reg(tcg_ctx, "rsi");
+                    clear_temp(temp_idx(t_rsi), op, tcg_ctx);
+                    TCGTemp* t_rdx = tcg_find_temp_arch_reg(tcg_ctx, "rdx");
+                    clear_temp(temp_idx(t_rdx), op, tcg_ctx);
+                    TCGTemp* t_rcx = tcg_find_temp_arch_reg(tcg_ctx, "rcx");
+                    clear_temp(temp_idx(t_rcx), op, tcg_ctx);
+                    TCGTemp* t_r8 = tcg_find_temp_arch_reg(tcg_ctx, "r8");
+                    clear_temp(temp_idx(t_r8), op, tcg_ctx);
+                    TCGTemp* t_r9 = tcg_find_temp_arch_reg(tcg_ctx, "r9");
+                    clear_temp(temp_idx(t_r9), op, tcg_ctx);
                 }
                 break;
 
@@ -4551,16 +4598,22 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
 
                         if (temp_static_state[temp_idx(t_value)].is_alive &&
                             temp_static_state[temp_idx(t_value)].is_const &&
-                            (temp_static_state[temp_idx(t_value)].const_value ==  s_config.plt_stub_malloc ||
-                            temp_static_state[temp_idx(t_value)].const_value ==  s_config.plt_stub_realloc ||
-                            temp_static_state[temp_idx(t_value)].const_value ==  s_config.plt_stub_free)) {
+                            (temp_static_state[temp_idx(t_value)].const_value ==
+                                 s_config.plt_stub_malloc ||
+                             temp_static_state[temp_idx(t_value)].const_value ==
+                                 s_config.plt_stub_realloc ||
+                             temp_static_state[temp_idx(t_value)].const_value ==
+                                 s_config.plt_stub_free)) {
                             // printf("Call to malloc at %lx\n", pc);
                             // tcg_abort();
 
                             TCGTemp* t_rdi =
                                 tcg_find_temp_arch_reg(tcg_ctx, "rdi");
+                            TCGTemp* t_rsi =
+                                tcg_find_temp_arch_reg(tcg_ctx, "rsi");
 #if 1
                             clear_temp(temp_idx(t_rdi), op, tcg_ctx);
+                            clear_temp(temp_idx(t_rsi), op, tcg_ctx);
 #else
                             TCGTemp* t_idx =
                                 new_non_conflicting_temp(TCG_TYPE_PTR);
@@ -4570,6 +4623,15 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                                             tcg_ctx);
                             tcg_temp_free_internal(t_idx);
 #endif
+
+                            TCGTemp* t_rdx = tcg_find_temp_arch_reg(tcg_ctx, "rdx");
+                            clear_temp(temp_idx(t_rdx), op, tcg_ctx);
+                            TCGTemp* t_rcx = tcg_find_temp_arch_reg(tcg_ctx, "rcx");
+                            clear_temp(temp_idx(t_rcx), op, tcg_ctx);
+                            TCGTemp* t_r8 = tcg_find_temp_arch_reg(tcg_ctx, "r8");
+                            clear_temp(temp_idx(t_r8), op, tcg_ctx);
+                            TCGTemp* t_r9 = tcg_find_temp_arch_reg(tcg_ctx, "r9");
+                            clear_temp(temp_idx(t_r9), op, tcg_ctx);
                         }
 
                     } else if (is_xmm_offset(offset)) {

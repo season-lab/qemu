@@ -22,6 +22,7 @@ typedef struct SymbolicConfig {
     uintptr_t plt_stub_malloc;
     uintptr_t plt_stub_realloc;
     uintptr_t plt_stub_free;
+    uintptr_t plt_stub_printf;
 } SymbolicConfig;
 
 #endif // SYMBOLIC_CONFIG_H
