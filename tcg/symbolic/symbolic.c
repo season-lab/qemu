@@ -3040,7 +3040,7 @@ static void setcond_helper(uintptr_t a, uintptr_t b, uintptr_t cond,
 }
 
 static void branch_helper(uintptr_t a, uintptr_t b, uintptr_t cond,
-                          uintptr_t packed_idx, uintptr_t pc)
+                          uintptr_t packed_idx, uintptr_t pc, uintptr_t addr_to)
 {
     size_t a_idx = UNPACK_0(packed_idx);
     size_t b_idx = UNPACK_1(packed_idx);
@@ -3067,7 +3067,11 @@ static void branch_helper(uintptr_t a, uintptr_t b, uintptr_t cond,
 #if 1
     next_query[0].query   = branch_expr;
     next_query[0].address = pc;
-    next_query[0].arg0    = cond == sat_cond; // taken?
+#if BRANCH_COVERAGE == QSYM
+    next_query[0].args8.arg0 = cond == sat_cond; // taken?
+#elif BRANCH_COVERAGE == AFL
+    next_query[0].args64 = addr_to;
+#endif
     next_query++;
 #endif
     assert(next_query[0].query == 0);
@@ -3885,6 +3889,24 @@ static inline void qemu_memmove(uintptr_t src, uintptr_t dst,
     }
 }
 
+static uintptr_t find_jump_target(TCGOp* op)
+{
+    uintptr_t res = 0;
+    int passed_true_branch = 0;
+    while (op) {
+        if (passed_true_branch && op->opc == INDEX_op_movi_i64) {
+            res = CONST(op->args[1]);
+            break;
+        }
+        if (op->opc == INDEX_op_exit_tb) {
+            passed_true_branch = 1;
+        }
+        op = QTAILQ_NEXT(op, link);
+    }
+    assert(res);
+    return res;
+}
+
 typedef struct {
     uint8_t   is_alive;
     uint8_t   is_const;
@@ -4127,9 +4149,6 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                             printf("Memory slice #%lu used %u times\n", i, const_mem_map[i].used);
                         }
                     }
-#endif
-#if 0
-                    printf("Number of update to slices: %lu\n", slices_updates);
 #endif
                     force_flush_cache = 1;
                 }
@@ -4718,6 +4737,8 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                     TCGTemp* t_a  = arg_temp(op->args[0]);
                     TCGTemp* t_b  = arg_temp(op->args[1]);
                     TCGCond  cond = op->args[2];
+
+                    uintptr_t addr_to = find_jump_target(op);
 #if 0
                     branch(t_a, t_b, cond, op, tcg_ctx);
 #else
@@ -4733,16 +4754,24 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                     tcg_movi(t_packed_idx, v, 0, op, NULL, tcg_ctx);
 
                     TCGTemp* t_pc = new_non_conflicting_temp(TCG_TYPE_PTR);
+#if BRANCH_COVERAGE == QSYM
                     tcg_movi(t_pc, (uintptr_t)pc, 0, op, NULL, tcg_ctx);
+#elif BRANCH_COVERAGE == AFL
+                    tcg_movi(t_pc, (uintptr_t)tb_pc, 0, op, NULL, tcg_ctx);
+#endif
+                    TCGTemp* t_addr_to = new_non_conflicting_temp(TCG_TYPE_PTR);
+                    tcg_movi(t_addr_to, (uintptr_t) addr_to, 0, op, NULL, tcg_ctx);
+
                     MARK_TEMP_AS_ALLOCATED(t_a);
                     MARK_TEMP_AS_ALLOCATED(t_b);
-                    add_void_call_5(branch_helper, t_a, t_b, t_cond,
-                                    t_packed_idx, t_pc, op, NULL, tcg_ctx);
+                    add_void_call_6(branch_helper, t_a, t_b, t_cond,
+                                    t_packed_idx, t_pc, t_addr_to, op, NULL, tcg_ctx);
                     MARK_TEMP_AS_NOT_ALLOCATED(t_a);
                     MARK_TEMP_AS_NOT_ALLOCATED(t_b);
                     tcg_temp_free_internal(t_cond);
                     tcg_temp_free_internal(t_packed_idx);
                     tcg_temp_free_internal(t_pc);
+                    tcg_temp_free_internal(t_addr_to);
 #endif
                 }
                 break;
@@ -4953,6 +4982,48 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                         MARK_TEMP_AS_ALLOCATED(t_0);
 
                         add_void_call_4(qemu_divq_EAX, t_packed_idx, t_rax,
+                                        t_rdx, t_0, op, NULL, tcg_ctx);
+
+                        MARK_TEMP_AS_NOT_ALLOCATED(t_rax);
+                        MARK_TEMP_AS_NOT_ALLOCATED(t_rdx);
+                        MARK_TEMP_AS_NOT_ALLOCATED(t_0);
+                        tcg_temp_free_internal(t_packed_idx);
+
+                    } else if (strcmp(helper_name, "divl_EAX") == 0 ||
+                               strcmp(helper_name, "idivl_EAX") == 0) {
+
+                        TCGTemp* t_rax = tcg_find_temp_arch_reg(tcg_ctx, "rax");
+                        TCGTemp* t_rdx = tcg_find_temp_arch_reg(tcg_ctx, "rdx");
+                        TCGTemp* t_0   = arg_temp(op->args[1]);
+
+                        uint64_t mode; // 0: div, 1: idiv
+                        switch (helper_name[0]) {
+                            case 'd':
+                                mode = 0;
+                                break;
+                            case 'i':
+                                mode = 1;
+                                break;
+                            default:
+                                tcg_abort();
+                        }
+
+                        uint64_t v = 0;
+                        v          = PACK_0(v, temp_idx(t_rax));
+                        v          = PACK_1(v, temp_idx(t_rdx));
+                        v          = PACK_2(v, temp_idx(t_0));
+                        v          = PACK_3(v, mode);
+
+                        TCGTemp* t_packed_idx =
+                            new_non_conflicting_temp(TCG_TYPE_PTR);
+                        tcg_movi(t_packed_idx, (uintptr_t)v, 0, op, NULL,
+                                 tcg_ctx);
+
+                        MARK_TEMP_AS_ALLOCATED(t_rax);
+                        MARK_TEMP_AS_ALLOCATED(t_rdx);
+                        MARK_TEMP_AS_ALLOCATED(t_0);
+
+                        add_void_call_4(qemu_divl_EAX, t_packed_idx, t_rax,
                                         t_rdx, t_0, op, NULL, tcg_ctx);
 
                         MARK_TEMP_AS_NOT_ALLOCATED(t_rax);
@@ -5250,7 +5321,7 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                     TCGTemp* t_true  = arg_temp(op->args[3]);
                     TCGTemp* t_false = arg_temp(op->args[4]);
                     TCGCond  cond    = op->args[5];
-
+#if 0
                     size_t size = op->opc == INDEX_op_movcond_i64 ? 0 : 4;
 #if 0
                     // ToDo
@@ -5270,6 +5341,10 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                     TCGTemp* t_pc = new_non_conflicting_temp(TCG_TYPE_PTR);
                     tcg_movi(t_pc, (uintptr_t)pc, 0, op, NULL, tcg_ctx);
 
+                    // ????
+                    TCGTemp* t_addr_to = new_non_conflicting_temp(TCG_TYPE_PTR);
+                    tcg_movi(t_addr_to, (uintptr_t)pc + 1, 0, op, NULL, tcg_ctx);
+
                     MARK_TEMP_AS_ALLOCATED(t_a);
                     MARK_TEMP_AS_ALLOCATED(t_b);
                     add_void_call_5(branch_helper, t_a, t_b, t_cond,
@@ -5279,10 +5354,10 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                     tcg_temp_free_internal(t_cond);
                     tcg_temp_free_internal(t_packed_idx);
                     tcg_temp_free_internal(t_pc);
-
+#endif
+#endif
                     qemu_movcond(t_out, t_a, t_b, t_true, t_false, cond, op,
                                  tcg_ctx);
-#endif
                 }
                 break;
 

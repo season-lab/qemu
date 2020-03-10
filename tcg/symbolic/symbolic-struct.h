@@ -180,13 +180,20 @@ typedef struct Expr {
     uint8_t      op3_is_const;
 } Expr;
 
+typedef struct {
+    uint8_t arg0;
+    uint8_t arg1;
+    uint8_t arg2;
+    uint8_t arg3;
+} QueryArgs8;
+
 typedef struct Query {
     Expr*     query;
     uintptr_t address;
-    uint8_t   arg0;
-    uint8_t   arg1;
-    uint8_t   arg2;
-    uint8_t   arg3;
+    union {
+        QueryArgs8 args8;
+        uintptr_t  args64;
+    };
 } Query;
 
 extern Expr* pool;
@@ -497,5 +504,9 @@ static inline void print_expr(Expr* expr)
 #define MAX_INPUT_SIZE (4096 * 16)
 #define MAX_NUM_SLICES 8
 #define SLICE_SIZE     0x100
+
+#define AFL             1
+#define QSYM            2
+#define BRANCH_COVERAGE AFL
 
 #endif // SYMBOLIC_STRUCT_H
