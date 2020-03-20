@@ -4160,10 +4160,12 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                                           tcg_ctx);
                 }
 
-                if (pc == s_config.plt_stub_malloc ||
-                    pc == s_config.plt_stub_realloc ||
-                    pc == s_config.plt_stub_free ||
-                    pc == s_config.plt_stub_printf) {
+                if (
+                    pc == s_config.plt_stub_malloc
+                    || pc == s_config.plt_stub_realloc
+                    || pc == s_config.plt_stub_free 
+                    || pc == s_config.plt_stub_printf
+                        ) {
 
                     TCGTemp* t_rdi = tcg_find_temp_arch_reg(tcg_ctx, "rdi");
                     clear_temp(temp_idx(t_rdi), op, tcg_ctx);
@@ -4614,7 +4616,7 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                                     op, tcg_ctx);
                             }
                         }
-
+#if 0
                         if (temp_static_state[temp_idx(t_value)].is_alive &&
                             temp_static_state[temp_idx(t_value)].is_const &&
                             (temp_static_state[temp_idx(t_value)].const_value ==
@@ -4652,7 +4654,7 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                             TCGTemp* t_r9 = tcg_find_temp_arch_reg(tcg_ctx, "r9");
                             clear_temp(temp_idx(t_r9), op, tcg_ctx);
                         }
-
+#endif
                     } else if (is_xmm_offset(offset)) {
                         if (op->opc == INDEX_op_st_i32) {
                             printf("store to xmm data (offset=%lu)\n", offset);
@@ -5347,8 +5349,8 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
 
                     MARK_TEMP_AS_ALLOCATED(t_a);
                     MARK_TEMP_AS_ALLOCATED(t_b);
-                    add_void_call_5(branch_helper, t_a, t_b, t_cond,
-                                    t_packed_idx, t_pc, op, NULL, tcg_ctx);
+                    add_void_call_6(branch_helper, t_a, t_b, t_cond,
+                                    t_packed_idx, t_pc, t_pc, op, NULL, tcg_ctx);
                     MARK_TEMP_AS_NOT_ALLOCATED(t_a);
                     MARK_TEMP_AS_NOT_ALLOCATED(t_b);
                     tcg_temp_free_internal(t_cond);
