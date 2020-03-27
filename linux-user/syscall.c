@@ -11977,19 +11977,6 @@ abi_long do_syscall(void *cpu_env, int num, abi_long arg1,
     }
 #endif
 
-    trace_guest_user_syscall(cpu, num, arg1, arg2, arg3, arg4,
-                             arg5, arg6, arg7, arg8);
-
-    if (unlikely(do_strace)) {
-        print_syscall(num, arg1, arg2, arg3, arg4, arg5, arg6);
-        ret = do_syscall1(cpu_env, num, arg1, arg2, arg3, arg4,
-                          arg5, arg6, arg7, arg8);
-        print_syscall_ret(num, ret);
-    } else {
-        ret = do_syscall1(cpu_env, num, arg1, arg2, arg3, arg4,
-                          arg5, arg6, arg7, arg8);
-    }
-
 #ifdef SYMBOLIC_INSTRUMENTATION
     SyscallNo syscall_no;
     switch (num) {
@@ -12008,11 +11995,35 @@ abi_long do_syscall(void *cpu_env, int num, abi_long arg1,
         case TARGET_NR_lseek:
             syscall_no = SYS_SEEK;
             break;
+        case TARGET_NR_exit:
+        case TARGET_NR_exit_group:
+            syscall_no = SYS_EXIT;
+            break;
         default:
             syscall_no = SYS_NOT_INTERESTING;
     }
-    if (syscall_no != SYS_NOT_INTERESTING)
+    if (syscall_no == SYS_EXIT) {
+        qemu_syscall_helper(syscall_no, arg1, arg2, arg3, 0);
+    }
+#endif
+
+    trace_guest_user_syscall(cpu, num, arg1, arg2, arg3, arg4,
+                             arg5, arg6, arg7, arg8);
+
+    if (unlikely(do_strace)) {
+        print_syscall(num, arg1, arg2, arg3, arg4, arg5, arg6);
+        ret = do_syscall1(cpu_env, num, arg1, arg2, arg3, arg4,
+                          arg5, arg6, arg7, arg8);
+        print_syscall_ret(num, ret);
+    } else {
+        ret = do_syscall1(cpu_env, num, arg1, arg2, arg3, arg4,
+                          arg5, arg6, arg7, arg8);
+    }
+
+#ifdef SYMBOLIC_INSTRUMENTATION
+    if (syscall_no != SYS_NOT_INTERESTING) {
         qemu_syscall_helper(syscall_no, arg1, arg2, arg3, ret);
+    }
 #endif
 
     trace_guest_user_syscall_ret(cpu, num, ret);

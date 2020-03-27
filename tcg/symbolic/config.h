@@ -23,6 +23,9 @@ typedef struct SymbolicConfig {
     uintptr_t plt_stub_realloc;
     uintptr_t plt_stub_free;
     uintptr_t plt_stub_printf;
+    //
+    const char* coverage_tracer;
+    const char* coverage_tracer_log;
 } SymbolicConfig;
 
 #endif // SYMBOLIC_CONFIG_H

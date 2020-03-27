@@ -507,6 +507,7 @@ static inline void print_expr(Expr* expr)
 
 #define AFL             1
 #define QSYM            2
-#define BRANCH_COVERAGE AFL
+#define FUZZOLIC        3
+#define BRANCH_COVERAGE QSYM
 
 #endif // SYMBOLIC_STRUCT_H

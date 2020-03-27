@@ -8,6 +8,7 @@ typedef enum SyscallNo {
     SYS_READ,
     SYS_CLOSE,
     SYS_SEEK,
+    SYS_EXIT,
     SYS_NOT_INTERESTING
 } SyscallNo;
 

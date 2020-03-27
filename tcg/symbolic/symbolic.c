@@ -51,8 +51,11 @@ typedef struct s_memory_t {
 s_memory_t s_memory = {0};
 
 #define BITMAP_SIZE (1 << 16)
-static uint8_t  bitmap[BITMAP_SIZE] = {0};
-static uint16_t prev_loc            = 0;
+static uint8_t  virgin_bitmap[BITMAP_SIZE] = {0};
+static uint8_t  bitmap[BITMAP_SIZE]        = {0};
+static uint16_t prev_loc                   = 0;
+
+GHashTable* coverage_log_ht = NULL;
 
 // path constraints
 Expr* path_constraints = NULL;
@@ -210,6 +213,16 @@ static inline void    load_configuration(void)
     if (var) {
         s_config.plt_stub_printf = (uintptr_t)strtoll(var, NULL, 16);
     }
+
+    var = getenv("COVERAGE_TRACER");
+    if (var) {
+        s_config.coverage_tracer = var;
+    }
+
+    var = getenv("COVERAGE_TRACER_LOG");
+    if (var) {
+        s_config.coverage_tracer_log = var;
+    }
 }
 
 static InstrumentationMode instrumentation_mode = INSTRUMENT_BEFORE;
@@ -218,14 +231,93 @@ static inline void         set_instrumentation_mode(InstrumentationMode mode)
     instrumentation_mode = mode;
 }
 
+static inline void load_coverage_bitmap(const char* path, uint8_t* data,
+                                        size_t size)
+{
+    printf("[TRACER] Loading bitmap: %s\n", path);
+    FILE* fp = fopen(path, "r");
+    if (!fp) {
+        printf("[TRACER] Bitmap %s does not exist. Initializing it.\n", path);
+        return;
+    }
+    int r = fread(data, 1, size, fp);
+    if (r != size) {
+        printf("[TRACER] Invalid bitmap %s. Resetting it.\n", path);
+        memset(data, 0, size);
+    }
+    fclose(fp);
+}
+
+static inline void load_coverage_log(const char* path, GHashTable ** coverage_log)
+{
+    *coverage_log = g_hash_table_new(NULL, NULL);
+    printf("[TRACER] Loading coverage log: %s\n", path);
+    FILE* fp = fopen(path, "r");
+    if (!fp) {
+        printf("[TRACER] Log %s does not exist. Initializing it.\n", path);
+        return;
+    }
+    ssize_t res;
+    char * line = NULL;
+    size_t len = 0;
+    while ((res = getline(&line, &len, fp)) != -1) {
+        uint64_t address = strtoll(line, NULL, 16);
+        g_hash_table_add(*coverage_log, (gpointer) address);
+    }
+    fclose(fp);
+}
+
+static inline void save_coverage_bitmap(const char* path, uint8_t* data,
+                                        size_t size)
+{
+    printf("[TRACER] Saving bitmap: %s\n", path);
+    FILE* fp = fopen(path, "w");
+    int   r  = fwrite(data, 1, size, fp);
+    if (r != size) {
+        printf("[TRACER] Failed to save bitmap: %s\n", path);
+    }
+    fclose(fp);
+}
+
+static inline void save_coverage_log(const char* path, GHashTable ** coverage_log)
+{
+    printf("[TRACER] Saving coverage log: %s\n", path);
+    FILE* fp = fopen(path, "w");
+
+    char line[16];
+    GHashTableIter iter;
+    gpointer       key, value;
+    g_hash_table_iter_init(&iter, *coverage_log);
+    while (g_hash_table_iter_next(&iter, &key, &value)) {
+        int size = snprintf(line, sizeof(line), "%p\n", key);
+        assert(size < sizeof(line));
+        fwrite(line, 1, size, fp);
+    }
+    g_hash_table_destroy(*coverage_log);
+    *coverage_log = NULL;
+    fclose(fp);
+}
+
 void init_symbolic_mode(void)
 {
+    // configuration
+    load_configuration();
+
+    if (s_config.coverage_tracer) {
+        load_coverage_bitmap(s_config.coverage_tracer, bitmap, BITMAP_SIZE);
+        if (s_config.coverage_tracer_log) {
+            load_coverage_log(s_config.coverage_tracer_log, &coverage_log_ht);
+        }
+        return;
+    }
+
 #ifndef DISABLE_SOLVER
+
     struct timespec polling_time;
     polling_time.tv_sec  = 0;
     polling_time.tv_nsec = 50;
 
-    int max_attempts = 1000;
+    // int max_attempts = 1000;
 
     int expr_pool_shm_id;
     do {
@@ -236,11 +328,11 @@ void init_symbolic_mode(void)
             break;
         }
 
-        if (max_attempts-- > 0) {
-            nanosleep(&polling_time, NULL);
-        } else {
-            break;
-        }
+        // if (max_attempts-- > 0) {
+        nanosleep(&polling_time, NULL);
+        //} else {
+        //    break;
+        //}
     } while (1);
     assert(expr_pool_shm_id > 0);
 
@@ -253,11 +345,11 @@ void init_symbolic_mode(void)
             break;
         }
 
-        if (max_attempts-- > 0) {
-            nanosleep(&polling_time, NULL);
-        } else {
-            break;
-        }
+        // if (max_attempts-- > 0) {
+        nanosleep(&polling_time, NULL);
+        //} else {
+        //    break;
+        //}
     } while (1);
     assert(query_shm_id > 0);
 
@@ -293,9 +385,6 @@ void init_symbolic_mode(void)
     }
 #endif
     next_query++;
-
-    // configuration
-    load_configuration();
 }
 
 static inline int count_free_temps(TCGContext* tcg_ctx)
@@ -953,12 +1042,24 @@ void helper_instrument_ret(target_ulong pc)
 
 static inline void visitTB(uintptr_t cur_loc)
 {
+    // printf("visiting TB 0x%lx\n", cur_loc);
+
+    if (cur_loc > 0x600000) {
+        return;
+    }
+
+    if (coverage_log_ht) {
+        g_hash_table_add(coverage_log_ht, (gpointer) cur_loc);
+    }
+
     cur_loc = (cur_loc >> 4) ^ (cur_loc << 8);
     cur_loc &= BITMAP_SIZE - 1;
 
     uintptr_t index = (cur_loc ^ prev_loc ^ callstack.hash);
     index &= BITMAP_SIZE - 1;
-    bitmap[index]++;
+    virgin_bitmap[index]++;
+
+    bitmap[index] |= virgin_bitmap[index];
 
     prev_loc = cur_loc >> 1;
 }
@@ -1523,7 +1624,8 @@ static inline void qemu_pc_write(TCGTemp* t_op_a, TCGOp* op_in,
     tcg_store_n(t_out, t_opkind, offsetof(Expr, opkind), 0, 1, sizeof(uint8_t),
                 op_in, NULL, tcg_ctx);
 
-    tcg_store_n(t_out, t_op_a_copy, offsetof(Expr, op2), 0, 1, sizeof(uintptr_t), op_in, NULL, tcg_ctx);
+    tcg_store_n(t_out, t_op_a_copy, offsetof(Expr, op2), 0, 1,
+                sizeof(uintptr_t), op_in, NULL, tcg_ctx);
 
     tcg_store_n(t_out, t_a, offsetof(Expr, op1), 0, 1, sizeof(uintptr_t), op_in,
                 NULL, tcg_ctx);
@@ -2031,7 +2133,7 @@ static inline void qemu_load_helper(uintptr_t orig_addr,
                 n_slice   = MAX_NUM_SLICES;
             }
 
-            uint8_t read_from_slice                        = 1;
+            uint8_t read_from_slice                  = 1;
             Expr*   slices_addrs[MAX_NUM_SLICES + 1] = {0};
             for (size_t i = 0; i < n_slice; i++) {
                 uintptr_t norm_addr = (base_addr / SLICE_SIZE) * SLICE_SIZE;
@@ -2049,7 +2151,8 @@ static inline void qemu_load_helper(uintptr_t orig_addr,
                     slices_addrs[i] = next_free_expr;
 
                     memcpy(next_free_expr, &norm_addr, sizeof(uintptr_t));
-                    next_free_expr = (Expr*)(((uint8_t*)next_free_expr) + sizeof(uintptr_t));
+                    next_free_expr =
+                        (Expr*)(((uint8_t*)next_free_expr) + sizeof(uintptr_t));
                     memcpy(next_free_expr, (void*)norm_addr, SLICE_SIZE);
                     next_free_expr += SLICE_SIZE / sizeof(Expr);
 #if 0
@@ -3074,7 +3177,7 @@ static void branch_helper(uintptr_t a, uintptr_t b, uintptr_t cond,
 #endif
     next_query++;
 #endif
-    assert(next_query[0].query == 0);
+    // assert(next_query[0].query == 0);
     assert(next_query < queue_query + EXPR_QUERY_CAPACITY);
 
     // printf("Submitted a query\n");
@@ -3314,6 +3417,16 @@ void qemu_syscall_helper(uintptr_t syscall_no, uintptr_t syscall_arg0,
                          uintptr_t syscall_arg1, uintptr_t syscall_arg2,
                          uintptr_t ret_val)
 {
+    if (s_config.coverage_tracer) {
+        if (syscall_no == SYS_EXIT) {
+            save_coverage_bitmap(s_config.coverage_tracer, bitmap, BITMAP_SIZE);
+            if (s_config.coverage_tracer_log) {
+                save_coverage_log(s_config.coverage_tracer_log, &coverage_log_ht);
+            }
+        }
+        return;
+    }
+
     int       fp;
     SyscallNo nr = (SyscallNo)syscall_no;
     switch (nr) {
@@ -3399,7 +3512,10 @@ void qemu_syscall_helper(uintptr_t syscall_no, uintptr_t syscall_arg0,
                 input_fp[fp] += ret_val;
             }
             break;
-
+        //
+        case SYS_EXIT:
+            break;
+        //
         default:
             tcg_abort();
     }
@@ -3891,8 +4007,8 @@ static inline void qemu_memmove(uintptr_t src, uintptr_t dst,
 
 static uintptr_t find_jump_target(TCGOp* op)
 {
-    uintptr_t res = 0;
-    int passed_true_branch = 0;
+    uintptr_t res                = 0;
+    int       passed_true_branch = 0;
     while (op) {
         if (passed_true_branch && op->opc == INDEX_op_movi_i64) {
             res = CONST(op->args[1]);
@@ -4067,6 +4183,26 @@ static int instrument = 0;
 int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                                    uint8_t* tb_code, TCGContext* tcg_ctx)
 {
+
+    if (s_config.coverage_tracer) {
+        TCGOp* op;
+        QTAILQ_FOREACH(op, &tcg_ctx->ops, link)
+        {
+
+            // skip TB prologue
+            if (op->opc != INDEX_op_insn_start) {
+                continue;
+            }
+
+            TCGTemp* t_pc = new_non_conflicting_temp(TCG_TYPE_PTR);
+            tcg_movi(t_pc, (uintptr_t)tb_pc, 0, op, NULL, tcg_ctx);
+            add_void_call_1(visitTB, t_pc, op, NULL, tcg_ctx);
+            tcg_temp_free_internal(t_pc);
+            break;
+        }
+        return 0;
+    }
+
     internal_tcg_context  = tcg_ctx;
     int force_flush_cache = 0;
 
@@ -4160,12 +4296,10 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                                           tcg_ctx);
                 }
 
-                if (
-                    pc == s_config.plt_stub_malloc
-                    || pc == s_config.plt_stub_realloc
-                    || pc == s_config.plt_stub_free 
-                    || pc == s_config.plt_stub_printf
-                        ) {
+                if (pc == s_config.plt_stub_malloc ||
+                    pc == s_config.plt_stub_realloc ||
+                    pc == s_config.plt_stub_free ||
+                    pc == s_config.plt_stub_printf) {
 
                     TCGTemp* t_rdi = tcg_find_temp_arch_reg(tcg_ctx, "rdi");
                     clear_temp(temp_idx(t_rdi), op, tcg_ctx);
@@ -4762,12 +4896,14 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                     tcg_movi(t_pc, (uintptr_t)tb_pc, 0, op, NULL, tcg_ctx);
 #endif
                     TCGTemp* t_addr_to = new_non_conflicting_temp(TCG_TYPE_PTR);
-                    tcg_movi(t_addr_to, (uintptr_t) addr_to, 0, op, NULL, tcg_ctx);
+                    tcg_movi(t_addr_to, (uintptr_t)addr_to, 0, op, NULL,
+                             tcg_ctx);
 
                     MARK_TEMP_AS_ALLOCATED(t_a);
                     MARK_TEMP_AS_ALLOCATED(t_b);
                     add_void_call_6(branch_helper, t_a, t_b, t_cond,
-                                    t_packed_idx, t_pc, t_addr_to, op, NULL, tcg_ctx);
+                                    t_packed_idx, t_pc, t_addr_to, op, NULL,
+                                    tcg_ctx);
                     MARK_TEMP_AS_NOT_ALLOCATED(t_a);
                     MARK_TEMP_AS_NOT_ALLOCATED(t_b);
                     tcg_temp_free_internal(t_cond);
