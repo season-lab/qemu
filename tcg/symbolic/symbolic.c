@@ -144,7 +144,23 @@ TCGOp * op_macro;
 static SymbolicConfig s_config = {0};
 static inline void    load_configuration(void)
 {
-    char* var = getenv("SYMBOLIC_EXEC_START_ADDR");
+    char * var = getenv("COVERAGE_TRACER_LOG");
+    if (var) {
+        s_config.coverage_tracer_log = var;
+    }
+
+    var = getenv("COVERAGE_TRACER_FILTER_LIB");
+    if (var) {
+        s_config.coverage_tracer_filter_lib = 1;
+    }
+
+    var = getenv("COVERAGE_TRACER");
+    if (var) {
+        s_config.coverage_tracer = var;
+        return;
+    }
+
+    var = getenv("SYMBOLIC_EXEC_START_ADDR");
     if (var) {
         s_config.symbolic_exec_start_addr = (uintptr_t)strtoll(var, NULL, 16);
         assert(s_config.symbolic_exec_start_addr != LONG_MIN &&
@@ -212,16 +228,6 @@ static inline void    load_configuration(void)
     var = getenv("SYMBOLIC_EXEC_PLT_STUB_PRINTF");
     if (var) {
         s_config.plt_stub_printf = (uintptr_t)strtoll(var, NULL, 16);
-    }
-
-    var = getenv("COVERAGE_TRACER");
-    if (var) {
-        s_config.coverage_tracer = var;
-    }
-
-    var = getenv("COVERAGE_TRACER_LOG");
-    if (var) {
-        s_config.coverage_tracer_log = var;
     }
 }
 
@@ -1044,7 +1050,7 @@ static inline void visitTB(uintptr_t cur_loc)
 {
     // printf("visiting TB 0x%lx\n", cur_loc);
 
-    if (cur_loc > 0x600000) {
+    if (s_config.coverage_tracer_filter_lib && cur_loc > 0x600000) {
         return;
     }
 
@@ -3391,25 +3397,40 @@ static inline void read_from_input(intptr_t offset, uintptr_t addr, size_t size)
     }
 
     uintptr_t  l2_page_idx = (addr >> L2_PAGE_BITS) & 0xFFFF;
-    l3_page_t* l3_page     = l2_page->entries[l2_page_idx];
-    if (l3_page == NULL) {
-        l3_page                       = g_malloc0(sizeof(l3_page_t));
-        l2_page->entries[l2_page_idx] = l3_page;
-    }
 
-    uintptr_t l3_page_idx = addr & 0xFFFF;
-    assert(l3_page_idx + size < 1 << L3_PAGE_BITS); // ToDo: cross page access
+    while (size > 0) {
 
-    for (size_t i = 0; i < size; i++) {
-        Expr* e_byte = input_exprs[offset + i];
-        if (e_byte == NULL) {
-            e_byte                  = new_expr();
-            e_byte->opkind          = IS_SYMBOLIC;
-            e_byte->op1             = (Expr*)(offset + i); // ID
-            e_byte->op2             = (Expr*)1;            // number of bytes
-            input_exprs[offset + i] = e_byte;
+        l3_page_t* l3_page     = l2_page->entries[l2_page_idx];
+        if (l3_page == NULL) {
+            l3_page                       = g_malloc0(sizeof(l3_page_t));
+            l2_page->entries[l2_page_idx] = l3_page;
         }
-        l3_page->entries[l3_page_idx + i] = e_byte;
+
+        uintptr_t l3_page_idx = addr & 0xFFFF;
+
+        size_t bytes_in_page = size;
+        if ((l3_page_idx + size) > (1 << L3_PAGE_BITS)) {
+            bytes_in_page = (1 << L3_PAGE_BITS) - l3_page_idx;
+        }
+        size -= bytes_in_page;
+
+        for (size_t i = 0; i < bytes_in_page; i++) {
+            Expr* e_byte = input_exprs[offset];
+            if (e_byte == NULL) {
+                e_byte                  = new_expr();
+                e_byte->opkind          = IS_SYMBOLIC;
+                e_byte->op1             = (Expr*)(offset);     // ID
+                e_byte->op2             = (Expr*)1;            // number of bytes
+                input_exprs[offset] = e_byte;
+            }
+            l3_page->entries[l3_page_idx + i] = e_byte;
+            addr += 1;
+            offset += 1;
+        }
+
+        if (size > 0) {
+            l2_page_idx++;
+        }
     }
 }
 
@@ -3976,8 +3997,21 @@ static void register_helpers(void)
 static inline void qemu_memmove(uintptr_t src, uintptr_t dst,
                                 uintptr_t packed_idx, uintptr_t size)
 {
-    Expr** src_exprs = get_expr_addr((uintptr_t)src, size, 0);
-    Expr** dst_exprs = get_expr_addr((uintptr_t)dst, size, 0);
+    size_t overflow_n_bytes;
+    Expr** src_exprs = get_expr_addr((uintptr_t)src, size, 0, &overflow_n_bytes);
+    if (overflow_n_bytes > 0) {
+        assert(overflow_n_bytes < size);
+        size -= overflow_n_bytes;
+        assert(size);
+        qemu_memmove(src + size, dst + size, packed_idx, overflow_n_bytes);
+    }
+    Expr** dst_exprs = get_expr_addr((uintptr_t)dst, size, 0, &overflow_n_bytes);
+    if (overflow_n_bytes > 0) {
+        assert(overflow_n_bytes < size);
+        size -= overflow_n_bytes;
+        assert(size);
+        qemu_memmove(src + size, dst + size, packed_idx, overflow_n_bytes);
+    }
 
     // printf("Memmove from=%lx to=%lx size=%lu\n", src, dst, size);
 
@@ -3993,7 +4027,8 @@ static inline void qemu_memmove(uintptr_t src, uintptr_t dst,
     }
 
     if (dst_exprs == NULL) {
-        dst_exprs = get_expr_addr((uintptr_t)dst, size, 1);
+        size_t overflow_n_bytes;
+        dst_exprs = get_expr_addr((uintptr_t)dst, size, 1, &overflow_n_bytes);
     }
 
 #if 0
@@ -5441,6 +5476,7 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                         if (!helper_is_whitelisted) {
                             printf("Helper %s is not instrumented\n",
                                    helper_name);
+                            tcg_abort();
                         }
                     }
                 }

@@ -477,7 +477,7 @@ static void qemu_cc_compute_c(uint64_t packed_idx, uintptr_t dst,
     }
 }
 
-static Expr** get_expr_addr(uintptr_t addr, size_t size, uint8_t allocate)
+static Expr** get_expr_addr(uintptr_t addr, size_t size, uint8_t allocate, size_t* n_overflow_bytes)
 {
     uintptr_t  l1_page_idx = addr >> (L1_PAGE_BITS + L2_PAGE_BITS);
     l2_page_t* l2_page     = s_memory.table.entries[l1_page_idx];
@@ -491,7 +491,18 @@ static Expr** get_expr_addr(uintptr_t addr, size_t size, uint8_t allocate)
 
     uintptr_t l2_page_idx = (addr >> L2_PAGE_BITS) & 0xFFFF;
     uintptr_t l3_page_idx = addr & 0xFFFF;
-    assert(l3_page_idx + size <= 1 << L3_PAGE_BITS); // ToDo: cross page access
+
+    if ((l3_page_idx + size) > (1 << L3_PAGE_BITS)) {
+        if (n_overflow_bytes) {
+            *n_overflow_bytes = size - (1 << L3_PAGE_BITS) - l3_page_idx;
+        } else {
+            assert(0 && "Cross page access");
+        }
+    } else {
+        if (n_overflow_bytes) {
+            *n_overflow_bytes = 0;
+        }
+    }
 
     l3_page_t* l3_page = l2_page->entries[l2_page_idx];
     if (l3_page == NULL) {
@@ -561,14 +572,29 @@ static inline size_t suffix_to_slice(char suffix, char suffix2)
     }
 }
 
-static void qemu_xmm_op(uintptr_t opkind, uint8_t* dst_addr, uint8_t* src_addr,
-                        uintptr_t packed_slice_pc)
+static void qemu_xmm_op_internal(uintptr_t opkind, uint8_t* dst_addr, uint8_t* src_addr,
+                        uintptr_t packed_slice_pc, size_t n_bytes)
 {
     uintptr_t slice = packed_slice_pc & 0xFF;
     assert(slice <= 16);
 
-    Expr** dst_expr_addr = get_expr_addr((uintptr_t)dst_addr, XMM_BYTES, 0);
-    Expr** src_expr_addr = get_expr_addr((uintptr_t)src_addr, XMM_BYTES, 0);
+    size_t overflow_n_bytes;
+    Expr** dst_expr_addr = get_expr_addr((uintptr_t)dst_addr, n_bytes, 0, &overflow_n_bytes);
+    if (overflow_n_bytes > 0) {
+        assert(overflow_n_bytes < n_bytes);
+        n_bytes -= overflow_n_bytes;
+        assert(n_bytes);
+        qemu_xmm_op_internal(opkind, dst_addr + n_bytes, src_addr + n_bytes, packed_slice_pc, overflow_n_bytes);
+    }
+
+    Expr** src_expr_addr = get_expr_addr((uintptr_t)src_addr, n_bytes, 0, &overflow_n_bytes);
+    if (overflow_n_bytes > 0) {
+        assert(overflow_n_bytes < n_bytes);
+        n_bytes -= overflow_n_bytes;
+        assert(n_bytes);
+        qemu_xmm_op_internal(opkind, dst_addr + n_bytes, src_addr + n_bytes, packed_slice_pc, overflow_n_bytes);
+    }
+
     if (dst_expr_addr == NULL && src_expr_addr == NULL) {
         // printf("qemu_xmm_op_bytewise: both regs are concrete\n");
         return;
@@ -577,13 +603,13 @@ static void qemu_xmm_op(uintptr_t opkind, uint8_t* dst_addr, uint8_t* src_addr,
     if ((opkind == XOR || opkind == SUB || opkind == EQ) &&
         dst_addr == src_addr) {
         // xmm reg will be concrete
-        for (size_t i = 0; i < XMM_BYTES; i++) {
+        for (size_t i = 0; i < n_bytes; i++) {
             dst_expr_addr[i] = NULL;
         }
         return;
     }
 
-    for (size_t i = 0; i < XMM_BYTES; i += slice) {
+    for (size_t i = 0; i < n_bytes; i += slice) {
 
         uint8_t src_is_not_null = 0;
         uint8_t dst_is_not_null = 0;
@@ -641,6 +667,12 @@ static void qemu_xmm_op(uintptr_t opkind, uint8_t* dst_addr, uint8_t* src_addr,
             dst_expr_addr[i] = e;
         }
     }
+}
+
+static void qemu_xmm_op(uintptr_t opkind, uint8_t* dst_addr, uint8_t* src_addr,
+                        uintptr_t packed_slice_pc)
+{
+    qemu_xmm_op_internal(opkind, dst_addr, src_addr, packed_slice_pc, XMM_BYTES);
 }
 
 #if 0
@@ -713,9 +745,9 @@ static inline int is_eip_offset(uintptr_t offset)
     return 0;
 }
 
-static void qemu_xmm_pmovmskb(uintptr_t dst_idx, uint64_t* src_addr)
+static void qemu_xmm_pmovmskb(uintptr_t dst_idx, uint64_t* src_addr, size_t n_bytes)
 {
-    Expr** src_expr_addr = get_expr_addr((uintptr_t)src_addr, XMM_BYTES, 0);
+    Expr** src_expr_addr = get_expr_addr((uintptr_t)src_addr, XMM_BYTES, 0, NULL);
     if (src_expr_addr == NULL) {
         s_temps[dst_idx] = NULL;
         return;
@@ -745,7 +777,7 @@ static void qemu_xmm_pmovmskb(uintptr_t dst_idx, uint64_t* src_addr)
 
 static void qemu_xmm_movl_mm_T0(uint64_t* dst_addr, uintptr_t src_idx)
 {
-    Expr** dst_expr_addr = get_expr_addr((uintptr_t)dst_addr, XMM_BYTES, 0);
+    Expr** dst_expr_addr = get_expr_addr((uintptr_t)dst_addr, XMM_BYTES, 0, NULL);
     if (s_temps[src_idx] == NULL) {
         if (dst_expr_addr == NULL) {
             return;
@@ -775,8 +807,8 @@ static void qemu_xmm_movl_mm_T0(uint64_t* dst_addr, uintptr_t src_idx)
 static void qemu_xmm_pshufd(uint64_t* dst_addr, uint64_t* src_addr,
                             uintptr_t order)
 {
-    Expr** dst_expr_addr = get_expr_addr((uintptr_t)dst_addr, XMM_BYTES, 0);
-    Expr** src_expr_addr = get_expr_addr((uintptr_t)src_addr, XMM_BYTES, 0);
+    Expr** dst_expr_addr = get_expr_addr((uintptr_t)dst_addr, XMM_BYTES, 0, NULL);
+    Expr** src_expr_addr = get_expr_addr((uintptr_t)src_addr, XMM_BYTES, 0, NULL);
 
     if (src_expr_addr == NULL) {
         if (dst_expr_addr != NULL) {
@@ -816,8 +848,8 @@ static void qemu_xmm_pshufd(uint64_t* dst_addr, uint64_t* src_addr,
 static void qemu_xmm_punpck(uint64_t* dst_addr, uint64_t* src_addr,
                             uintptr_t slice, uint8_t lowbytes)
 {
-    Expr** dst_expr_addr = get_expr_addr((uintptr_t)dst_addr, XMM_BYTES, 0);
-    Expr** src_expr_addr = get_expr_addr((uintptr_t)src_addr, XMM_BYTES, 0);
+    Expr** dst_expr_addr = get_expr_addr((uintptr_t)dst_addr, XMM_BYTES, 0, NULL);
+    Expr** src_expr_addr = get_expr_addr((uintptr_t)src_addr, XMM_BYTES, 0, NULL);
 
     if (src_expr_addr == NULL && dst_expr_addr == NULL) {
         return;
@@ -884,7 +916,7 @@ static void qemu_fxsave(CPUX86State* env, uintptr_t ptr)
 
     for (i = 0; i < nb_xmm_regs; i++) {
         Expr** src_expr_addr =
-            get_expr_addr((uintptr_t) & (env->xmm_regs[i]), XMM_BYTES, 0);
+            get_expr_addr((uintptr_t) & (env->xmm_regs[i]), XMM_BYTES, 0, NULL);
 
 #if 0
         printf("FXSAVE: xmm at %p\n", & (env->xmm_regs[i]));
@@ -919,7 +951,7 @@ static void qemu_fxrstor(CPUX86State* env, uintptr_t ptr)
     for (i = 0; i < nb_xmm_regs; i++) {
 
         Expr** dst_expr_addr =
-            get_expr_addr((uintptr_t) & (env->xmm_regs[i]), XMM_BYTES, 0);
+            get_expr_addr((uintptr_t) & (env->xmm_regs[i]), XMM_BYTES, 0, NULL);
 #if 0
         printf("FXRSTOR: xmm at %p\n", & (env->xmm_regs[i]));
 #endif
@@ -1093,6 +1125,7 @@ static void qemu_divl_EAX(uint64_t packed_idx, uintptr_t rax, uintptr_t rdx,
     // print_expr(e);
 }
 
+#if 0
 static inline void xmm_memmove(uint8_t* src, uint8_t* dst, uintptr_t size,
                                uintptr_t rdx_idx)
 {
@@ -1145,7 +1178,6 @@ static inline void instrument_memmove_xmm(TCGOp* op, TCGContext* tcg_ctx)
         failure = 1;                                                           \
     }
 
-#if 0
 static inline int detect_memmove_xmm(TCGContext* tcg_ctx)
 {
     /*
