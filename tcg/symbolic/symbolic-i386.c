@@ -493,7 +493,9 @@ static Expr** get_expr_addr(uintptr_t addr, size_t size, uint8_t allocate, size_
     uintptr_t l3_page_idx = addr & 0xFFFF;
 
     if ((l3_page_idx + size) > (1 << L3_PAGE_BITS)) {
+        // printf("n_overflow_bytes=%p\n", n_overflow_bytes);
         if (n_overflow_bytes) {
+            // printf("size=%lu l3_page_idx=%lu\n", size, l3_page_idx);
             *n_overflow_bytes = size - (1 << L3_PAGE_BITS) - l3_page_idx;
         } else {
             assert(0 && "Cross page access");
@@ -578,15 +580,17 @@ static void qemu_xmm_op_internal(uintptr_t opkind, uint8_t* dst_addr, uint8_t* s
     uintptr_t slice = packed_slice_pc & 0xFF;
     assert(slice <= 16);
 
-    size_t overflow_n_bytes;
+    size_t overflow_n_bytes = 0;
+    // printf("A overflow_n_bytes: %lu\n", overflow_n_bytes);
     Expr** dst_expr_addr = get_expr_addr((uintptr_t)dst_addr, n_bytes, 0, &overflow_n_bytes);
     if (overflow_n_bytes > 0) {
+        // printf("B overflow_n_bytes: %lu\n", overflow_n_bytes);
         assert(overflow_n_bytes < n_bytes);
         n_bytes -= overflow_n_bytes;
         assert(n_bytes);
         qemu_xmm_op_internal(opkind, dst_addr + n_bytes, src_addr + n_bytes, packed_slice_pc, overflow_n_bytes);
     }
-
+    overflow_n_bytes = 0;
     Expr** src_expr_addr = get_expr_addr((uintptr_t)src_addr, n_bytes, 0, &overflow_n_bytes);
     if (overflow_n_bytes > 0) {
         assert(overflow_n_bytes < n_bytes);

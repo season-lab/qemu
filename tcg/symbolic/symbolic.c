@@ -3997,16 +3997,20 @@ static void register_helpers(void)
 static inline void qemu_memmove(uintptr_t src, uintptr_t dst,
                                 uintptr_t packed_idx, uintptr_t size)
 {
-    size_t overflow_n_bytes;
+    size_t overflow_n_bytes = 0;
+    // printf("A overflow_n_bytes: %lu\n", overflow_n_bytes);
     Expr** src_exprs = get_expr_addr((uintptr_t)src, size, 0, &overflow_n_bytes);
     if (overflow_n_bytes > 0) {
+        // printf("B overflow_n_bytes: %lu\n", overflow_n_bytes);
         assert(overflow_n_bytes < size);
         size -= overflow_n_bytes;
         assert(size);
         qemu_memmove(src + size, dst + size, packed_idx, overflow_n_bytes);
     }
+    overflow_n_bytes = 0;
     Expr** dst_exprs = get_expr_addr((uintptr_t)dst, size, 0, &overflow_n_bytes);
     if (overflow_n_bytes > 0) {
+        // printf("overflow_n_bytes: %lu\n", overflow_n_bytes);
         assert(overflow_n_bytes < size);
         size -= overflow_n_bytes;
         assert(size);
