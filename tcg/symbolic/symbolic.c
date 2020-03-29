@@ -393,9 +393,6 @@ void init_symbolic_mode(void)
 
     MEM_BARRIER();
 
-    for (size_t i = 0; i < BRANCH_BITMAP_SIZE; i++) 
-        assert(bitmap[i] == 0);
-
     next_query++;
 }
 
@@ -4328,12 +4325,14 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
 
             case INDEX_op_insn_start:
 
+#if BRANCH_COVERAGE == FUZZOLIC
                 if (hit_first_instr == 0) {
                     TCGTemp* t_pc = new_non_conflicting_temp(TCG_TYPE_PTR);
                     tcg_movi(t_pc, (uintptr_t)tb_pc, 0, op, NULL, tcg_ctx);
                     add_void_call_1(visitTB, t_pc, op, NULL, tcg_ctx);
                     tcg_temp_free_internal(t_pc);
                 }
+#endif
 
                 hit_first_instr = 1;
                 pc              = op->args[0];
