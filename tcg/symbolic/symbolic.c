@@ -363,9 +363,10 @@ void init_symbolic_mode(void)
 
     queue_query = shmat(query_shm_id, NULL, 0);
     assert(queue_query);
-
+#if BRANCH_COVERAGE == FUZZOLIC
     bitmap = shmat(bitmap_shm_id, NULL, 0);
     assert(bitmap);
+#endif
 
 #else
     pool        = g_malloc0(sizeof(Expr) * EXPR_POOL_CAPACITY);

@@ -514,7 +514,7 @@ static inline void print_expr(Expr* expr)
 #define AFL             1
 #define QSYM            2
 #define FUZZOLIC        3
-#define BRANCH_COVERAGE FUZZOLIC
+#define BRANCH_COVERAGE QSYM
 
 #define BRANCH_BITMAP_SIZE (1 << 16)
 
