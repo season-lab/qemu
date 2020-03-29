@@ -495,8 +495,8 @@ static Expr** get_expr_addr(uintptr_t addr, size_t size, uint8_t allocate, size_
     if ((l3_page_idx + size) > (1 << L3_PAGE_BITS)) {
         // printf("n_overflow_bytes=%p\n", n_overflow_bytes);
         if (n_overflow_bytes) {
-            // printf("size=%lu l3_page_idx=%lu\n", size, l3_page_idx);
-            *n_overflow_bytes = size - (1 << L3_PAGE_BITS) - l3_page_idx;
+            printf("size=%lu l3_page_idx=%lu\n", size, l3_page_idx);
+            *n_overflow_bytes = size - ((1 << L3_PAGE_BITS) - l3_page_idx);
         } else {
             assert(0 && "Cross page access");
         }

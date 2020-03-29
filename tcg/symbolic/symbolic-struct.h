@@ -15,11 +15,13 @@
 
 #define EXPR_POOL_CAPACITY  (1024 * 1024 * 8)
 #define EXPR_QUERY_CAPACITY (256 * 1024)
-#define EXPR_POOL_SHM_KEY   (0xDEADBEEF + 2)
+#define EXPR_POOL_SHM_KEY   (0xDEADBEEF)
 #define EXPR_POOL_ADDR      ((const void*)0x7f05c8cc7000)
 #define QUERY_SHM_KEY       0xCAFECAFE
+#define BITMAP_SHM_KEY      (0xABCDABCD)
 #define FINAL_QUERY         ((void*)0xDEAD)
 #define SHM_READY           (0xDEADBEEF)
+#define SHM_DONE            ((void*)0xABCDABCD)
 #define MEM_BARRIER()       asm volatile("" ::: "memory")
 
 #define PACK_0(p, v) (p | (v & 0xFFFF))
@@ -193,6 +195,10 @@ typedef struct Query {
     union {
         QueryArgs8 args8;
         uintptr_t  args64;
+        struct {
+            uint16_t  index;
+            uint16_t  count;
+        } args16;
     };
 } Query;
 
@@ -508,6 +514,8 @@ static inline void print_expr(Expr* expr)
 #define AFL             1
 #define QSYM            2
 #define FUZZOLIC        3
-#define BRANCH_COVERAGE QSYM
+#define BRANCH_COVERAGE FUZZOLIC
+
+#define BRANCH_BITMAP_SIZE (1 << 16)
 
 #endif // SYMBOLIC_STRUCT_H

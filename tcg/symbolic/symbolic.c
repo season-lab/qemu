@@ -50,9 +50,8 @@ typedef struct s_memory_t {
 
 s_memory_t s_memory = {0};
 
-#define BITMAP_SIZE (1 << 16)
-static uint8_t  virgin_bitmap[BITMAP_SIZE] = {0};
-static uint8_t  bitmap[BITMAP_SIZE]        = {0};
+static uint8_t  virgin_bitmap[BRANCH_BITMAP_SIZE] = {0};
+static uint8_t*  bitmap = NULL;
 static uint16_t prev_loc                   = 0;
 
 GHashTable* coverage_log_ht = NULL;
@@ -151,12 +150,13 @@ static inline void    load_configuration(void)
 
     var = getenv("COVERAGE_TRACER_FILTER_LIB");
     if (var) {
-        s_config.coverage_tracer_filter_lib = 1;
+        s_config.coverage_tracer_filter_lib = (int) strtoll(var, NULL, 16);
     }
 
     var = getenv("COVERAGE_TRACER");
     if (var) {
         s_config.coverage_tracer = var;
+        bitmap = calloc(sizeof(uint8_t), BRANCH_BITMAP_SIZE);
         return;
     }
 
@@ -310,7 +310,7 @@ void init_symbolic_mode(void)
     load_configuration();
 
     if (s_config.coverage_tracer) {
-        load_coverage_bitmap(s_config.coverage_tracer, bitmap, BITMAP_SIZE);
+        load_coverage_bitmap(s_config.coverage_tracer, bitmap, BRANCH_BITMAP_SIZE);
         if (s_config.coverage_tracer_log) {
             load_coverage_log(s_config.coverage_tracer_log, &coverage_log_ht);
         }
@@ -323,22 +323,14 @@ void init_symbolic_mode(void)
     polling_time.tv_sec  = 0;
     polling_time.tv_nsec = 50;
 
-    // int max_attempts = 1000;
-
     int expr_pool_shm_id;
     do {
         expr_pool_shm_id = shmget(EXPR_POOL_SHM_KEY, // IPC_PRIVATE,
                                   sizeof(Expr) * EXPR_POOL_CAPACITY, 0666);
-
         if (expr_pool_shm_id > 0) {
             break;
         }
-
-        // if (max_attempts-- > 0) {
         nanosleep(&polling_time, NULL);
-        //} else {
-        //    break;
-        //}
     } while (1);
     assert(expr_pool_shm_id > 0);
 
@@ -346,27 +338,34 @@ void init_symbolic_mode(void)
     do {
         query_shm_id = shmget(QUERY_SHM_KEY, // IPC_PRIVATE,
                               sizeof(Query) * EXPR_QUERY_CAPACITY, 0666);
-
         if (query_shm_id > 0) {
             break;
         }
-
-        // if (max_attempts-- > 0) {
         nanosleep(&polling_time, NULL);
-        //} else {
-        //    break;
-        //}
     } while (1);
     assert(query_shm_id > 0);
 
-    // printf("POOL_SHM_ID=%d QUERY_SHM_ID=%d\n", expr_pool_shm_id,
-    // query_shm_id);
+#if BRANCH_COVERAGE == FUZZOLIC
+    int bitmap_shm_id;
+    do {
+        bitmap_shm_id = shmget(BITMAP_SHM_KEY, // IPC_PRIVATE,
+                              sizeof(uint8_t) * BRANCH_BITMAP_SIZE, 0666);
+        if (bitmap_shm_id > 0) {
+            break;
+        }
+        nanosleep(&polling_time, NULL);
+    } while (1);
+    assert(bitmap_shm_id > 0);
+#endif
 
     pool = shmat(expr_pool_shm_id, EXPR_POOL_ADDR, 0);
     assert(pool);
 
     queue_query = shmat(query_shm_id, NULL, 0);
     assert(queue_query);
+
+    bitmap = shmat(bitmap_shm_id, NULL, 0);
+    assert(bitmap);
 
 #else
     pool        = g_malloc0(sizeof(Expr) * EXPR_POOL_CAPACITY);
@@ -390,6 +389,12 @@ void init_symbolic_mode(void)
         nanosleep(&polling_time, NULL);
     }
 #endif
+
+    MEM_BARRIER();
+
+    for (size_t i = 0; i < BRANCH_BITMAP_SIZE; i++) 
+        assert(bitmap[i] == 0);
+
     next_query++;
 }
 
@@ -1007,7 +1012,7 @@ void helper_instrument_call(target_ulong pc)
 {
     // printf("CALL from %lx\n", (uintptr_t) pc);
     pc = (pc >> 4) ^ (pc << 8);
-    pc &= BITMAP_SIZE - 1;
+    pc &= BRANCH_BITMAP_SIZE - 1;
     callstack.entries[callstack.depth].address = pc;
     callstack.hash ^= pc;
     callstack.depth += 1;
@@ -1025,7 +1030,7 @@ void helper_instrument_ret(target_ulong pc)
     uint16_t initial_callstack_hash = callstack.hash;
 
     pc = (pc >> 4) ^ (pc << 8);
-    pc &= BITMAP_SIZE - 1;
+    pc &= BRANCH_BITMAP_SIZE - 1;
 
     callstack.depth -= 1;
     while (callstack.depth >= 0 &&
@@ -1050,22 +1055,34 @@ static inline void visitTB(uintptr_t cur_loc)
 {
     // printf("visiting TB 0x%lx\n", cur_loc);
 
-    if (s_config.coverage_tracer_filter_lib && cur_loc > 0x600000) {
+    if (s_config.coverage_tracer_filter_lib > 0 && cur_loc > 0x600000) {
         return;
     }
 
     if (coverage_log_ht) {
-        g_hash_table_add(coverage_log_ht, (gpointer) cur_loc);
+        if (s_config.coverage_tracer_filter_lib >= 0) {
+            g_hash_table_add(coverage_log_ht, (gpointer) cur_loc);
+        }
     }
 
     cur_loc = (cur_loc >> 4) ^ (cur_loc << 8);
-    cur_loc &= BITMAP_SIZE - 1;
+    cur_loc &= BRANCH_BITMAP_SIZE - 1;
 
     uintptr_t index = (cur_loc ^ prev_loc ^ callstack.hash);
-    index &= BITMAP_SIZE - 1;
-    virgin_bitmap[index]++;
+    index &= BRANCH_BITMAP_SIZE - 1;
 
-    bitmap[index] |= virgin_bitmap[index];
+    // update bitmap for this run
+    if (virgin_bitmap[index] < 255) {
+        virgin_bitmap[index]++;
+    }
+    // update global bitmap
+    if (bitmap[index] < virgin_bitmap[index]) {
+        bitmap[index] = virgin_bitmap[index];
+
+        if (s_config.coverage_tracer_filter_lib < 0) {
+            g_hash_table_add(coverage_log_ht, (gpointer) index);
+        }
+    }
 
     prev_loc = cur_loc >> 1;
 }
@@ -3180,6 +3197,15 @@ static void branch_helper(uintptr_t a, uintptr_t b, uintptr_t cond,
     next_query[0].args8.arg0 = cond == sat_cond; // taken?
 #elif BRANCH_COVERAGE == AFL
     next_query[0].args64 = addr_to;
+#elif BRANCH_COVERAGE == FUZZOLIC
+    uint16_t next_loc = (addr_to >> 4) ^ (addr_to << 8);
+    next_loc &= BRANCH_BITMAP_SIZE - 1;
+
+    uintptr_t index = (next_loc ^ prev_loc ^ callstack.hash);
+    index &= BRANCH_BITMAP_SIZE - 1;
+
+    next_query[0].args16.index = index;
+    next_query[0].args16.count = virgin_bitmap[index];
 #endif
     next_query++;
 #endif
@@ -3440,7 +3466,7 @@ void qemu_syscall_helper(uintptr_t syscall_no, uintptr_t syscall_arg0,
 {
     if (s_config.coverage_tracer) {
         if (syscall_no == SYS_EXIT) {
-            save_coverage_bitmap(s_config.coverage_tracer, bitmap, BITMAP_SIZE);
+            save_coverage_bitmap(s_config.coverage_tracer, bitmap, BRANCH_BITMAP_SIZE);
             if (s_config.coverage_tracer_log) {
                 save_coverage_log(s_config.coverage_tracer_log, &coverage_log_ht);
             }
@@ -4001,7 +4027,9 @@ static inline void qemu_memmove(uintptr_t src, uintptr_t dst,
     // printf("A overflow_n_bytes: %lu\n", overflow_n_bytes);
     Expr** src_exprs = get_expr_addr((uintptr_t)src, size, 0, &overflow_n_bytes);
     if (overflow_n_bytes > 0) {
-        // printf("B overflow_n_bytes: %lu\n", overflow_n_bytes);
+        if (overflow_n_bytes >= size) {
+            printf("B overflow_n_bytes: %lu size=%lu\n", overflow_n_bytes, size);
+        }
         assert(overflow_n_bytes < size);
         size -= overflow_n_bytes;
         assert(size);
@@ -4010,7 +4038,9 @@ static inline void qemu_memmove(uintptr_t src, uintptr_t dst,
     overflow_n_bytes = 0;
     Expr** dst_exprs = get_expr_addr((uintptr_t)dst, size, 0, &overflow_n_bytes);
     if (overflow_n_bytes > 0) {
-        // printf("overflow_n_bytes: %lu\n", overflow_n_bytes);
+        if (overflow_n_bytes >= size) {
+            printf("B overflow_n_bytes: %lu size=%lu\n", overflow_n_bytes, size);
+        }
         assert(overflow_n_bytes < size);
         size -= overflow_n_bytes;
         assert(size);
@@ -4252,7 +4282,7 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
 
     TCGTempStaticState temp_static_state[TCG_MAX_TEMPS] = {0};
 
-    if (instrument) {
+    if (instrument && 0) {
         detect_load_loop(tcg_ctx);
     }
 
@@ -4296,6 +4326,14 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
         switch (op->opc) {
 
             case INDEX_op_insn_start:
+
+                if (hit_first_instr == 0) {
+                    TCGTemp* t_pc = new_non_conflicting_temp(TCG_TYPE_PTR);
+                    tcg_movi(t_pc, (uintptr_t)tb_pc, 0, op, NULL, tcg_ctx);
+                    add_void_call_1(visitTB, t_pc, op, NULL, tcg_ctx);
+                    tcg_temp_free_internal(t_pc);
+                }
+
                 hit_first_instr = 1;
                 pc              = op->args[0];
 
@@ -4313,6 +4351,7 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                            pc == s_config.symbolic_exec_stop_addr) {
                     instrument          = 0;
                     next_query[0].query = FINAL_QUERY;
+                    queue_query[0].query = SHM_DONE;
                     printf("Number of queries: %lu\n",
                            (next_query - queue_query) - 1);
                     printf("Number of expressions: %lu\n",
@@ -4931,7 +4970,7 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                     TCGTemp* t_pc = new_non_conflicting_temp(TCG_TYPE_PTR);
 #if BRANCH_COVERAGE == QSYM
                     tcg_movi(t_pc, (uintptr_t)pc, 0, op, NULL, tcg_ctx);
-#elif BRANCH_COVERAGE == AFL
+#elif BRANCH_COVERAGE == AFL || BRANCH_COVERAGE == FUZZOLIC
                     tcg_movi(t_pc, (uintptr_t)tb_pc, 0, op, NULL, tcg_ctx);
 #endif
                     TCGTemp* t_addr_to = new_non_conflicting_temp(TCG_TYPE_PTR);
@@ -5751,8 +5790,7 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
 
             default:
                 if (instrument) {
-                    const TCGOpDef* def __attribute__((unused)) =
-                        &tcg_op_defs[op->opc];
+                    const TCGOpDef* def = &tcg_op_defs[op->opc];
                     printf("Unhandled TCG instruction: %s\n", def->name);
                     tcg_abort();
                 }

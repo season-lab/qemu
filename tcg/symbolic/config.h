@@ -26,7 +26,7 @@ typedef struct SymbolicConfig {
     //
     const char* coverage_tracer;
     const char* coverage_tracer_log;
-    uint8_t     coverage_tracer_filter_lib;
+    int8_t      coverage_tracer_filter_lib;
 } SymbolicConfig;
 
 #endif // SYMBOLIC_CONFIG_H
