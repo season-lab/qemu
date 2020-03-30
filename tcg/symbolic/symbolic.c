@@ -3196,7 +3196,9 @@ static void branch_helper(uintptr_t a, uintptr_t b, uintptr_t cond,
 #elif BRANCH_COVERAGE == AFL
     next_query[0].args64 = addr_to;
 #elif BRANCH_COVERAGE == FUZZOLIC
-    uint16_t next_loc = (addr_to >> 4) ^ (addr_to << 8);
+
+    uintptr_t addr_to_jump = cond == sat_cond ? pc : addr_to;
+    uint16_t next_loc = (addr_to_jump >> 4) ^ (addr_to_jump << 8);
     next_loc &= BRANCH_BITMAP_SIZE - 1;
 
     uintptr_t index = (next_loc ^ prev_loc ^ callstack.hash);
@@ -4072,22 +4074,27 @@ static inline void qemu_memmove(uintptr_t src, uintptr_t dst,
     }
 }
 
-static uintptr_t find_jump_target(TCGOp* op)
+static void find_jump_target(TCGOp* op, uintptr_t* j_true, uintptr_t* j_false)
 {
-    uintptr_t res                = 0;
-    int       passed_true_branch = 0;
+    int exit_tb_hits = 0;
     while (op) {
-        if (passed_true_branch && op->opc == INDEX_op_movi_i64) {
-            res = CONST(op->args[1]);
-            break;
+        if (exit_tb_hits == 0 && op->opc == INDEX_op_movi_i64) {
+            *j_false = CONST(op->args[1]);
         }
         if (op->opc == INDEX_op_exit_tb) {
-            passed_true_branch = 1;
+            if (exit_tb_hits == 1) {
+                break;
+            } else {
+                exit_tb_hits++;
+            }
+        }
+        if (exit_tb_hits == 1 && op->opc == INDEX_op_movi_i64) {
+            *j_true = CONST(op->args[1]);
         }
         op = QTAILQ_NEXT(op, link);
     }
-    assert(res);
-    return res;
+    // printf("j_true=%lx j_false=%lx\n", *j_true, *j_false);
+    assert(*j_true > 0x10000 && *j_false > 0x10000);
 }
 
 typedef struct {
@@ -4952,7 +4959,9 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                     TCGTemp* t_b  = arg_temp(op->args[1]);
                     TCGCond  cond = op->args[2];
 
-                    uintptr_t addr_to = find_jump_target(op);
+                    uintptr_t address_false = 0;
+                    uintptr_t address_true = 0;
+                    find_jump_target(op, &address_true, &address_false);
 #if 0
                     branch(t_a, t_b, cond, op, tcg_ctx);
 #else
@@ -4970,11 +4979,13 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                     TCGTemp* t_pc = new_non_conflicting_temp(TCG_TYPE_PTR);
 #if BRANCH_COVERAGE == QSYM
                     tcg_movi(t_pc, (uintptr_t)pc, 0, op, NULL, tcg_ctx);
-#elif BRANCH_COVERAGE == AFL || BRANCH_COVERAGE == FUZZOLIC
+#elif BRANCH_COVERAGE == AFL
                     tcg_movi(t_pc, (uintptr_t)tb_pc, 0, op, NULL, tcg_ctx);
+#elif BRANCH_COVERAGE == FUZZOLIC
+                    tcg_movi(t_pc, (uintptr_t)address_false, 0, op, NULL, tcg_ctx);
 #endif
                     TCGTemp* t_addr_to = new_non_conflicting_temp(TCG_TYPE_PTR);
-                    tcg_movi(t_addr_to, (uintptr_t)addr_to, 0, op, NULL,
+                    tcg_movi(t_addr_to, (uintptr_t)address_true, 0, op, NULL,
                              tcg_ctx);
 
                     MARK_TEMP_AS_ALLOCATED(t_a);
