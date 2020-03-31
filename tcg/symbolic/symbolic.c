@@ -69,6 +69,7 @@ Query* queue_query = NULL;
 Query* next_query  = NULL;
 
 TCGContext* internal_tcg_context = NULL;
+static size_t page_size = 0;
 
 // from tcg.c
 typedef struct TCGHelperInfo {
@@ -156,7 +157,7 @@ static inline void    load_configuration(void)
     var = getenv("COVERAGE_TRACER");
     if (var) {
         s_config.coverage_tracer = var;
-        bitmap = calloc(sizeof(uint8_t), BRANCH_BITMAP_SIZE);
+        bitmap = g_malloc0(sizeof(uint8_t) * BRANCH_BITMAP_SIZE);
         return;
     }
 
@@ -371,6 +372,7 @@ void init_symbolic_mode(void)
 #else
     pool        = g_malloc0(sizeof(Expr) * EXPR_POOL_CAPACITY);
     queue_query = g_malloc0(sizeof(Query) * EXPR_QUERY_CAPACITY);
+    bitmap      = g_malloc0(sizeof(uint8_t) * BRANCH_BITMAP_SIZE);
 
     printf("TRACER in NO SOLVER mode\n");
 #endif
@@ -394,6 +396,8 @@ void init_symbolic_mode(void)
     MEM_BARRIER();
 
     next_query++;
+
+    page_size = sysconf(_SC_PAGESIZE);
 }
 
 static inline int count_free_temps(TCGContext* tcg_ctx)
@@ -2163,6 +2167,19 @@ static inline void qemu_load_helper(uintptr_t orig_addr,
                 uint8_t   status    = const_mem_map[idx].status;
 
                 if (status == 0) {
+
+                    void * page_addr = (void *)((norm_addr / page_size) * page_size);
+                    if (msync(page_addr, page_size, MS_ASYNC) != 0) {
+                        // printf("Page containing %lx is not allocated\n", norm_addr);
+                        break;
+                    } else if (norm_addr + SLICE_SIZE -1 > ((uintptr_t)page_addr) + page_size) {
+                        page_addr = (void *)(((norm_addr + SLICE_SIZE -1) / page_size) * page_size);
+                        if (msync(page_addr, page_size, MS_ASYNC) != 0) {
+                            // printf("Page containing %lx is not allocated\n", norm_addr);
+                            break;
+                        }
+                    }
+
                     assert(const_mem_map[idx].base == 0);
                     const_mem_map[idx].status = 1;
                     const_mem_map[idx].used   = 1;
@@ -2193,7 +2210,7 @@ static inline void qemu_load_helper(uintptr_t orig_addr,
                 base_addr += SLICE_SIZE;
             }
 
-            if (read_from_slice) {
+            if (read_from_slice && slices_count > 0) {
 
                 Expr* q   = new_expr();
                 q->opkind = MEMORY_SLICE_ACCESS;
