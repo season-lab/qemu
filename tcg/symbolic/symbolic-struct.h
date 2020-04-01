@@ -198,6 +198,8 @@ typedef struct Query {
         struct {
             uint16_t  index;
             uint16_t  count;
+            uint16_t  index_inv;
+            uint16_t  count_inv;
         } args16;
     };
 } Query;

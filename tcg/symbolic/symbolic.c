@@ -10,6 +10,7 @@
 #include "symbolic-struct.h"
 #include "symbolic.h"
 #include "config.h"
+#include "symbolic-instrumentation.h"
 
 //#define SYMBOLIC_DEBUG
 //#define DISABLE_SOLVER
@@ -995,6 +996,8 @@ static inline void tcg_set_label(TCGLabel* label, TCGOp* op_in, TCGOp** op_out,
         *op_out = op;
 }
 
+#if SYMBOLIC_CALLSTACK_INSTRUMENTATION
+
 #define CALLSTACK_MAX_SIZE 0x1000
 
 typedef struct {
@@ -1009,7 +1012,6 @@ typedef struct {
 
 static CallStack callstack = {.depth = 0};
 
-void helper_instrument_call(target_ulong pc);
 void helper_instrument_call(target_ulong pc)
 {
     // printf("CALL from %lx\n", (uintptr_t) pc);
@@ -1023,7 +1025,6 @@ void helper_instrument_call(target_ulong pc)
     }
 }
 
-void helper_instrument_ret(target_ulong pc);
 void helper_instrument_ret(target_ulong pc)
 {
     // printf("RET to %lx\n", (uintptr_t) pc);
@@ -1053,6 +1054,8 @@ void helper_instrument_ret(target_ulong pc)
     }
 }
 
+#endif
+
 static inline void visitTB(uintptr_t cur_loc)
 {
     // printf("visiting TB 0x%lx\n", cur_loc);
@@ -1070,13 +1073,22 @@ static inline void visitTB(uintptr_t cur_loc)
     cur_loc = (cur_loc >> 4) ^ (cur_loc << 8);
     cur_loc &= BRANCH_BITMAP_SIZE - 1;
 
-    uintptr_t index = (cur_loc ^ prev_loc ^ callstack.hash);
+    uintptr_t index = (cur_loc ^ prev_loc
+#if SYMBOLIC_CALLSTACK_INSTRUMENTATION
+                        ^ callstack.hash
+#endif
+                        );
+
+    // printf("Callstack hash %x\n", callstack.hash);
+
     index &= BRANCH_BITMAP_SIZE - 1;
 
     // update bitmap for this run
     if (virgin_bitmap[index] < 255) {
         virgin_bitmap[index]++;
     }
+
+#if 0
     // update global bitmap
     if (bitmap[index] < virgin_bitmap[index]) {
         bitmap[index] = virgin_bitmap[index];
@@ -1085,6 +1097,7 @@ static inline void visitTB(uintptr_t cur_loc)
             g_hash_table_add(coverage_log_ht, (gpointer) index);
         }
     }
+#endif
 
     prev_loc = cur_loc >> 1;
 }
@@ -3218,11 +3231,31 @@ static void branch_helper(uintptr_t a, uintptr_t b, uintptr_t cond,
     uint16_t next_loc = (addr_to_jump >> 4) ^ (addr_to_jump << 8);
     next_loc &= BRANCH_BITMAP_SIZE - 1;
 
-    uintptr_t index = (next_loc ^ prev_loc ^ callstack.hash);
+    uintptr_t index = (next_loc ^ prev_loc
+#if SYMBOLIC_CALLSTACK_INSTRUMENTATION
+                         ^ callstack.hash
+#endif
+                         );
     index &= BRANCH_BITMAP_SIZE - 1;
 
     next_query[0].args16.index = index;
     next_query[0].args16.count = virgin_bitmap[index];
+
+    // inverse branch direction (the one that is taken)
+
+    addr_to_jump = cond == sat_cond ? addr_to : pc;
+    next_loc = (addr_to_jump >> 4) ^ (addr_to_jump << 8);
+    next_loc &= BRANCH_BITMAP_SIZE - 1;
+
+    index = (next_loc ^ prev_loc
+#if SYMBOLIC_CALLSTACK_INSTRUMENTATION
+                         ^ callstack.hash
+#endif
+                         );
+    index &= BRANCH_BITMAP_SIZE - 1;
+
+    next_query[0].args16.index_inv = index;
+    next_query[0].args16.count_inv = virgin_bitmap[index];
 #endif
     next_query++;
 #endif
@@ -3477,12 +3510,40 @@ static inline void read_from_input(intptr_t offset, uintptr_t addr, size_t size)
     }
 }
 
+// from AFL
+static const uint8_t count_class_binary[256] = {
+  [0]           = 0,
+  [1]           = 1,
+  [2]           = 2,
+  [3]           = 4,
+  [4 ... 7]     = 8,
+  [8 ... 15]    = 16,
+  [16 ... 31]   = 32,
+  [32 ... 127]  = 64,
+  [128 ... 255] = 128
+};
+
 void qemu_syscall_helper(uintptr_t syscall_no, uintptr_t syscall_arg0,
                          uintptr_t syscall_arg1, uintptr_t syscall_arg2,
                          uintptr_t ret_val)
 {
     if (s_config.coverage_tracer) {
         if (syscall_no == SYS_EXIT) {
+
+            // merge local bitmap e global bitmap
+            for (size_t i = 0; i < BRANCH_BITMAP_SIZE; i++) {
+                // normalize the hit count
+                virgin_bitmap[i] = count_class_binary[virgin_bitmap[i]];
+                // new edge?
+                if (!bitmap[i] && virgin_bitmap[i]) {
+                    if (s_config.coverage_tracer_filter_lib < 0) {
+                        g_hash_table_add(coverage_log_ht, (gpointer) i);
+                    }
+                }
+                // merge
+                bitmap[i] |= virgin_bitmap[i];
+            }
+
             save_coverage_bitmap(s_config.coverage_tracer, bitmap, BRANCH_BITMAP_SIZE);
             if (s_config.coverage_tracer_log) {
                 save_coverage_log(s_config.coverage_tracer_log, &coverage_log_ht);
