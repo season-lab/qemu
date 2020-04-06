@@ -98,15 +98,16 @@ typedef enum OPKIND {
     QZEXTRACT2,
     //
     CTZ, // count trailing zeros (x86: BSF, TZCNT)
+    CLZ, // count leading zeros (x86: BSR)
     RCL,
     //
-    ITE, // 42
+    ITE, // 43
     ITE_EQ_ZERO,
     ITE_NE_ZERO,
     OR_3,
     XOR_3,
     // XMM
-    PMOVMSKB, // 47
+    PMOVMSKB, // 48
     CMP_EQ,
     CMP_GT,
     CMP_GE,
@@ -114,7 +115,7 @@ typedef enum OPKIND {
     CMP_LT,
     MIN,
     // double binop
-    MUL_HIGH, // 56
+    MUL_HIGH, // 57
     MULU_HIGH,
     //
     EFLAGS_ALL_ADD,
@@ -516,7 +517,7 @@ static inline void print_expr(Expr* expr)
 #define AFL             1
 #define QSYM            2
 #define FUZZOLIC        3
-#define BRANCH_COVERAGE FUZZOLIC
+#define BRANCH_COVERAGE QSYM
 
 #define BRANCH_BITMAP_SIZE (1 << 16)
 
