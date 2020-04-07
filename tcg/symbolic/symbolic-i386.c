@@ -477,7 +477,8 @@ static void qemu_cc_compute_c(uint64_t packed_idx, uintptr_t dst,
     }
 }
 
-static Expr** get_expr_addr(uintptr_t addr, size_t size, uint8_t allocate, size_t* n_overflow_bytes)
+static Expr** get_expr_addr(uintptr_t addr, size_t size, uint8_t allocate,
+                            size_t* n_overflow_bytes)
 {
     uintptr_t  l1_page_idx = addr >> (L1_PAGE_BITS + L2_PAGE_BITS);
     l2_page_t* l2_page     = s_memory.table.entries[l1_page_idx];
@@ -574,29 +575,34 @@ static inline size_t suffix_to_slice(char suffix, char suffix2)
     }
 }
 
-static void qemu_xmm_op_internal(uintptr_t opkind, uint8_t* dst_addr, uint8_t* src_addr,
-                        uintptr_t packed_slice_pc, size_t n_bytes)
+static void qemu_xmm_op_internal(uintptr_t opkind, uint8_t* dst_addr,
+                                 uint8_t* src_addr, uintptr_t packed_slice_pc,
+                                 size_t n_bytes)
 {
     uintptr_t slice = packed_slice_pc & 0xFF;
     assert(slice <= 16);
 
     size_t overflow_n_bytes = 0;
     // printf("A overflow_n_bytes: %lu\n", overflow_n_bytes);
-    Expr** dst_expr_addr = get_expr_addr((uintptr_t)dst_addr, n_bytes, 0, &overflow_n_bytes);
+    Expr** dst_expr_addr =
+        get_expr_addr((uintptr_t)dst_addr, n_bytes, 0, &overflow_n_bytes);
     if (overflow_n_bytes > 0) {
         // printf("B overflow_n_bytes: %lu\n", overflow_n_bytes);
         assert(overflow_n_bytes < n_bytes);
         n_bytes -= overflow_n_bytes;
         assert(n_bytes);
-        qemu_xmm_op_internal(opkind, dst_addr + n_bytes, src_addr + n_bytes, packed_slice_pc, overflow_n_bytes);
+        qemu_xmm_op_internal(opkind, dst_addr + n_bytes, src_addr + n_bytes,
+                             packed_slice_pc, overflow_n_bytes);
     }
     overflow_n_bytes = 0;
-    Expr** src_expr_addr = get_expr_addr((uintptr_t)src_addr, n_bytes, 0, &overflow_n_bytes);
+    Expr** src_expr_addr =
+        get_expr_addr((uintptr_t)src_addr, n_bytes, 0, &overflow_n_bytes);
     if (overflow_n_bytes > 0) {
         assert(overflow_n_bytes < n_bytes);
         n_bytes -= overflow_n_bytes;
         assert(n_bytes);
-        qemu_xmm_op_internal(opkind, dst_addr + n_bytes, src_addr + n_bytes, packed_slice_pc, overflow_n_bytes);
+        qemu_xmm_op_internal(opkind, dst_addr + n_bytes, src_addr + n_bytes,
+                             packed_slice_pc, overflow_n_bytes);
     }
 
     if (dst_expr_addr == NULL && src_expr_addr == NULL) {
@@ -646,8 +652,8 @@ static void qemu_xmm_op_internal(uintptr_t opkind, uint8_t* dst_addr, uint8_t* s
             dst_slice =
                 build_concat_expr(&dst_expr_addr[i], &dst_addr[i], slice, 0);
 
-            e->op1    = dst_slice;
-            e->op2    = src_slice;
+            e->op1 = dst_slice;
+            e->op2 = src_slice;
         } else {
             SET_EXPR_OP(e->op1, e->op1_is_const, src_expr_addr[i], src_addr[i]);
             SET_EXPR_OP(e->op2, e->op2_is_const, dst_expr_addr[i], dst_addr[i]);
@@ -676,7 +682,8 @@ static void qemu_xmm_op_internal(uintptr_t opkind, uint8_t* dst_addr, uint8_t* s
 static void qemu_xmm_op(uintptr_t opkind, uint8_t* dst_addr, uint8_t* src_addr,
                         uintptr_t packed_slice_pc)
 {
-    qemu_xmm_op_internal(opkind, dst_addr, src_addr, packed_slice_pc, XMM_BYTES);
+    qemu_xmm_op_internal(opkind, dst_addr, src_addr, packed_slice_pc,
+                         XMM_BYTES);
 }
 
 #if 0
@@ -749,9 +756,11 @@ static inline int is_eip_offset(uintptr_t offset)
     return 0;
 }
 
-static void qemu_xmm_pmovmskb(uintptr_t dst_idx, uint64_t* src_addr, size_t n_bytes)
+static void qemu_xmm_pmovmskb(uintptr_t dst_idx, uint64_t* src_addr,
+                              size_t n_bytes)
 {
-    Expr** src_expr_addr = get_expr_addr((uintptr_t)src_addr, XMM_BYTES, 0, NULL);
+    Expr** src_expr_addr =
+        get_expr_addr((uintptr_t)src_addr, XMM_BYTES, 0, NULL);
     if (src_expr_addr == NULL) {
         s_temps[dst_idx] = NULL;
         return;
@@ -781,7 +790,8 @@ static void qemu_xmm_pmovmskb(uintptr_t dst_idx, uint64_t* src_addr, size_t n_by
 
 static void qemu_xmm_movl_mm_T0(uint64_t* dst_addr, uintptr_t src_idx)
 {
-    Expr** dst_expr_addr = get_expr_addr((uintptr_t)dst_addr, XMM_BYTES, 0, NULL);
+    Expr** dst_expr_addr =
+        get_expr_addr((uintptr_t)dst_addr, XMM_BYTES, 0, NULL);
     if (s_temps[src_idx] == NULL) {
         if (dst_expr_addr == NULL) {
             return;
@@ -808,11 +818,13 @@ static void qemu_xmm_movl_mm_T0(uint64_t* dst_addr, uintptr_t src_idx)
     }
 }
 
-static void qemu_xmm_pshufd(uint64_t* dst_addr, uint64_t* src_addr,
-                            uintptr_t order)
+static void qemu_xmm_pshuf(uint64_t* dst_addr, uint64_t* src_addr,
+                           uintptr_t order, uintptr_t size)
 {
-    Expr** dst_expr_addr = get_expr_addr((uintptr_t)dst_addr, XMM_BYTES, 0, NULL);
-    Expr** src_expr_addr = get_expr_addr((uintptr_t)src_addr, XMM_BYTES, 0, NULL);
+    Expr** dst_expr_addr =
+        get_expr_addr((uintptr_t)dst_addr, XMM_BYTES, 0, NULL);
+    Expr** src_expr_addr =
+        get_expr_addr((uintptr_t)src_addr, XMM_BYTES, 0, NULL);
 
     if (src_expr_addr == NULL) {
         if (dst_expr_addr != NULL) {
@@ -837,13 +849,13 @@ static void qemu_xmm_pshufd(uint64_t* dst_addr, uint64_t* src_addr,
         return;
     }
 #if 0
-    printf("Helper qemu_xmm_pshufd: symbolic op\n");
+    printf("Helper qemu_xmm_pshuf: symbolic op\n");
 #endif
     uint8_t count = 0;
-    for (size_t i = 0; i < XMM_BYTES; i += sizeof(uint32_t)) {
+    for (size_t i = 0; i < XMM_BYTES; i += size) {
         // ToDo: check endianness
-        uint8_t src_pos = ((order >> (2 * count++)) & 3) * 4;
-        for (size_t k = 0; k < sizeof(uint32_t); k++) {
+        uint8_t src_pos = ((order >> (2 * count++)) & 3) * size;
+        for (size_t k = 0; k < size; k++) {
             dst_expr_addr[i + k] = src_expr_addr[src_pos + k];
         }
     }
@@ -852,20 +864,24 @@ static void qemu_xmm_pshufd(uint64_t* dst_addr, uint64_t* src_addr,
 static void qemu_xmm_punpck(uint64_t* dst_addr, uint64_t* src_addr,
                             uintptr_t slice, uint8_t lowbytes)
 {
-    Expr** dst_expr_addr = get_expr_addr((uintptr_t)dst_addr, XMM_BYTES, 0, NULL);
-    Expr** src_expr_addr = get_expr_addr((uintptr_t)src_addr, XMM_BYTES, 0, NULL);
+    Expr** dst_expr_addr =
+        get_expr_addr((uintptr_t)dst_addr, XMM_BYTES, 0, NULL);
+    Expr** src_expr_addr =
+        get_expr_addr((uintptr_t)src_addr, XMM_BYTES, 0, NULL);
 
     if (src_expr_addr == NULL && dst_expr_addr == NULL) {
         return;
     }
 
     int src_is_not_null = 0;
-    for (size_t i = 0; i < XMM_BYTES && src_is_not_null == 0 && src_expr_addr; i++) {
+    for (size_t i = 0; i < XMM_BYTES && src_is_not_null == 0 && src_expr_addr;
+         i++) {
         src_is_not_null |= src_expr_addr[i] != NULL;
     }
 
     int dst_is_not_null = 0;
-    for (size_t i = 0; i < XMM_BYTES && dst_is_not_null == 0 && dst_expr_addr; i++) {
+    for (size_t i = 0; i < XMM_BYTES && dst_is_not_null == 0 && dst_expr_addr;
+         i++) {
         dst_is_not_null |= dst_expr_addr[i] != NULL;
     }
 
@@ -900,6 +916,79 @@ static void qemu_xmm_punpck(uint64_t* dst_addr, uint64_t* src_addr,
     }
 }
 
+static void qemu_xmm_pack(uint64_t* dst_addr, uint64_t* src_addr,
+                          uintptr_t packed_info)
+{
+    Expr** dst_expr_addr =
+        get_expr_addr((uintptr_t)dst_addr, XMM_BYTES, 0, NULL);
+    Expr** src_expr_addr =
+        get_expr_addr((uintptr_t)src_addr, XMM_BYTES, 0, NULL);
+
+    if (src_expr_addr == NULL && dst_expr_addr == NULL) {
+        return;
+    }
+
+    int src_is_not_null = 0;
+    for (size_t i = 0; i < XMM_BYTES && src_is_not_null == 0 && src_expr_addr;
+         i++) {
+        src_is_not_null |= src_expr_addr[i] != NULL;
+    }
+
+    int dst_is_not_null = 0;
+    for (size_t i = 0; i < XMM_BYTES && dst_is_not_null == 0 && dst_expr_addr;
+         i++) {
+        dst_is_not_null |= dst_expr_addr[i] != NULL;
+    }
+
+    if (!src_is_not_null && !dst_is_not_null) {
+        return;
+    }
+
+    uint8_t unpacked_size = UNPACK_0(packed_info);
+    uint8_t packed_size   = UNPACK_1(packed_info);
+    uint8_t opkind =
+        UNPACK_2(packed_info) ? SIGNED_SATURATION : UNSIGNED_SATURATION;
+
+#if 0
+    printf("Helper qemu_xmm_pack: symbolic op\n");
+#endif
+
+    // make a copy of dest exprs
+    Expr* dst_exprs[XMM_BYTES];
+    for (size_t i = 0; i < XMM_BYTES; i++) {
+        dst_exprs[i] = dst_expr_addr[i];
+    }
+
+    // ToDo: check endianness
+    for (size_t i = 0; i < XMM_BYTES / 2; i += packed_size) {
+        unsigned offset        = ((i / packed_size) * unpacked_size);
+        Expr*    bytes_to_pack = build_concat_expr(
+            dst_exprs + offset, dst_addr + offset, unpacked_size, 0);
+        for (size_t k = 0; k < packed_size; k++) {
+            Expr* e   = new_expr();
+            e->opkind = opkind;
+            e->op1    = bytes_to_pack;
+            SET_EXPR_CONST_OP(e->op2, e->op2_is_const, packed_size);
+            SET_EXPR_CONST_OP(e->op3, e->op3_is_const, k);
+            dst_expr_addr[i + k] = e;
+        }
+    }
+
+    for (size_t i = 0; i < (XMM_BYTES / 2); i += packed_size) {
+        unsigned offset        = ((i / packed_size) * unpacked_size);
+        Expr*    bytes_to_pack = build_concat_expr(
+            src_expr_addr + offset, src_addr + offset, unpacked_size, 0);
+        for (size_t k = 0; k < packed_size; k++) {
+            Expr* e   = new_expr();
+            e->opkind = opkind;
+            e->op1    = bytes_to_pack;
+            SET_EXPR_CONST_OP(e->op2, e->op2_is_const, packed_size);
+            SET_EXPR_CONST_OP(e->op3, e->op3_is_const, k);
+            dst_expr_addr[(XMM_BYTES / 2) + i + k] = e;
+        }
+    }
+}
+
 #define XO(X) offsetof(X86XSaveArea, X)
 
 static Expr* xmm_save_state[XMM_BYTES * 16];
@@ -930,7 +1019,7 @@ static void qemu_fxsave(CPUX86State* env, uintptr_t ptr)
                 xmm_save_state[addr + k] = NULL;
             } else {
                 xmm_save_state[addr + k] = src_expr_addr[k];
-                //print_expr(src_expr_addr[k]);
+                // print_expr(src_expr_addr[k]);
             }
         }
 
@@ -962,7 +1051,7 @@ static void qemu_fxrstor(CPUX86State* env, uintptr_t ptr)
         for (size_t k = 0; k < XMM_BYTES; k++) {
             if (dst_expr_addr) {
                 dst_expr_addr[k] = xmm_save_state[addr + k];
-                //print_expr(dst_expr_addr[k]);
+                // print_expr(dst_expr_addr[k]);
             } else {
                 assert(xmm_save_state[addr + k] == NULL);
             }
@@ -1096,8 +1185,8 @@ static void qemu_divl_EAX(uint64_t packed_idx, uintptr_t rax, uintptr_t rdx,
 
         Expr* edxeax   = new_expr();
         edxeax->opkind = CONCAT;
-        edxeax->op1 = edx;
-        edxeax->op1 = eax;
+        edxeax->op1    = edx;
+        edxeax->op1    = eax;
 
         Expr* d   = new_expr();
         d->opkind = mode == 0 ? DIVU : DIV;

@@ -14,7 +14,7 @@
 
 //#define SYMBOLIC_DEBUG
 #define DISABLE_SOLVER
-#define SYMBOLIC_COSTANT_ACCESS 1
+#define SYMBOLIC_COSTANT_ACCESS 0
 
 #define QUEUE_OP_MAX_SIZE 128
 size_t        op_to_add_size               = 0;
@@ -52,13 +52,18 @@ typedef struct s_memory_t {
 s_memory_t s_memory = {0};
 
 static uint8_t  virgin_bitmap[BRANCH_BITMAP_SIZE] = {0};
-static uint8_t*  bitmap = NULL;
-static uint16_t prev_loc                   = 0;
+static uint8_t* bitmap                            = NULL;
+static uint16_t prev_loc                          = 0;
 
 GHashTable* coverage_log_ht = NULL;
 
 // path constraints
 Expr* path_constraints = NULL;
+
+#if 0
+// const base cache
+static GHashTable* const_base_ht = NULL;
+#endif
 
 // Expr allocation pool
 Expr* pool           = NULL;
@@ -69,8 +74,8 @@ Expr* last_expr      = NULL; // ToDo: unsafe
 Query* queue_query = NULL;
 Query* next_query  = NULL;
 
-TCGContext* internal_tcg_context = NULL;
-static size_t page_size = 0;
+TCGContext*   internal_tcg_context = NULL;
+static size_t page_size            = 0;
 
 // from tcg.c
 typedef struct TCGHelperInfo {
@@ -145,14 +150,14 @@ TCGOp * op_macro;
 static SymbolicConfig s_config = {0};
 static inline void    load_configuration(void)
 {
-    char * var = getenv("COVERAGE_TRACER_LOG");
+    char* var = getenv("COVERAGE_TRACER_LOG");
     if (var) {
         s_config.coverage_tracer_log = var;
     }
 
     var = getenv("COVERAGE_TRACER_FILTER_LIB");
     if (var) {
-        s_config.coverage_tracer_filter_lib = (int) strtoll(var, NULL, 16);
+        s_config.coverage_tracer_filter_lib = (int)strtoll(var, NULL, 16);
     }
 
     var = getenv("COVERAGE_TRACER");
@@ -258,7 +263,8 @@ static inline void load_coverage_bitmap(const char* path, uint8_t* data,
     fclose(fp);
 }
 
-static inline void load_coverage_log(const char* path, GHashTable ** coverage_log)
+static inline void load_coverage_log(const char*  path,
+                                     GHashTable** coverage_log)
 {
     *coverage_log = g_hash_table_new(NULL, NULL);
     printf("[TRACER] Loading coverage log: %s\n", path);
@@ -268,11 +274,11 @@ static inline void load_coverage_log(const char* path, GHashTable ** coverage_lo
         return;
     }
     ssize_t res;
-    char * line = NULL;
-    size_t len = 0;
+    char*   line = NULL;
+    size_t  len  = 0;
     while ((res = getline(&line, &len, fp)) != -1) {
         uint64_t address = strtoll(line, NULL, 16);
-        g_hash_table_add(*coverage_log, (gpointer) address);
+        g_hash_table_add(*coverage_log, (gpointer)address);
     }
     fclose(fp);
 }
@@ -289,12 +295,13 @@ static inline void save_coverage_bitmap(const char* path, uint8_t* data,
     fclose(fp);
 }
 
-static inline void save_coverage_log(const char* path, GHashTable ** coverage_log)
+static inline void save_coverage_log(const char*  path,
+                                     GHashTable** coverage_log)
 {
     printf("[TRACER] Saving coverage log: %s\n", path);
     FILE* fp = fopen(path, "w");
 
-    char line[16];
+    char           line[16];
     GHashTableIter iter;
     gpointer       key, value;
     g_hash_table_iter_init(&iter, *coverage_log);
@@ -314,7 +321,8 @@ void init_symbolic_mode(void)
     load_configuration();
 
     if (s_config.coverage_tracer) {
-        load_coverage_bitmap(s_config.coverage_tracer, bitmap, BRANCH_BITMAP_SIZE);
+        load_coverage_bitmap(s_config.coverage_tracer, bitmap,
+                             BRANCH_BITMAP_SIZE);
         if (s_config.coverage_tracer_log) {
             load_coverage_log(s_config.coverage_tracer_log, &coverage_log_ht);
         }
@@ -353,7 +361,7 @@ void init_symbolic_mode(void)
     int bitmap_shm_id;
     do {
         bitmap_shm_id = shmget(BITMAP_SHM_KEY, // IPC_PRIVATE,
-                              sizeof(uint8_t) * BRANCH_BITMAP_SIZE, 0666);
+                               sizeof(uint8_t) * BRANCH_BITMAP_SIZE, 0666);
         if (bitmap_shm_id > 0) {
             break;
         }
@@ -377,7 +385,7 @@ void init_symbolic_mode(void)
     queue_query = g_malloc0(sizeof(Query) * EXPR_QUERY_CAPACITY);
     bitmap      = g_malloc0(sizeof(uint8_t) * BRANCH_BITMAP_SIZE);
 
-    printf("TRACER in NO SOLVER mode\n");
+    printf("\nTRACER in NO SOLVER mode\n");
 #endif
 
     // printf("POOL_ADDR=%p\n", pool);
@@ -401,6 +409,9 @@ void init_symbolic_mode(void)
     next_query++;
 
     page_size = sysconf(_SC_PAGESIZE);
+#if 0
+    const_base_ht = g_hash_table_new(NULL, NULL);
+#endif
 }
 
 static inline int count_free_temps(TCGContext* tcg_ctx)
@@ -1068,7 +1079,7 @@ static inline void visitTB(uintptr_t cur_loc)
 
     if (coverage_log_ht) {
         if (s_config.coverage_tracer_filter_lib >= 0) {
-            g_hash_table_add(coverage_log_ht, (gpointer) cur_loc);
+            g_hash_table_add(coverage_log_ht, (gpointer)cur_loc);
         }
     }
 
@@ -1077,9 +1088,9 @@ static inline void visitTB(uintptr_t cur_loc)
 
     uintptr_t index = (cur_loc ^ prev_loc
 #if SYMBOLIC_CALLSTACK_INSTRUMENTATION
-                        ^ callstack.hash
+                       ^ callstack.hash
 #endif
-                        );
+    );
 
     // printf("Callstack hash %x\n", callstack.hash);
 
@@ -1558,7 +1569,8 @@ static inline void qemu_binop(OPKIND opkind, TCGTemp* t_op_out, TCGTemp* t_op_a,
 }
 
 static inline void qemu_unop_helper(uintptr_t opkind, uintptr_t t_out_idx,
-                                    uintptr_t t_op_a_idx, uintptr_t t_op_a)
+                                    uintptr_t t_op_a_idx, uintptr_t t_op_a,
+                                    uintptr_t size)
 {
     Expr* expr_a = s_temps[t_op_a_idx];
     if (expr_a == NULL) {
@@ -1566,14 +1578,15 @@ static inline void qemu_unop_helper(uintptr_t opkind, uintptr_t t_out_idx,
         return; // early exit
     }
 
-    Expr* unop_expr    = new_expr();
-    unop_expr->opkind  = (OPKIND)opkind;
-    unop_expr->op1     = expr_a;
+    Expr* unop_expr   = new_expr();
+    unop_expr->opkind = (OPKIND)opkind;
+    unop_expr->op1    = expr_a;
+    SET_EXPR_CONST_OP(unop_expr->op1, unop_expr->op1_is_const, size);
     s_temps[t_out_idx] = unop_expr;
 }
 
 static inline void qemu_unop(OPKIND opkind, TCGTemp* t_op_out, TCGTemp* t_op_a,
-                             TCGOp* op_in, TCGContext* tcg_ctx)
+                             TCGTemp* t_size, TCGOp* op_in, TCGContext* tcg_ctx)
 {
     SAVE_TEMPS_COUNT(tcg_ctx);
 
@@ -1613,6 +1626,9 @@ static inline void qemu_unop(OPKIND opkind, TCGTemp* t_op_out, TCGTemp* t_op_a,
 
     tcg_store_n(t_out, t_a, offsetof(Expr, op1), 0, 1, sizeof(uintptr_t), op_in,
                 NULL, tcg_ctx);
+
+    tcg_store_n(t_out, t_size, offsetof(Expr, op2), 0, 0, sizeof(uintptr_t),
+                op_in, NULL, tcg_ctx);
 
     tcg_set_label(label_a_concrete, op_in, NULL, tcg_ctx);
 
@@ -2044,26 +2060,113 @@ static inline size_t get_mem_op_signextend(TCGMemOp mem_op)
 
 #define IS_LIKELY_CONST_BASE(c) (c > 0x10000 && c < (0xFFFFFFFFFFFF - 0x10000))
 
-static inline uintptr_t find_const_base(Expr* e)
+typedef struct {
+    Expr*     expr;
+    uintptr_t base;
+} ConstBaseCache_t;
+
+static unsigned crc32_table[256] = {
+    0u,          1996959894u, 3993919788u, 2567524794u, 124634137u,
+    1886057615u, 3915621685u, 2657392035u, 249268274u,  2044508324u,
+    3772115230u, 2547177864u, 162941995u,  2125561021u, 3887607047u,
+    2428444049u, 498536548u,  1789927666u, 4089016648u, 2227061214u,
+    450548861u,  1843258603u, 4107580753u, 2211677639u, 325883990u,
+    1684777152u, 4251122042u, 2321926636u, 335633487u,  1661365465u,
+    4195302755u, 2366115317u, 997073096u,  1281953886u, 3579855332u,
+    2724688242u, 1006888145u, 1258607687u, 3524101629u, 2768942443u,
+    901097722u,  1119000684u, 3686517206u, 2898065728u, 853044451u,
+    1172266101u, 3705015759u, 2882616665u, 651767980u,  1373503546u,
+    3369554304u, 3218104598u, 565507253u,  1454621731u, 3485111705u,
+    3099436303u, 671266974u,  1594198024u, 3322730930u, 2970347812u,
+    795835527u,  1483230225u, 3244367275u, 3060149565u, 1994146192u,
+    31158534u,   2563907772u, 4023717930u, 1907459465u, 112637215u,
+    2680153253u, 3904427059u, 2013776290u, 251722036u,  2517215374u,
+    3775830040u, 2137656763u, 141376813u,  2439277719u, 3865271297u,
+    1802195444u, 476864866u,  2238001368u, 4066508878u, 1812370925u,
+    453092731u,  2181625025u, 4111451223u, 1706088902u, 314042704u,
+    2344532202u, 4240017532u, 1658658271u, 366619977u,  2362670323u,
+    4224994405u, 1303535960u, 984961486u,  2747007092u, 3569037538u,
+    1256170817u, 1037604311u, 2765210733u, 3554079995u, 1131014506u,
+    879679996u,  2909243462u, 3663771856u, 1141124467u, 855842277u,
+    2852801631u, 3708648649u, 1342533948u, 654459306u,  3188396048u,
+    3373015174u, 1466479909u, 544179635u,  3110523913u, 3462522015u,
+    1591671054u, 702138776u,  2966460450u, 3352799412u, 1504918807u,
+    783551873u,  3082640443u, 3233442989u, 3988292384u, 2596254646u,
+    62317068u,   1957810842u, 3939845945u, 2647816111u, 81470997u,
+    1943803523u, 3814918930u, 2489596804u, 225274430u,  2053790376u,
+    3826175755u, 2466906013u, 167816743u,  2097651377u, 4027552580u,
+    2265490386u, 503444072u,  1762050814u, 4150417245u, 2154129355u,
+    426522225u,  1852507879u, 4275313526u, 2312317920u, 282753626u,
+    1742555852u, 4189708143u, 2394877945u, 397917763u,  1622183637u,
+    3604390888u, 2714866558u, 953729732u,  1340076626u, 3518719985u,
+    2797360999u, 1068828381u, 1219638859u, 3624741850u, 2936675148u,
+    906185462u,  1090812512u, 3747672003u, 2825379669u, 829329135u,
+    1181335161u, 3412177804u, 3160834842u, 628085408u,  1382605366u,
+    3423369109u, 3138078467u, 570562233u,  1426400815u, 3317316542u,
+    2998733608u, 733239954u,  1555261956u, 3268935591u, 3050360625u,
+    752459403u,  1541320221u, 2607071920u, 3965973030u, 1969922972u,
+    40735498u,   2617837225u, 3943577151u, 1913087877u, 83908371u,
+    2512341634u, 3803740692u, 2075208622u, 213261112u,  2463272603u,
+    3855990285u, 2094854071u, 198958881u,  2262029012u, 4057260610u,
+    1759359992u, 534414190u,  2176718541u, 4139329115u, 1873836001u,
+    414664567u,  2282248934u, 4279200368u, 1711684554u, 285281116u,
+    2405801727u, 4167216745u, 1634467795u, 376229701u,  2685067896u,
+    3608007406u, 1308918612u, 956543938u,  2808555105u, 3495958263u,
+    1231636301u, 1047427035u, 2932959818u, 3654703836u, 1088359270u,
+    936918000u,  2847714899u, 3736837829u, 1202900863u, 817233897u,
+    3183342108u, 3401237130u, 1404277552u, 615818150u,  3134207493u,
+    3453421203u, 1423857449u, 601450431u,  3009837614u, 3294710456u,
+    1567103746u, 711928724u,  3020668471u, 3272380065u, 1510334235u,
+    755167117u};
+
+#define CONST_BASE_CACHE_SIZE 512
+static ConstBaseCache_t const_base_cache[CONST_BASE_CACHE_SIZE];
+
+static inline uintptr_t find_const_base(Expr* e, int depth)
 {
+#if 0
+    printf("Find const base %d %p\n", depth, e);
+    print_expr(e);
+    if (depth > 10) {
+        tcg_abort();
+    }
+#endif
+#if 0
+    gpointer key, value;
+    if (g_hash_table_lookup_extended(const_base_ht, (gconstpointer) e, &key, &value) == TRUE){
+        return (uintptr_t) value;
+    }
+#endif
+    uint8_t hash =
+        (crc32_table[((uint8_t)(CONST(e) >> 2))] % CONST_BASE_CACHE_SIZE);
+    if (const_base_cache[hash].expr == e) {
+        return const_base_cache[hash].base;
+    }
+
     uintptr_t base = 0;
     if (e->opkind == ADD || e->opkind == SUB) {
         if (e->op1_is_const) {
             if (IS_LIKELY_CONST_BASE(CONST(e->op1))) {
                 return CONST(e->op1);
             } else {
-                base = find_const_base(e->op2);
+                base = find_const_base(e->op2, depth + 1);
             }
         } else if (e->op2_is_const) {
             if (IS_LIKELY_CONST_BASE(CONST(e->op2))) {
                 return CONST(e->op2);
             } else {
-                base = find_const_base(e->op1);
+                base = find_const_base(e->op1, depth + 1);
             }
         } else {
-            base = find_const_base(e->op1) + find_const_base(e->op2);
+            base = find_const_base(e->op1, depth + 1) +
+                   find_const_base(e->op2, depth + 1);
         }
     }
+#if 0
+    g_hash_table_insert(const_base_ht, (gpointer) key, (gpointer) value);
+#endif
+    const_base_cache[hash].expr = e;
+    const_base_cache[hash].base = base;
     return base;
 }
 
@@ -2159,7 +2262,7 @@ static inline void qemu_load_helper(uintptr_t orig_addr,
 #if SYMBOLIC_COSTANT_ACCESS
     if (addr_idx > 0 && s_temps[addr_idx]) {
         // printf("\nSymbolic Access\n");
-        uintptr_t base = find_const_base(s_temps[addr_idx]);
+        uintptr_t base = find_const_base(s_temps[addr_idx], 0);
         if (IS_LIKELY_CONST_BASE(base)) {
 #if 0
             printf("Detected base: 0x%lx\n", base);
@@ -2183,14 +2286,20 @@ static inline void qemu_load_helper(uintptr_t orig_addr,
 
                 if (status == 0) {
 
-                    void * page_addr = (void *)((norm_addr / page_size) * page_size);
+                    void* page_addr =
+                        (void*)((norm_addr / page_size) * page_size);
                     if (msync(page_addr, page_size, MS_ASYNC) != 0) {
-                        // printf("Page containing %lx is not allocated\n", norm_addr);
+                        // printf("Page containing %lx is not allocated\n",
+                        // norm_addr);
                         break;
-                    } else if (norm_addr + SLICE_SIZE -1 > ((uintptr_t)page_addr) + page_size) {
-                        page_addr = (void *)(((norm_addr + SLICE_SIZE -1) / page_size) * page_size);
+                    } else if (norm_addr + SLICE_SIZE - 1 >
+                               ((uintptr_t)page_addr) + page_size) {
+                        page_addr =
+                            (void*)(((norm_addr + SLICE_SIZE - 1) / page_size) *
+                                    page_size);
                         if (msync(page_addr, page_size, MS_ASYNC) != 0) {
-                            // printf("Page containing %lx is not allocated\n", norm_addr);
+                            // printf("Page containing %lx is not allocated\n",
+                            // norm_addr);
                             break;
                         }
                     }
@@ -2601,7 +2710,6 @@ static inline void qemu_multi_page_store(l3_page_t* l3_page,
                                          uintptr_t l3_page_idx, uintptr_t size,
                                          Expr* v)
 {
-
     assert(0);
 
     uintptr_t pa_size  = 1 << L3_PAGE_BITS;
@@ -2689,12 +2797,7 @@ static inline void qemu_store_helper(uintptr_t orig_addr,
             l3_page->entries[l3_page_idx + i] = NULL;
     } else {
 
-#if 0
-        if (orig_addr > 0x61f490 && orig_addr < 0x61f490 + 256) {
-            printf("Storing %lu bytes: *%p + %lu = t[%ld]\n", size,
-                   (void*)orig_addr, offset, s_temps[val_idx] ? val_idx : -1);
-        }
-#endif
+        // printf("Store at %lx\n", addr);
 
         for (size_t i = 0; i < size; i++) {
             Expr* e    = new_expr();
@@ -3014,6 +3117,9 @@ static inline OPKIND get_opkind(TCGOpcode opc)
         case INDEX_op_mulu2_i64:
         case INDEX_op_mulu2_i32:
             return MULU;
+        case INDEX_op_bswap32_i64:
+        case INDEX_op_bswap64_i64:
+            return BSWAP;
         default:
             tcg_abort();
     }
@@ -3212,8 +3318,8 @@ static void branch_helper(uintptr_t a, uintptr_t b, uintptr_t cond,
 
 #if 0
     printf("Branch at %lx: %lu %s %lu\n", pc, a_idx, opkind_to_str(get_opkind_from_cond(cond)), b_idx);
-    print_temp(a_idx);
-    print_temp(b_idx);
+    //print_temp(a_idx);
+    // print_temp(b_idx);
 #endif
 
     Expr*   branch_expr = new_expr();
@@ -3233,14 +3339,14 @@ static void branch_helper(uintptr_t a, uintptr_t b, uintptr_t cond,
 #elif BRANCH_COVERAGE == FUZZOLIC
 
     uintptr_t addr_to_jump = cond == sat_cond ? pc : addr_to;
-    uint16_t next_loc = (addr_to_jump >> 4) ^ (addr_to_jump << 8);
+    uint16_t  next_loc     = (addr_to_jump >> 4) ^ (addr_to_jump << 8);
     next_loc &= BRANCH_BITMAP_SIZE - 1;
 
     uintptr_t index = (next_loc ^ prev_loc
 #if SYMBOLIC_CALLSTACK_INSTRUMENTATION
-                         ^ callstack.hash
+                       ^ callstack.hash
 #endif
-                         );
+    );
     index &= BRANCH_BITMAP_SIZE - 1;
 
     next_query[0].args16.index = index;
@@ -3249,14 +3355,14 @@ static void branch_helper(uintptr_t a, uintptr_t b, uintptr_t cond,
     // inverse branch direction (the one that is taken)
 
     addr_to_jump = cond == sat_cond ? addr_to : pc;
-    next_loc = (addr_to_jump >> 4) ^ (addr_to_jump << 8);
+    next_loc     = (addr_to_jump >> 4) ^ (addr_to_jump << 8);
     next_loc &= BRANCH_BITMAP_SIZE - 1;
 
     index = (next_loc ^ prev_loc
 #if SYMBOLIC_CALLSTACK_INSTRUMENTATION
-                         ^ callstack.hash
+             ^ callstack.hash
 #endif
-                         );
+    );
     index &= BRANCH_BITMAP_SIZE - 1;
 
     next_query[0].args16.index_inv = index;
@@ -3477,11 +3583,11 @@ static inline void read_from_input(intptr_t offset, uintptr_t addr, size_t size)
         s_memory.table.entries[l1_page_idx] = l2_page;
     }
 
-    uintptr_t  l2_page_idx = (addr >> L2_PAGE_BITS) & 0xFFFF;
+    uintptr_t l2_page_idx = (addr >> L2_PAGE_BITS) & 0xFFFF;
 
     while (size > 0) {
 
-        l3_page_t* l3_page     = l2_page->entries[l2_page_idx];
+        l3_page_t* l3_page = l2_page->entries[l2_page_idx];
         if (l3_page == NULL) {
             l3_page                       = g_malloc0(sizeof(l3_page_t));
             l2_page->entries[l2_page_idx] = l3_page;
@@ -3498,10 +3604,10 @@ static inline void read_from_input(intptr_t offset, uintptr_t addr, size_t size)
         for (size_t i = 0; i < bytes_in_page; i++) {
             Expr* e_byte = input_exprs[offset];
             if (e_byte == NULL) {
-                e_byte                  = new_expr();
-                e_byte->opkind          = IS_SYMBOLIC;
-                e_byte->op1             = (Expr*)(offset);     // ID
-                e_byte->op2             = (Expr*)1;            // number of bytes
+                e_byte              = new_expr();
+                e_byte->opkind      = IS_SYMBOLIC;
+                e_byte->op1         = (Expr*)(offset); // ID
+                e_byte->op2         = (Expr*)1;        // number of bytes
                 input_exprs[offset] = e_byte;
             }
             l3_page->entries[l3_page_idx + i] = e_byte;
@@ -3515,18 +3621,26 @@ static inline void read_from_input(intptr_t offset, uintptr_t addr, size_t size)
     }
 }
 
+static int         finalization_done = 0;
+static inline void end_symbolic_mode(void)
+{
+    if (finalization_done) {
+        return;
+    }
+    //
+    next_query[0].query  = FINAL_QUERY;
+    queue_query[0].query = SHM_DONE;
+    //
+    printf("\nNumber of queries: %lu\n", (next_query - queue_query) - 1);
+    printf("Number of expressions: %lu\n", GET_EXPR_IDX(next_free_expr) - 1);
+    printf("Number of memory slices: %lu\n", slices_count);
+}
+
 // from AFL
 static const uint8_t count_class_binary[256] = {
-  [0]           = 0,
-  [1]           = 1,
-  [2]           = 2,
-  [3]           = 4,
-  [4 ... 7]     = 8,
-  [8 ... 15]    = 16,
-  [16 ... 31]   = 32,
-  [32 ... 127]  = 64,
-  [128 ... 255] = 128
-};
+    [0] = 0,          [1] = 1,           [2] = 2,
+    [3] = 4,          [4 ... 7] = 8,     [8 ... 15] = 16,
+    [16 ... 31] = 32, [32 ... 127] = 64, [128 ... 255] = 128};
 
 void qemu_syscall_helper(uintptr_t syscall_no, uintptr_t syscall_arg0,
                          uintptr_t syscall_arg1, uintptr_t syscall_arg2,
@@ -3542,16 +3656,18 @@ void qemu_syscall_helper(uintptr_t syscall_no, uintptr_t syscall_arg0,
                 // new edge?
                 if (!bitmap[i] && virgin_bitmap[i]) {
                     if (s_config.coverage_tracer_filter_lib < 0) {
-                        g_hash_table_add(coverage_log_ht, (gpointer) i);
+                        g_hash_table_add(coverage_log_ht, (gpointer)i);
                     }
                 }
                 // merge
                 bitmap[i] |= virgin_bitmap[i];
             }
 
-            save_coverage_bitmap(s_config.coverage_tracer, bitmap, BRANCH_BITMAP_SIZE);
+            save_coverage_bitmap(s_config.coverage_tracer, bitmap,
+                                 BRANCH_BITMAP_SIZE);
             if (s_config.coverage_tracer_log) {
-                save_coverage_log(s_config.coverage_tracer_log, &coverage_log_ht);
+                save_coverage_log(s_config.coverage_tracer_log,
+                                  &coverage_log_ht);
             }
         }
         return;
@@ -3643,8 +3759,9 @@ void qemu_syscall_helper(uintptr_t syscall_no, uintptr_t syscall_arg0,
             }
             break;
         //
-        case SYS_EXIT:
-            break;
+        case SYS_EXIT: {
+            end_symbolic_mode();
+        } break;
         //
         default:
             tcg_abort();
@@ -4103,15 +4220,16 @@ static void register_helpers(void)
 
 #include "symbolic-i386.c"
 
-static inline void qemu_memmove(uintptr_t src, uintptr_t dst,
-                                uintptr_t size)
+static inline void qemu_memmove(uintptr_t src, uintptr_t dst, uintptr_t size)
 {
     size_t overflow_n_bytes = 0;
     // printf("A overflow_n_bytes: %lu\n", overflow_n_bytes);
-    Expr** src_exprs = get_expr_addr((uintptr_t)src, size, 0, &overflow_n_bytes);
+    Expr** src_exprs =
+        get_expr_addr((uintptr_t)src, size, 0, &overflow_n_bytes);
     if (overflow_n_bytes > 0) {
         if (overflow_n_bytes >= size) {
-            printf("B overflow_n_bytes: %lu size=%lu\n", overflow_n_bytes, size);
+            printf("B overflow_n_bytes: %lu size=%lu\n", overflow_n_bytes,
+                   size);
         }
         assert(overflow_n_bytes < size);
         size -= overflow_n_bytes;
@@ -4119,10 +4237,12 @@ static inline void qemu_memmove(uintptr_t src, uintptr_t dst,
         qemu_memmove(src + size, dst + size, overflow_n_bytes);
     }
     overflow_n_bytes = 0;
-    Expr** dst_exprs = get_expr_addr((uintptr_t)dst, size, 0, &overflow_n_bytes);
+    Expr** dst_exprs =
+        get_expr_addr((uintptr_t)dst, size, 0, &overflow_n_bytes);
     if (overflow_n_bytes > 0) {
         if (overflow_n_bytes >= size) {
-            printf("B overflow_n_bytes: %lu size=%lu\n", overflow_n_bytes, size);
+            printf("B overflow_n_bytes: %lu size=%lu\n", overflow_n_bytes,
+                   size);
         }
         assert(overflow_n_bytes < size);
         size -= overflow_n_bytes;
@@ -4164,7 +4284,8 @@ static inline void clear_mem(uintptr_t addr, uintptr_t size)
     Expr** exprs = get_expr_addr((uintptr_t)addr, size, 0, &overflow_n_bytes);
     if (overflow_n_bytes > 0) {
         if (overflow_n_bytes >= size) {
-            printf("B overflow_n_bytes: %lu size=%lu\n", overflow_n_bytes, size);
+            printf("B overflow_n_bytes: %lu size=%lu\n", overflow_n_bytes,
+                   size);
         }
         assert(overflow_n_bytes < size);
         size -= overflow_n_bytes;
@@ -4181,15 +4302,17 @@ static inline void clear_mem(uintptr_t addr, uintptr_t size)
     }
 }
 
-static void collect_label_targets(TCGContext* tcg_ctx, uintptr_t* targets, size_t size)
+static void collect_label_targets(TCGContext* tcg_ctx, uintptr_t* targets,
+                                  size_t size)
 {
     memset(targets, 0, sizeof(uintptr_t) * size);
 
-    int last_label_id = -1;
+    int    last_label_id = -1;
     TCGOp* op;
-    QTAILQ_FOREACH(op, &tcg_ctx->ops, link) {
+    QTAILQ_FOREACH(op, &tcg_ctx->ops, link)
+    {
         if (op->opc == INDEX_op_set_label) {
-            last_label_id = (int)((TCGLabel*) op->args[0])->id;
+            last_label_id = (int)((TCGLabel*)op->args[0])->id;
             if (last_label_id >= size) {
                 tcg_abort();
             }
@@ -4203,14 +4326,14 @@ static void collect_label_targets(TCGContext* tcg_ctx, uintptr_t* targets, size_
     }
 }
 
-static void get_brcond_targets(TCGOp* op, uintptr_t* j_true,
-                uintptr_t* j_false, uintptr_t* label_targets, size_t size)
+static void get_brcond_targets(TCGOp* op, uintptr_t* j_true, uintptr_t* j_false,
+                               uintptr_t* label_targets, size_t size)
 {
     if (op->opc != INDEX_op_brcond_i64) {
         tcg_abort();
     }
 
-    unsigned target_label_id = (int)((TCGLabel*) op->args[3])->id;
+    unsigned target_label_id = (int)((TCGLabel*)op->args[3])->id;
     if (target_label_id >= size) {
         tcg_abort();
     }
@@ -4423,7 +4546,7 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
         detect_load_loop(tcg_ctx);
     }
 
-    size_t label_targets_size = 16;
+    size_t    label_targets_size = 16;
     uintptr_t label_targets[label_targets_size];
     collect_label_targets(tcg_ctx, label_targets, label_targets_size);
 
@@ -4484,23 +4607,18 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                 memset(&jump_table_finder_curr_instr, 0,
                        sizeof(JumpTableFinder));
 
-                if (instrument == 0 && 
+                if (instrument == 0 &&
                     (s_config.symbolic_exec_start_addr == 0x0 ||
-                        pc == s_config.symbolic_exec_start_addr)) {
+                     pc == s_config.symbolic_exec_start_addr)) {
                     // ToDo: we could start instrumenting when we inject
                     //       for the first time a symbolic data?
                     instrument        = 1;
                     force_flush_cache = 1;
                 } else if (instrument == 1 &&
                            pc == s_config.symbolic_exec_stop_addr) {
-                    instrument          = 0;
-                    next_query[0].query = FINAL_QUERY;
-                    queue_query[0].query = SHM_DONE;
-                    printf("Number of queries: %lu\n",
-                           (next_query - queue_query) - 1);
-                    printf("Number of expressions: %lu\n",
-                           GET_EXPR_IDX(next_free_expr) - 1);
-                    printf("Number of memory slices: %lu\n", slices_count);
+                    instrument = 0;
+                    end_symbolic_mode();
+
 #if 0
                     for (size_t i = 0; i < CONST_MAP_SIZE; i++) {
                         if (const_mem_map[i].used > 0) {
@@ -4743,8 +4861,8 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                         MARK_TEMP_AS_NOT_ALLOCATED(t_env);
 
                         MARK_TEMP_AS_ALLOCATED(t_src);
-                        add_void_call_3(qemu_memmove, t_src, t_dst,
-                                        t_size, op, NULL, tcg_ctx);
+                        add_void_call_3(qemu_memmove, t_src, t_dst, t_size, op,
+                                        NULL, tcg_ctx);
                         MARK_TEMP_AS_NOT_ALLOCATED(t_src);
                         tcg_temp_free_internal(t_dst);
                         tcg_temp_free_internal(t_size);
@@ -4834,8 +4952,8 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                         MARK_TEMP_AS_NOT_ALLOCATED(t_env);
 
                         MARK_TEMP_AS_ALLOCATED(t_dst);
-                        add_void_call_3(qemu_memmove, t_src, t_dst,
-                                        t_size, op, NULL, tcg_ctx);
+                        add_void_call_3(qemu_memmove, t_src, t_dst, t_size, op,
+                                        NULL, tcg_ctx);
                         MARK_TEMP_AS_NOT_ALLOCATED(t_dst);
                         tcg_temp_free_internal(t_src);
                         tcg_temp_free_internal(t_size);
@@ -4877,6 +4995,7 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
 
             case INDEX_op_ld_i64:
             case INDEX_op_ld32s_i64:
+            case INDEX_op_ld32u_i64:
                 mark_temp_as_in_use(arg_temp(op->args[0]));
                 mark_temp_as_in_use(arg_temp(op->args[1]));
                 if (instrument) {
@@ -4884,59 +5003,69 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
 
                     if (is_xmm_offset(offset)) {
 
-                        if (op->opc == INDEX_op_ld_i64
-                                && next_op->opc == INDEX_op_st_i64) {
+                        if (op->opc == INDEX_op_ld_i64 &&
+                            next_op->opc == INDEX_op_st_i64) {
 
                             // move between two xmm registers
 
                             TCGTemp* t_size =
                                 new_non_conflicting_temp(TCG_TYPE_PTR);
-                            tcg_movi(t_size, (uintptr_t)8, 0, op, NULL, tcg_ctx);
+                            tcg_movi(t_size, (uintptr_t)8, 0, op, NULL,
+                                     tcg_ctx);
 
-                            TCGTemp* t_src = new_non_conflicting_temp(TCG_TYPE_PTR);
-                            tcg_movi(t_src, (uintptr_t) op->args[2], 0, op,
-                                    NULL, tcg_ctx);
+                            TCGTemp* t_src =
+                                new_non_conflicting_temp(TCG_TYPE_PTR);
+                            tcg_movi(t_src, (uintptr_t)op->args[2], 0, op, NULL,
+                                     tcg_ctx);
 
-                            TCGTemp* t_dst = new_non_conflicting_temp(TCG_TYPE_PTR);
+                            TCGTemp* t_dst =
+                                new_non_conflicting_temp(TCG_TYPE_PTR);
                             tcg_movi(t_dst, (uintptr_t)next_op->args[2], 0, op,
-                                    NULL, tcg_ctx);
+                                     NULL, tcg_ctx);
 
                             TCGTemp* t_env = arg_temp(next_op->args[1]);
 
                             MARK_TEMP_AS_ALLOCATED(t_env);
-                            tcg_binop(t_src, t_src, t_env, 0, 0, 0, ADD, op, NULL,
-                                    tcg_ctx);
-                            tcg_binop(t_dst, t_dst, t_env, 0, 0, 0, ADD, op, NULL,
-                                    tcg_ctx);
+                            tcg_binop(t_src, t_src, t_env, 0, 0, 0, ADD, op,
+                                      NULL, tcg_ctx);
+                            tcg_binop(t_dst, t_dst, t_env, 0, 0, 0, ADD, op,
+                                      NULL, tcg_ctx);
                             MARK_TEMP_AS_NOT_ALLOCATED(t_env);
 
                             MARK_TEMP_AS_ALLOCATED(t_src);
-                            add_void_call_3(qemu_memmove, t_src, t_dst,
-                                            t_size, op, NULL, tcg_ctx);
+                            add_void_call_3(qemu_memmove, t_src, t_dst, t_size,
+                                            op, NULL, tcg_ctx);
                             MARK_TEMP_AS_NOT_ALLOCATED(t_src);
                             tcg_temp_free_internal(t_dst);
                             tcg_temp_free_internal(t_src);
                             tcg_temp_free_internal(t_size);
 
-                        } else if (op->opc == INDEX_op_ld_i64) {
+                        } else if (op->opc == INDEX_op_ld_i64 ||
+                                   op->opc == INDEX_op_ld32u_i64) {
 
-                            // move from xmm register to general purpose register
+                            // move from xmm register to general purpose
+                            // register
 
                             TCGTemp* t_val = arg_temp(op->args[0]);
                             TCGTemp* t_ptr = arg_temp(op->args[1]);
                             MARK_TEMP_AS_ALLOCATED(t_ptr);
                             TCGTemp* t_mem_op =
                                 new_non_conflicting_temp(TCG_TYPE_PTR);
-                            tcg_movi(t_mem_op, make_mem_op_offset(MO_LEQ, offset),
-                                    0, op, NULL, tcg_ctx);
+
+                            uint32_t mem_op_kind =
+                                op->opc == INDEX_op_ld_i64 ? MO_LEQ : MO_LEUL;
+
+                            tcg_movi(t_mem_op,
+                                     make_mem_op_offset(mem_op_kind, offset), 0,
+                                     op, NULL, tcg_ctx);
                             TCGTemp* t_ptr_idx =
                                 new_non_conflicting_temp(TCG_TYPE_PTR);
-                            tcg_movi(t_ptr_idx, (uintptr_t)0, 0, op,
-                                    NULL, tcg_ctx);
+                            tcg_movi(t_ptr_idx, (uintptr_t)0, 0, op, NULL,
+                                     tcg_ctx);
                             TCGTemp* t_val_idx =
                                 new_non_conflicting_temp(TCG_TYPE_PTR);
-                            tcg_movi(t_val_idx, (uintptr_t)temp_idx(t_val), 0, op,
-                                    NULL, tcg_ctx);
+                            tcg_movi(t_val_idx, (uintptr_t)temp_idx(t_val), 0,
+                                     op, NULL, tcg_ctx);
                             add_void_call_4(qemu_load_helper, t_ptr, t_mem_op,
                                             t_ptr_idx, t_val_idx, op, NULL,
                                             tcg_ctx);
@@ -4946,10 +5075,12 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                             tcg_temp_free_internal(t_val_idx);
 
                         } else if (op->opc == INDEX_op_ld32s_i64) {
-                            printf("load from xmm data (offset=%lu) at %lx\n", offset, pc);
+                            printf("load from xmm data (offset=%lu) at %lx\n",
+                                   offset, pc);
                             tcg_abort();
                         } else if (next_op->opc != INDEX_op_qemu_st_i64) {
-                            printf("load from xmm data (offset=%lu) at %lx\n", offset, pc);
+                            printf("load from xmm data (offset=%lu) at %lx\n",
+                                   offset, pc);
                             tcg_abort();
                         }
                     }
@@ -5034,24 +5165,27 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                         }
 #endif
                     } else if (is_xmm_offset(offset)) {
-                        if (prev_op->opc != INDEX_op_qemu_ld_i64
-                                && prev_op->opc != INDEX_op_ld_i64) {
+                        if (prev_op->opc != INDEX_op_qemu_ld_i64 &&
+                            prev_op->opc != INDEX_op_ld_i64) {
 
                             TCGTemp* t_value = arg_temp(op->args[0]);
                             if (temp_static_state[temp_idx(t_value)].is_alive &&
-                                    temp_static_state[temp_idx(t_value)].is_const) {
+                                temp_static_state[temp_idx(t_value)].is_const) {
                                 // clear the xmm reg
-                                uintptr_t size = op->opc == INDEX_op_st_i64 ? 8 : 4;
+                                uintptr_t size =
+                                    op->opc == INDEX_op_st_i64 ? 8 : 4;
                                 TCGTemp* t_size =
                                     new_non_conflicting_temp(TCG_TYPE_PTR);
                                 tcg_movi(t_size, size, 0, op, NULL, tcg_ctx);
                                 MARK_TEMP_AS_ALLOCATED(t_value);
-                                add_void_call_2(clear_mem, t_value, t_size,
-                                        op, NULL, tcg_ctx);
+                                add_void_call_2(clear_mem, t_value, t_size, op,
+                                                NULL, tcg_ctx);
                                 MARK_TEMP_AS_NOT_ALLOCATED(t_value);
                                 tcg_temp_free_internal(t_size);
                             } else {
-                                printf("store to xmm data (offset=%lu) at %lx\n", offset, pc);
+                                printf(
+                                    "store to xmm data (offset=%lu) at %lx\n",
+                                    offset, pc);
                                 tcg_abort();
                             }
                         }
@@ -5136,9 +5270,9 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                     TCGCond  cond = op->args[2];
 
                     uintptr_t address_false = 0;
-                    uintptr_t address_true = 0;
+                    uintptr_t address_true  = 0;
                     get_brcond_targets(op, &address_true, &address_false,
-                                        label_targets, label_targets_size);
+                                       label_targets, label_targets_size);
 #if 0
                     branch(t_a, t_b, cond, op, tcg_ctx);
 #else
@@ -5159,7 +5293,8 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
 #elif BRANCH_COVERAGE == AFL
                     tcg_movi(t_pc, (uintptr_t)tb_pc, 0, op, NULL, tcg_ctx);
 #elif BRANCH_COVERAGE == FUZZOLIC
-                    tcg_movi(t_pc, (uintptr_t)address_false, 0, op, NULL, tcg_ctx);
+                    tcg_movi(t_pc, (uintptr_t)address_false, 0, op, NULL,
+                             tcg_ctx);
 #endif
                     TCGTemp* t_addr_to = new_non_conflicting_temp(TCG_TYPE_PTR);
                     tcg_movi(t_addr_to, (uintptr_t)address_true, 0, op, NULL,
@@ -5436,7 +5571,8 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                         MARK_TEMP_AS_NOT_ALLOCATED(t_0);
                         tcg_temp_free_internal(t_packed_idx);
 
-                    } else if (strcmp(helper_name, "pxor_xmm") == 0 ||
+                    } else if (strcmp(helper_name, "pand_xmm") == 0 ||
+                               strcmp(helper_name, "pxor_xmm") == 0 ||
                                strcmp(helper_name, "por_xmm") == 0 ||
                                strcmp(helper_name, "paddb_xmm") == 0 ||
                                strcmp(helper_name, "paddw_xmm") == 0 ||
@@ -5454,7 +5590,8 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                                strcmp(helper_name, "pcmpgtw_xmm") == 0 ||
                                strcmp(helper_name, "pcmpgtl_xmm") == 0 ||
                                strcmp(helper_name, "pcmpgtq_xmm") == 0 ||
-                               strcmp(helper_name, "pminub_xmm") == 0) {
+                               strcmp(helper_name, "pminub_xmm") == 0 ||
+                               strcmp(helper_name, "pmaxub_xmm") == 0) {
 
                         OPKIND    opkind;
                         uintptr_t slice;
@@ -5467,10 +5604,16 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                                 opkind = OR;
                                 slice  = 1;
                                 break;
-                            case 'a':
-                                opkind = SUB;
-                                slice  = suffix_to_slice(helper_name[4], 0);
+                            case 'a': {
+                                if (helper_name[2] == 'n') {
+                                    opkind = AND;
+                                    slice  = 1;
+                                } else {
+                                    opkind = ADD;
+                                    slice  = suffix_to_slice(helper_name[4], 0);
+                                }
                                 break;
+                            }
                             case 's':
                                 opkind = SUB;
                                 slice  = suffix_to_slice(helper_name[4], 0);
@@ -5486,10 +5629,16 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                                 }
                                 slice = suffix_to_slice(helper_name[6], 0);
                                 break;
-                            case 'm':
-                                opkind = MIN;
-                                slice  = suffix_to_slice(helper_name[5], 0);
+                            case 'm': {
+                                if (helper_name[2] == 'i') {
+                                    opkind = MIN;
+                                    slice  = suffix_to_slice(helper_name[5], 0);
+                                } else {
+                                    opkind = MAX;
+                                    slice  = suffix_to_slice(helper_name[5], 0);
+                                }
                                 break;
+                            }
                             default:
                                 tcg_abort();
                         }
@@ -5577,19 +5726,32 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                         tcg_temp_free_internal(t_opkind);
                         tcg_temp_free_internal(t_slice);
 
-                    } else if (strcmp(helper_name, "pshufd_xmm") == 0) {
+                    } else if (strcmp(helper_name, "pshufd_xmm") == 0 ||
+                               strcmp(helper_name, "pshuflw_xmm") == 0) {
 
                         TCGTemp* t_dst_addr = arg_temp(op->args[0]);
                         TCGTemp* t_src_addr = arg_temp(op->args[1]);
                         TCGTemp* t_order =
                             arg_temp(op->args[2]); // this is an immediate
 
+                        uint8_t size;
+                        if (helper_name[5] == 'd') {
+                            size = 4;
+                        } else { // pshuflw
+                            size = 2;
+                        }
+
+                        TCGTemp* t_size =
+                            new_non_conflicting_temp(TCG_TYPE_PTR);
+                        tcg_movi(t_size, (uintptr_t)size, 0, op, NULL, tcg_ctx);
+
                         MARK_TEMP_AS_ALLOCATED(t_dst_addr);
                         MARK_TEMP_AS_ALLOCATED(t_src_addr);
-                        add_void_call_3(qemu_xmm_pshufd, t_dst_addr, t_src_addr,
-                                        t_order, op, NULL, tcg_ctx);
+                        add_void_call_4(qemu_xmm_pshuf, t_dst_addr, t_src_addr,
+                                        t_order, t_size, op, NULL, tcg_ctx);
                         MARK_TEMP_AS_NOT_ALLOCATED(t_dst_addr);
                         MARK_TEMP_AS_NOT_ALLOCATED(t_src_addr);
+                        tcg_temp_free_internal(t_size);
 
                     } else if (strcmp(helper_name, "movl_mm_T0_xmm") == 0) {
 
@@ -5664,6 +5826,137 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                         MARK_TEMP_AS_NOT_ALLOCATED(t_src_addr);
                         tcg_temp_free_internal(t_slice);
                         tcg_temp_free_internal(t_lowbytes);
+
+                    } else if (strcmp(helper_name, "fxsave") == 0) {
+
+                        TCGTemp* t_env = arg_temp(op->args[0]);
+                        TCGTemp* t_ptr = arg_temp(op->args[1]);
+
+                        MARK_TEMP_AS_ALLOCATED(t_env);
+                        MARK_TEMP_AS_ALLOCATED(t_ptr);
+                        add_void_call_2(qemu_fxsave, t_env, t_ptr, op, NULL,
+                                        tcg_ctx);
+
+                        MARK_TEMP_AS_NOT_ALLOCATED(t_env);
+                        MARK_TEMP_AS_NOT_ALLOCATED(t_ptr);
+
+                    } else if (strcmp(helper_name, "punpcklbw_xmm") == 0 ||
+                               strcmp(helper_name, "punpcklwd_xmm") == 0 ||
+                               strcmp(helper_name, "punpckldq_xmm") == 0 ||
+                               strcmp(helper_name, "punpcklqdq_xmm") == 0 ||
+                               strcmp(helper_name, "punpckhbw_xmm") == 0 ||
+                               strcmp(helper_name, "punpckhwd_xmm") == 0 ||
+                               strcmp(helper_name, "punpckhdq_xmm") == 0 ||
+                               strcmp(helper_name, "punpckhqdq_xmm") == 0) {
+
+                        TCGTemp* t_dst_addr = arg_temp(op->args[0]);
+                        TCGTemp* t_src_addr = arg_temp(op->args[1]);
+
+                        uint8_t slice;
+                        switch (helper_name[7]) {
+                            case 'b':
+                                slice = 1;
+                                break;
+                            case 'w':
+                                slice = 2;
+                                break;
+                            case 'd':
+                                slice = 4;
+                                break;
+                            case 'q':
+                                slice = 8;
+                                break;
+                            default:
+                                tcg_abort();
+                        }
+
+                        uint8_t lowbytes;
+                        if (helper_name[6] == 'l') {
+                            lowbytes = 1;
+                        } else if (helper_name[6] == 'h') {
+                            lowbytes = 0;
+                        } else {
+                            tcg_abort();
+                        }
+
+                        TCGTemp* t_slice =
+                            new_non_conflicting_temp(TCG_TYPE_PTR);
+                        tcg_movi(t_slice, (uintptr_t)slice, 0, op, NULL,
+                                 tcg_ctx);
+
+                        TCGTemp* t_lowbytes =
+                            new_non_conflicting_temp(TCG_TYPE_PTR);
+                        tcg_movi(t_lowbytes, lowbytes, 0, op, NULL, tcg_ctx);
+
+                        MARK_TEMP_AS_ALLOCATED(t_dst_addr);
+                        MARK_TEMP_AS_ALLOCATED(t_src_addr);
+                        add_void_call_4(qemu_xmm_punpck, t_dst_addr, t_src_addr,
+                                        t_slice, t_lowbytes, op, NULL, tcg_ctx);
+                        MARK_TEMP_AS_NOT_ALLOCATED(t_dst_addr);
+                        MARK_TEMP_AS_NOT_ALLOCATED(t_src_addr);
+                        tcg_temp_free_internal(t_slice);
+                        tcg_temp_free_internal(t_lowbytes);
+
+                    } else if (strcmp(helper_name, "packuswb_xmm") == 0) {
+
+                        TCGTemp* t_dst_addr = arg_temp(op->args[0]);
+                        TCGTemp* t_src_addr = arg_temp(op->args[1]);
+
+                        uint8_t sign;
+                        if (helper_name[4] == 'u') {
+                            sign = 0;
+                        } else if (helper_name[4] == 's') {
+                            sign = 1;
+                        } else {
+                            tcg_abort();
+                        }
+
+                        uint8_t unpacked_size;
+                        switch (helper_name[6]) {
+                            case 'w':
+                                unpacked_size = 2;
+                                break;
+                            case 'd':
+                                unpacked_size = 4;
+                                break;
+                            case 'q':
+                                unpacked_size = 8;
+                                break;
+                            default:
+                                tcg_abort();
+                        }
+
+                        uint8_t packed_size;
+                        switch (helper_name[7]) {
+                            case 'b':
+                                packed_size = 2;
+                                break;
+                            case 'w':
+                                packed_size = 2;
+                                break;
+                            case 'd':
+                                packed_size = 4;
+                                break;
+                            default:
+                                tcg_abort();
+                        }
+
+                        uint64_t v = 0;
+                        v          = PACK_0(v, unpacked_size);
+                        v          = PACK_1(v, packed_size);
+                        v          = PACK_2(v, sign);
+
+                        TCGTemp* t_packed_info =
+                            new_non_conflicting_temp(TCG_TYPE_PTR);
+                        tcg_movi(t_packed_info, v, 0, op, NULL, tcg_ctx);
+
+                        MARK_TEMP_AS_ALLOCATED(t_dst_addr);
+                        MARK_TEMP_AS_ALLOCATED(t_src_addr);
+                        add_void_call_3(qemu_xmm_pack, t_dst_addr, t_src_addr,
+                                        t_packed_info, op, NULL, tcg_ctx);
+                        MARK_TEMP_AS_NOT_ALLOCATED(t_dst_addr);
+                        MARK_TEMP_AS_NOT_ALLOCATED(t_src_addr);
+                        tcg_temp_free_internal(t_packed_info);
 
                     } else if (strcmp(helper_name, "fxsave") == 0) {
 
@@ -5773,16 +6066,17 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
 #elif BRANCH_COVERAGE == AFL
                     tcg_movi(t_pc, (uintptr_t)tb_pc, 0, op, NULL, tcg_ctx);
 #elif BRANCH_COVERAGE == FUZZOLIC
-                    tcg_movi(t_pc, (uintptr_t) pc + 1, 0, op, NULL, tcg_ctx);
+                    tcg_movi(t_pc, (uintptr_t)pc + 1, 0, op, NULL, tcg_ctx);
 #endif
                     TCGTemp* t_addr_to = new_non_conflicting_temp(TCG_TYPE_PTR);
-                    tcg_movi(t_addr_to, (uintptr_t) pc + 2, 0, op, NULL,
+                    tcg_movi(t_addr_to, (uintptr_t)pc + 2, 0, op, NULL,
                              tcg_ctx);
 
                     MARK_TEMP_AS_ALLOCATED(t_a);
                     MARK_TEMP_AS_ALLOCATED(t_b);
                     add_void_call_6(branch_helper, t_a, t_b, t_cond,
-                                    t_packed_idx, t_pc, t_addr_to, op, NULL, tcg_ctx);
+                                    t_packed_idx, t_pc, t_addr_to, op, NULL,
+                                    tcg_ctx);
                     MARK_TEMP_AS_NOT_ALLOCATED(t_a);
                     MARK_TEMP_AS_NOT_ALLOCATED(t_b);
                     tcg_temp_free_internal(t_cond);
@@ -5798,13 +6092,20 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
 
             case INDEX_op_neg_i64:
             case INDEX_op_not_i64:
+            case INDEX_op_bswap32_i64:
+            case INDEX_op_bswap64_i64:
                 mark_temp_as_in_use(arg_temp(op->args[0]));
                 mark_temp_as_in_use(arg_temp(op->args[1]));
                 if (instrument) {
                     TCGTemp* t_out = arg_temp(op->args[0]);
                     TCGTemp* t_a   = arg_temp(op->args[1]);
+
+                    TCGTemp* t_size = new_non_conflicting_temp(TCG_TYPE_PTR);
+                    tcg_movi(t_size,
+                             (uintptr_t)op->opc == INDEX_op_bswap32_i64 ? 4 : 0,
+                             0, op, NULL, tcg_ctx);
 #if 0
-                    qemu_unop(get_opkind(op->opc), t_out, t_a, op, tcg_ctx);
+                    qemu_unop(get_opkind(op->opc), t_out, t_a, t_size, op, tcg_ctx);
 #else
                     TCGTemp* t_opkind = new_non_conflicting_temp(TCG_TYPE_PTR);
                     tcg_movi(t_opkind, (uintptr_t)get_opkind(op->opc), 0, op,
@@ -5816,13 +6117,14 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                     tcg_movi(t_a_idx, (uintptr_t)temp_idx(t_a), 0, op, NULL,
                              tcg_ctx);
                     MARK_TEMP_AS_ALLOCATED(t_a);
-                    add_void_call_4(qemu_unop_helper, t_opkind, t_out_idx,
-                                    t_a_idx, t_a, op, NULL, tcg_ctx);
+                    add_void_call_5(qemu_unop_helper, t_opkind, t_out_idx,
+                                    t_a_idx, t_a, t_size, op, NULL, tcg_ctx);
                     MARK_TEMP_AS_NOT_ALLOCATED(t_a);
                     tcg_temp_free_internal(t_opkind);
                     tcg_temp_free_internal(t_out_idx);
                     tcg_temp_free_internal(t_a_idx);
 #endif
+                    tcg_temp_free_internal(t_size);
                 }
                 break;
 

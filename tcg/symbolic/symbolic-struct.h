@@ -24,10 +24,10 @@
 #define SHM_DONE            ((void*)0xABCDABCD)
 #define MEM_BARRIER()       asm volatile("" ::: "memory")
 
-#define PACK_0(p, v) (p | (v & 0xFFFF))
-#define PACK_1(p, v) (p | ((v & 0xFFFF) << 16))
-#define PACK_2(p, v) (p | ((v & 0xFFFF) << 32))
-#define PACK_3(p, v) (p | ((v & 0xFFFF) << 48))
+#define PACK_0(p, v) (p | (((uint64_t) v) & 0xFFFF))
+#define PACK_1(p, v) (p | ((((uint64_t) v) & 0xFFFF) << 16))
+#define PACK_2(p, v) (p | ((((uint64_t) v) & 0xFFFF) << 32))
+#define PACK_3(p, v) (p | ((((uint64_t) v) & 0xFFFF) << 48))
 
 #define UNPACK_0(p) (p & 0xFFFF)
 #define UNPACK_1(p) ((p >> 16) & 0xFFFF)
@@ -99,23 +99,27 @@ typedef enum OPKIND {
     //
     CTZ, // count trailing zeros (x86: BSF, TZCNT)
     CLZ, // count leading zeros (x86: BSR)
+    BSWAP,
     RCL,
     //
-    ITE, // 43
+    ITE, // 44
     ITE_EQ_ZERO,
     ITE_NE_ZERO,
     OR_3,
     XOR_3,
     // XMM
-    PMOVMSKB, // 48
+    PMOVMSKB, // 49
     CMP_EQ,
     CMP_GT,
     CMP_GE,
     CMP_LE,
     CMP_LT,
     MIN,
+    MAX,
+    SIGNED_SATURATION,
+    UNSIGNED_SATURATION,
     // double binop
-    MUL_HIGH, // 57
+    MUL_HIGH, // 61
     MULU_HIGH,
     //
     EFLAGS_ALL_ADD,
