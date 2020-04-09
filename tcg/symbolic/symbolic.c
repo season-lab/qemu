@@ -4372,6 +4372,78 @@ static inline void clear_mem(uintptr_t addr, uintptr_t size)
     }
 }
 
+static inline void concretize_mem(uintptr_t addr, uintptr_t size)
+{
+    size_t overflow_n_bytes = 0;
+    // printf("A overflow_n_bytes: %lu\n", overflow_n_bytes);
+    Expr** exprs = get_expr_addr((uintptr_t)addr, size, 0, &overflow_n_bytes);
+    if (overflow_n_bytes > 0) {
+        if (overflow_n_bytes >= size) {
+            printf("B overflow_n_bytes: %lu size=%lu\n", overflow_n_bytes,
+                   size);
+        }
+        assert(overflow_n_bytes < size);
+        size -= overflow_n_bytes;
+        assert(size);
+        concretize_mem(addr + size, overflow_n_bytes);
+    }
+
+    if (exprs == NULL) {
+        return;
+    }
+
+    Expr* bytes_expr = NULL;
+    uintptr_t bytes_value = 0;
+    size_t bytes_count = 0;
+    for (size_t i = 0; i < size; i++) {
+        if (exprs[i]) {
+            if (bytes_expr == NULL) {
+                bytes_expr = exprs[i];
+                bytes_value = *(((uint8_t*) addr) + i);
+                bytes_count += 1;
+            } else {
+
+                Expr* e_byte   = new_expr();
+                e_byte->opkind = CONCAT;
+                e_byte->op1    = exprs[i];
+                e_byte->op2    = bytes_expr;
+
+                bytes_expr = e_byte;
+
+                bytes_value |= *(((uint8_t*) addr) + i) << (bytes_count * 8);
+                bytes_count += 1;
+
+                if (bytes_count == sizeof(uintptr_t)) {
+                    Expr* e   = new_expr();
+                    e->opkind = MEMORY_CONCRETIZATION;
+                    e->op1    = bytes_expr;
+                    SET_EXPR_CONST_OP(e->op2, e->op2_is_const, bytes_value);
+                    //
+                    next_query[0].query   = e;
+                    next_query[0].address = 0;
+                    next_query++;
+                    //
+                    bytes_expr = NULL;
+                    bytes_value = 0;
+                    bytes_count = 0;
+                }
+            }
+        }
+        exprs[i] = NULL;
+    }
+
+    if (bytes_count > 0) {
+        Expr* e   = new_expr();
+        e->opkind = MEMORY_CONCRETIZATION;
+        e->op1    = bytes_expr;
+        SET_EXPR_CONST_OP(e->op2, e->op2_is_const, bytes_value);
+        //
+        next_query[0].query   = e;
+        next_query[0].address = 0;
+        next_query++;
+    }
+}
+
 static void collect_label_targets(TCGContext* tcg_ctx, uintptr_t* targets,
                                   size_t size)
 {
@@ -4997,6 +5069,7 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                 }
                 break;
 
+            case INDEX_op_qemu_st_i32: // ToDo: check this
             case INDEX_op_qemu_st_i64:
                 mark_temp_as_in_use(arg_temp(op->args[0]));
                 mark_temp_as_in_use(arg_temp(op->args[1]));
@@ -6077,6 +6150,85 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                         //  QSYM sets RBX to 0x46414b45 to prevent
                         //  that glibc uses optimized libraries
                         //  Should we do the same?
+
+                    } else if (strcmp(helper_name, "cvtsq2sd") == 0
+                                || strcmp(helper_name, "cvtsq2ss") == 0) {
+
+                        // we do not yet support floating polling_time
+
+                        TCGTemp* t_dst = arg_temp(op->args[1]);
+
+                        // ToDo: should we concretize also the src?
+                        //       if we do not concretize then we may
+                        //       get some false positives.
+
+                        TCGTemp* t_size =
+                            new_non_conflicting_temp(TCG_TYPE_PTR);
+                        tcg_movi(t_size, XMM_BYTES, 0, op, NULL, tcg_ctx);
+
+                        MARK_TEMP_AS_ALLOCATED(t_dst);
+                        add_void_call_2(clear_mem, t_dst, t_size, op, NULL,
+                                        tcg_ctx);
+                        MARK_TEMP_AS_NOT_ALLOCATED(t_dst);
+                        tcg_temp_free_internal(t_size);
+
+                    } else if (strcmp(helper_name, "divsd") == 0
+                                || strcmp(helper_name, "divss") == 0
+                                || strcmp(helper_name, "subss") == 0
+                                || strcmp(helper_name, "cvtss2sd") == 0
+                                || strcmp(helper_name, "comisd") == 0 
+                                || strcmp(helper_name, "ucomiss") == 0
+                                || strcmp(helper_name, "comiss") == 0
+                                || strcmp(helper_name, "ucomisd") == 0
+                                || strcmp(helper_name, "cvtsd2ss") == 0) {
+
+                        // we do not yet support floating polling_time
+                        // concretize src and dst
+
+                        TCGTemp* t_dst = arg_temp(op->args[1]);
+                        TCGTemp* t_src = arg_temp(op->args[2]);
+
+                        TCGTemp* t_size =
+                            new_non_conflicting_temp(TCG_TYPE_PTR);
+                        tcg_movi(t_size, XMM_BYTES, 0, op, NULL, tcg_ctx);
+
+                        MARK_TEMP_AS_ALLOCATED(t_dst);
+                        add_void_call_2(concretize_mem, t_dst, t_size, op, NULL,
+                                        tcg_ctx);
+                        MARK_TEMP_AS_NOT_ALLOCATED(t_dst);
+
+                        MARK_TEMP_AS_ALLOCATED(t_src);
+                        add_void_call_2(concretize_mem, t_src, t_size, op, NULL,
+                                        tcg_ctx);
+                        MARK_TEMP_AS_NOT_ALLOCATED(t_src);
+
+                        tcg_temp_free_internal(t_size);
+
+                    } else if (strcmp(helper_name, "movmskpd") == 0) {
+
+                        // we do not yet support floating polling_time
+
+                        TCGTemp* t_reg = arg_temp(op->args[0]);
+                        TCGTemp* t_src = arg_temp(op->args[2]);
+
+                        TCGTemp* t_size =
+                            new_non_conflicting_temp(TCG_TYPE_PTR);
+                        tcg_movi(t_size, XMM_BYTES, 0, op, NULL, tcg_ctx);
+
+                        MARK_TEMP_AS_ALLOCATED(t_src);
+                        add_void_call_2(clear_mem, t_src, t_size, op, NULL,
+                                        tcg_ctx);
+                        MARK_TEMP_AS_NOT_ALLOCATED(t_src);
+                        tcg_temp_free_internal(t_size);
+
+                        clear_temp(temp_idx(t_reg), op, tcg_ctx);
+
+                    } else if (strcmp(helper_name, "fnstcw") == 0) {
+
+                        // we do not yet support floating polling_time
+
+                        TCGTemp* t_reg = arg_temp(op->args[0]);
+                        clear_temp(temp_idx(t_reg), op, tcg_ctx);
 
                     } else {
 
