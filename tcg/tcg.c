@@ -2339,7 +2339,7 @@ TCGOp *tcg_op_alloc(TCGOpcode opc)
 #ifdef TCG_INSTRUMENTATION
     // the last argument is used by the symbolic
     // instrumentation as a marker. Init to zero
-    // to avoid false positive on non-instrumentation
+    // to avoid false positives on non-instrumentation
     // instructions
     op->args[MAX_OPC_PARAM - 1] = 0;
 #endif
@@ -3127,6 +3127,11 @@ static void temp_free_or_dead(TCGContext *s, TCGTemp *ts, int free_or_dead)
                     || ts->temp_local
                     || ts->temp_global
                     ? TEMP_VAL_MEM : TEMP_VAL_DEAD);
+#ifdef TCG_INSTRUMENTATION
+    if (is_instrumentation(symb_current_gen_op) && ts->val_type == TEMP_VAL_DEAD) {
+        conditional_temp_syncs[temp_idx(ts)].ts = NULL;
+    }
+#endif
 }
 
 /* Mark a temporary as dead.  */
@@ -3164,6 +3169,30 @@ static void temp_sync(TCGContext *s, TCGTemp *ts, TCGRegSet allocated_regs,
             /* fallthrough */
 
         case TEMP_VAL_REG:
+
+#ifdef TCG_INSTRUMENTATION
+            // Instrumentation code may conditionally
+            // lead to spill of temps. We keep track
+            // of these events and bring back them
+            // into their regs before ending
+            // the conditional code
+            if (is_instrumentation(symb_current_gen_op) && !symb_restore_pass) {
+                unsigned label_id = get_conditional_instrumentation_label(symb_current_gen_op);
+#if 0
+                printf("Saving temp ");
+                if (ts->temp_global) {
+                    printf("%s", ts->name);
+                } else {
+                    printf("%lu", temp_idx(ts) - s->nb_globals);
+                }
+                printf(" in reg %u for label %u\n", ts->reg, label_id);
+#endif
+                assert(conditional_temp_syncs[temp_idx(ts)].ts == NULL);
+                conditional_temp_syncs[temp_idx(ts)].ts = ts;
+                conditional_temp_syncs[temp_idx(ts)].reg = ts->reg;
+                conditional_temp_syncs[temp_idx(ts)].label_id = label_id;
+            }
+#endif
             tcg_out_st(s, ts->type, ts->reg,
                        ts->mem_base->reg, ts->mem_offset);
             break;
@@ -3411,13 +3440,22 @@ static void tcg_reg_alloc_mov(TCGContext *s, const TCGOp *op)
     itype = ts->type;
 
     if (ts->val_type == TEMP_VAL_CONST) {
-        /* propagate constant or generate sti */
-        tcg_target_ulong val = ts->val;
-        if (IS_DEAD_ARG(1)) {
-            temp_dead(s, ts);
+#ifdef TCG_INSTRUMENTATION
+            if(!is_instrumentation(op)) {
+#endif
+            /* propagate constant or generate sti */
+            tcg_target_ulong val = ts->val;
+            if (IS_DEAD_ARG(1)) {
+                temp_dead(s, ts);
+            }
+            tcg_reg_alloc_do_movi(s, ots, val, arg_life, preferred_regs);
+            return;
+#ifdef TCG_INSTRUMENTATION
+        } else {
+            temp_load(s, ts, tcg_target_available_regs[itype],
+                  allocated_regs, preferred_regs);
         }
-        tcg_reg_alloc_do_movi(s, ots, val, arg_life, preferred_regs);
-        return;
+#endif
     }
 
     /* If the source value is in memory we're going to be forced
@@ -3433,7 +3471,12 @@ static void tcg_reg_alloc_mov(TCGContext *s, const TCGOp *op)
     if (IS_DEAD_ARG(0)) {
         /* mov to a non-saved dead register makes no sense (even with
            liveness analysis disabled). */
+#ifndef TCG_INSTRUMENTATION
+        // we use this case to force load a temp
+        // that could be used by some conditional
+        // instrumentation code
         tcg_debug_assert(NEED_SYNC_ARG(0));
+#endif
         if (!ots->mem_allocated) {
             temp_allocate_frame(s, ots);
         }
@@ -3443,7 +3486,11 @@ static void tcg_reg_alloc_mov(TCGContext *s, const TCGOp *op)
         }
         temp_dead(s, ots);
     } else {
-        if (IS_DEAD_ARG(1) && !ts->fixed_reg) {
+        if (IS_DEAD_ARG(1) && !ts->fixed_reg
+#ifdef TCG_INSTRUMENTATION
+             && !is_instrumentation(op)
+#endif
+                ) {
             /* the mov can be suppressed */
             if (ots->val_type == TEMP_VAL_REG) {
                 s->reg_to_temp[ots->reg] = NULL;
@@ -3475,6 +3522,11 @@ static void tcg_reg_alloc_mov(TCGContext *s, const TCGOp *op)
                 temp_free_or_dead(s, ots, -1);
                 return;
             }
+#ifdef TCG_INSTRUMENTATION
+            if (is_instrumentation(op) && IS_DEAD_ARG(1) && !ts->fixed_reg) {
+                temp_dead(s, ts);
+            }
+#endif
         }
         ots->val_type = TEMP_VAL_REG;
         ots->mem_coherent = 0;
@@ -4239,6 +4291,7 @@ int tcg_gen_code(TCGContext *s, TranslationBlock *tb)
     atomic_set(&prof->la_time, prof->la_time + profile_getclock());
 #endif
 
+#if 0
 #ifdef DEBUG_DISAS 
     if (unlikely(qemu_loglevel_mask(CPU_LOG_TB_OP_OPT)
                  && qemu_log_in_addr_range(tb->pc))) {
@@ -4249,6 +4302,7 @@ int tcg_gen_code(TCGContext *s, TranslationBlock *tb)
         qemu_log_unlock();
     }
 #endif
+#endif
 
 #ifdef TCG_INSTRUMENTATION
     if (symbolic_mode) {
@@ -4256,7 +4310,7 @@ int tcg_gen_code(TCGContext *s, TranslationBlock *tb)
     }
 #endif
 
-#if 0
+#if 1
 #ifdef DEBUG_DISAS
     if (unlikely(qemu_loglevel_mask(CPU_LOG_TB_OP_OPT)
                  && qemu_log_in_addr_range(tb->pc))) {
@@ -4281,8 +4335,19 @@ int tcg_gen_code(TCGContext *s, TranslationBlock *tb)
     s->pool_labels = NULL;
 #endif
 
+#ifdef TCG_INSTRUMENTATION
+    for (size_t i = 0; i < TCG_MAX_TEMPS; i++) {
+        conditional_temp_syncs[i].ts = NULL;
+    }
+#endif
+
     num_insns = -1;
     QTAILQ_FOREACH(op, &s->ops, link) {
+
+#ifdef TCG_INSTRUMENTATION
+        symb_current_gen_op = op;
+#endif
+
         TCGOpcode opc = op->opc;
 
 #ifdef CONFIG_PROFILER
@@ -4325,6 +4390,65 @@ int tcg_gen_code(TCGContext *s, TranslationBlock *tb)
             temp_dead(s, arg_temp(op->args[0]));
             break;
         case INDEX_op_set_label:
+#ifdef TCG_INSTRUMENTATION
+            // we must restore any temp that was
+            // spilled due to conditional
+            // instrumentation
+            {
+                unsigned label_id = arg_label(op->args[0])->id;
+                symb_restore_pass = 1;
+                // first pass: any temp that should be restored
+                // but it is currently in another reg different
+                // from the expected one must be synced to memory
+                // this is needed for two reasons:
+                //  (1) allow restore in the correct reg
+                //  (2) allow other temps to be restored in the reg
+                for (size_t i = 0; i < TCG_MAX_TEMPS; i++) {
+                    ConditionalTempSync* cts = &conditional_temp_syncs[i];
+                    if (cts->ts != NULL && label_id == cts->label_id) {
+                        if (cts->ts->val_type == TEMP_VAL_REG) {
+#if 0
+                            printf("Dumping for restore pass temp ");
+                            if (cts->ts->temp_global) {
+                                printf("%s", cts->ts->name);
+                            } else {
+                                printf("%lu", temp_idx(cts->ts) - s->nb_globals);
+                            }
+                            printf(" at reg %u for label %u\n", cts->reg, label_id);
+#endif
+                            tcg_reg_free(s, cts->ts->reg, s->reserved_regs);
+                        }
+                    }
+                }
+                // second pass: try to restore
+                int failure = 0;
+                for (size_t i = 0; i < TCG_MAX_TEMPS; i++) {
+                    if (conditional_temp_syncs[i].ts != NULL &&
+                            label_id == conditional_temp_syncs[i].label_id) {
+#if 0
+                        printf("Restoring temp ");
+                        if (conditional_temp_syncs[i].ts->temp_global) {
+                            printf("%s", conditional_temp_syncs[i].ts->name);
+                        } else {
+                            printf("%lu", temp_idx(conditional_temp_syncs[i].ts) - s->nb_globals);
+                        }
+                        printf(" at reg %u for label %u\n", conditional_temp_syncs[i].reg, label_id);
+#endif
+                        if (!failure) {
+                            failure = load_temp_to_reg(s,
+                                            conditional_temp_syncs[i].ts,
+                                            conditional_temp_syncs[i].reg,
+                                            s->reserved_regs);
+                        }
+                        conditional_temp_syncs[i].ts = NULL;
+                    }
+                }
+                if (failure) {
+                    tcg_abort();
+                }
+                symb_restore_pass = 0;
+            }
+#endif
             tcg_reg_alloc_bb_end(s, s->reserved_regs);
             tcg_out_label(s, arg_label(op->args[0]), s->code_ptr);
             break;

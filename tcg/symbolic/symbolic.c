@@ -24,6 +24,10 @@ extern TCGOp* tcg_op_insert_before_op(TCGContext* s, TCGOp* op, TCGOp* new_op);
 
 uintptr_t symbolic_pc;
 
+TCGOp* symb_current_gen_op = NULL;
+int symb_restore_pass = 0;
+ConditionalTempSync conditional_temp_syncs[TCG_MAX_TEMPS] = {0};
+
 // symbolic temps
 Expr* s_temps[TCG_MAX_TEMPS] = {0};
 
@@ -470,7 +474,7 @@ static inline TCGTemp* new_non_conflicting_temp(TCGType type)
 static inline void mark_insn_as_instrumentation(TCGOp* op)
 {
     // we use the last op arg, which is usually unused
-    op->args[MAX_OPC_PARAM - 1] = (uint64_t)1;
+    // op->args[MAX_OPC_PARAM - 1] = (uint64_t)1;
 }
 
 static inline TCGMemOp get_mem_op(uint64_t oi)
@@ -1187,42 +1191,63 @@ void print_temp(size_t idx)
     }
 }
 
-static inline void allocate_new_expr(TCGTemp* t_out, TCGOp* op_in,
-                                     TCGContext* tcg_ctx)
+static inline void allocate_new_expr_conditional(TCGTemp* t_out, TCGOp* op_in,
+                                     TCGContext* tcg_ctx, TCGLabel* label)
 {
     SAVE_TEMPS_COUNT(tcg_ctx);
     TCGOp* op;
-
+#if 0
     add_void_call_0(check_pool_expr_capacity, op_in, &op,
                     tcg_ctx); // ToDo: make inline check
     mark_insn_as_instrumentation(op);
-
+#endif
     // assert(next_free_expr);
 
     TCGTemp* t_next_free_expr_addr = new_non_conflicting_temp(TCG_TYPE_PTR);
-    tcg_movi(t_next_free_expr_addr, (uintptr_t)&next_free_expr, 0, op_in, NULL,
+    tcg_movi(t_next_free_expr_addr, (uintptr_t)&next_free_expr, 0, op_in, &op,
              tcg_ctx);
+    if (label) {
+        set_conditional_instrumentation_label(op, label->id);
+    }
 
     TCGTemp* t_next_free_expr = new_non_conflicting_temp(TCG_TYPE_PTR);
     tcg_load_n(t_next_free_expr_addr, t_next_free_expr, 0, 0, 0,
-               sizeof(uintptr_t), op_in, NULL, tcg_ctx);
+               sizeof(uintptr_t), op_in, &op, tcg_ctx);
+    if (label) {
+        set_conditional_instrumentation_label(op, label->id);
+    }
 
     tcg_mov(t_out, t_next_free_expr, 0, 0, op_in, &op, tcg_ctx);
-    mark_insn_as_instrumentation(
-        op); // required to handle a t_out which already has a reg allocated
+    // required to handle a t_out which already has a reg allocated
+    if (label) {
+        set_conditional_instrumentation_label(op, label->id);
+    }
 
     TCGTemp* t_expr_size = new_non_conflicting_temp(TCG_TYPE_I64);
-    tcg_movi(t_expr_size, sizeof(Expr), 0, op_in, NULL, tcg_ctx);
+    tcg_movi(t_expr_size, sizeof(Expr), 0, op_in, &op, tcg_ctx);
+    if (label) {
+        set_conditional_instrumentation_label(op, label->id);
+    }
 
-    tcg_binop(t_next_free_expr, t_next_free_expr, t_expr_size, 0, 0, 0, ADD,
-              op_in, NULL, tcg_ctx);
-
-    tcg_temp_free_internal(t_expr_size);
+    tcg_binop(t_next_free_expr, t_next_free_expr, t_expr_size, 0, 0, 1, ADD,
+              op_in, &op, tcg_ctx);
+    if (label) {
+        set_conditional_instrumentation_label(op, label->id);
+    }
 
     tcg_store_n(t_next_free_expr_addr, t_next_free_expr, 0, 1, 1, sizeof(void*),
-                op_in, NULL, tcg_ctx);
+                op_in, &op, tcg_ctx);
+    if (label) {
+        set_conditional_instrumentation_label(op, label->id);
+    }
 
     CHECK_TEMPS_COUNT(tcg_ctx);
+}
+
+static inline void allocate_new_expr(TCGTemp* t_out, TCGOp* op_in,
+                                     TCGContext* tcg_ctx)
+{
+    allocate_new_expr_conditional(t_out, op_in, tcg_ctx, NULL);
 }
 
 static inline void move_temp_size_helper(size_t from, size_t to, size_t size)
@@ -1279,6 +1304,8 @@ static inline void move_temp(size_t from, size_t to, size_t size, TCGOp* op_in,
 
     if (size != 0 && size < sizeof(uintptr_t)) {
 
+        TCGOp* op;
+
         TCGTemp* t_zero = new_non_conflicting_temp(TCG_TYPE_I64);
         tcg_movi(t_zero, 0, 0, op_in, NULL, tcg_ctx); // ToDo: make this smarter
 
@@ -1291,37 +1318,45 @@ static inline void move_temp(size_t from, size_t to, size_t size, TCGOp* op_in,
         tcg_brcond(label_a_concrete, t_from, t_zero, TCG_COND_EQ, 0, 0, op_in,
                    NULL, tcg_ctx);
 
-        allocate_new_expr(
-            t_out, op_in,
-            tcg_ctx); // FixMe: we assume that Expr is zero-initialzed!
+        // FixMe: we assume that Expr is zero-initialzed!
+        allocate_new_expr_conditional(t_out, op_in, tcg_ctx, label_a_concrete);
 
         TCGTemp* t_opkind = new_non_conflicting_temp(TCG_TYPE_I64);
-        tcg_movi(t_opkind, EXTRACT, 0, op_in, NULL, tcg_ctx);
+        tcg_movi(t_opkind, EXTRACT, 0, op_in, &op, tcg_ctx);
+        set_conditional_instrumentation_label(op, label_a_concrete->id);
         tcg_store_n(t_out, t_opkind, offsetof(Expr, opkind), 0, 1,
-                    sizeof(uint8_t), op_in, NULL, tcg_ctx);
+                    sizeof(uint8_t), op_in, &op, tcg_ctx);
+        set_conditional_instrumentation_label(op, label_a_concrete->id);
 
         tcg_store_n(t_out, t_from, offsetof(Expr, op1), 0, 1, sizeof(uintptr_t),
-                    op_in, NULL, tcg_ctx);
+                    op_in, &op, tcg_ctx);
+        set_conditional_instrumentation_label(op, label_a_concrete->id);
 
         TCGTemp* t_one = new_non_conflicting_temp(TCG_TYPE_I64);
-        tcg_movi(t_one, 1, 0, op_in, NULL, tcg_ctx);
+        tcg_movi(t_one, 1, 0, op_in, &op, tcg_ctx);
+        set_conditional_instrumentation_label(op, label_a_concrete->id);
 
         TCGTemp* t_size = new_non_conflicting_temp(TCG_TYPE_I64);
-        tcg_movi(t_size, (size * 8) - 1, 0, op_in, NULL, tcg_ctx);
+        tcg_movi(t_size, (size * 8) - 1, 0, op_in, &op, tcg_ctx);
+        set_conditional_instrumentation_label(op, label_a_concrete->id);
 
         tcg_store_n(t_out, t_size, offsetof(Expr, op2), 0, 1, sizeof(uintptr_t),
-                    op_in, NULL, tcg_ctx);
+                    op_in, &op, tcg_ctx);
+        set_conditional_instrumentation_label(op, label_a_concrete->id);
 
         tcg_store_n(t_out, t_one, offsetof(Expr, op2_is_const), 0, 0,
-                    sizeof(uint8_t), op_in, NULL, tcg_ctx);
+                    sizeof(uint8_t), op_in, &op, tcg_ctx);
+        set_conditional_instrumentation_label(op, label_a_concrete->id);
 
         tcg_store_n(t_out, t_zero, offsetof(Expr, op3), 0, 1, sizeof(uintptr_t),
-                    op_in, NULL, tcg_ctx);
+                    op_in, &op, tcg_ctx);
+        set_conditional_instrumentation_label(op, label_a_concrete->id);
 
         tcg_store_n(t_out, t_one, offsetof(Expr, op3_is_const), 0, 1,
-                    sizeof(uint8_t), op_in, NULL, tcg_ctx);
+                    sizeof(uint8_t), op_in, &op, tcg_ctx);
+        set_conditional_instrumentation_label(op, label_a_concrete->id);
 
-        tcg_set_label(label_a_concrete, op_in, NULL, tcg_ctx);
+        tcg_set_label(label_a_concrete, op_in, &op, tcg_ctx);
 
         TCGTemp* t_to = new_non_conflicting_temp(TCG_TYPE_PTR);
         tcg_movi(t_to, (uintptr_t)&s_temps[to], 0, op_in, NULL, tcg_ctx);
@@ -1339,8 +1374,9 @@ static inline void move_temp(size_t from, size_t to, size_t size, TCGOp* op_in,
 static inline void clear_temp_helper(uintptr_t temp_idx)
 {
 #if 0
-    if (s_temps[temp_idx])
+    if (s_temps[temp_idx]) {
         printf("Clearing temp %lu\n", temp_idx);
+    }
 #endif
     assert(temp_idx < TCG_MAX_TEMPS);
     s_temps[temp_idx] = 0;
@@ -1434,7 +1470,7 @@ static inline void qemu_binop(OPKIND opkind, TCGTemp* t_op_out, TCGTemp* t_op_a,
 {
     SAVE_TEMPS_COUNT(tcg_ctx);
 
-    // TCGOp *op;
+    TCGOp __attribute__((unused)) *op;
 
     size_t out = temp_idx(t_op_out);
     size_t a   = temp_idx(t_op_a);
@@ -1444,32 +1480,39 @@ static inline void qemu_binop(OPKIND opkind, TCGTemp* t_op_out, TCGTemp* t_op_a,
     assert(a < TCG_MAX_TEMPS);
     assert(b < TCG_MAX_TEMPS);
 
-    preserve_op_load(t_op_a, op_in, tcg_ctx);
-    preserve_op_load(t_op_b, op_in, tcg_ctx);
+    TCGTemp* t_op_a_copy = new_non_conflicting_temp(TCG_TYPE_I64);
+    MARK_TEMP_AS_ALLOCATED(t_op_a);
+    tcg_mov(t_op_a_copy, t_op_a, 0, 0, op_in, NULL, tcg_ctx);
+    MARK_TEMP_AS_NOT_ALLOCATED(t_op_a);
+
+    TCGTemp* t_op_b_copy = new_non_conflicting_temp(TCG_TYPE_I64);
+    MARK_TEMP_AS_ALLOCATED(t_op_b);
+    tcg_mov(t_op_b_copy, t_op_b, 0, 0, op_in, NULL, tcg_ctx);
+    MARK_TEMP_AS_NOT_ALLOCATED(t_op_b);
+
+    // tcg_print_const_str("Binary op:\n", op_in, NULL, tcg_ctx);
 
     // check if both t_a and t_b are concrete
     // if this is the case, then mark dest as concrete
 
-    TCGLabel* label_both_concrete = gen_new_label();
-
     TCGTemp* t_a = new_non_conflicting_temp(TCG_TYPE_PTR);
     tcg_movi(t_a, (uintptr_t)&s_temps[a], 0, op_in, NULL, tcg_ctx);
     tcg_load_n(t_a, t_a, 0, 0, 0, sizeof(uintptr_t), op_in, NULL, tcg_ctx);
+#if 0
+    tcg_print_const_str("Checking binary op", op_in, &op, tcg_ctx);
 
-    // tcg_print_const_str("Checking binary op", op_in, &op, tcg_ctx);
-
-    // add_void_call_1(print_expr, t_a, op_in, &op, tcg_ctx);
-    // mark_insn_as_instrumentation(op);
-
+    add_void_call_1(print_expr, t_a, op_in, &op, tcg_ctx);
+    mark_insn_as_instrumentation(op);
+#endif
     TCGTemp* t_b = new_non_conflicting_temp(TCG_TYPE_PTR);
     tcg_movi(t_b, (uintptr_t)&s_temps[b], 0, op_in, NULL, tcg_ctx);
     tcg_load_n(t_b, t_b, 0, 0, 0, sizeof(uintptr_t), op_in, NULL, tcg_ctx);
+#if 0
+    add_void_call_1(print_expr, t_b, op_in, &op, tcg_ctx);
+    mark_insn_as_instrumentation(op);
 
-    // add_void_call_1(print_expr, t_b, op_in, &op, tcg_ctx);
-    // mark_insn_as_instrumentation(op);
-
-    // tcg_print_const_str("Checking binary op: DONE", op_in, &op, tcg_ctx);
-
+    tcg_print_const_str("Checking binary op: DONE", op_in, &op, tcg_ctx);
+#endif
     TCGTemp* t_a_or_b = new_non_conflicting_temp(TCG_TYPE_PTR);
     tcg_binop(t_a_or_b, t_a, t_b, 0, 0, 0, OR, op_in, NULL, tcg_ctx);
 
@@ -1482,31 +1525,37 @@ static inline void qemu_binop(OPKIND opkind, TCGTemp* t_op_out, TCGTemp* t_op_a,
     tcg_binop(t_out, t_zero, t_zero, 0, 0, 0, XOR, op_in, NULL,
               tcg_ctx); // force TCG to allocate the temp into a reg
 
+    TCGLabel* label_both_concrete = gen_new_label();
     tcg_brcond(label_both_concrete, t_a_or_b, t_zero, TCG_COND_EQ, 1, 0, op_in,
                NULL, tcg_ctx);
 
-    allocate_new_expr(
-        t_out, op_in,
-        tcg_ctx); // FixMe: we assume that Expr is zero-initialzed!
+    // FixMe: we assume that Expr is zero-initialzed!
+    allocate_new_expr_conditional(t_out, op_in, tcg_ctx, label_both_concrete);
 
     TCGTemp* t_opkind = new_non_conflicting_temp(TCG_TYPE_I64);
-    tcg_movi(t_opkind, opkind, 0, op_in, NULL, tcg_ctx);
+    tcg_movi(t_opkind, opkind, 0, op_in, &op, tcg_ctx);
+    set_conditional_instrumentation_label(op, label_both_concrete->id);
     tcg_store_n(t_out, t_opkind, offsetof(Expr, opkind), 0, 1, sizeof(uint8_t),
-                op_in, NULL, tcg_ctx);
+                op_in, &op, tcg_ctx);
+    set_conditional_instrumentation_label(op, label_both_concrete->id);
 
     TCGTemp* t_one = new_non_conflicting_temp(TCG_TYPE_I64);
-    tcg_movi(t_one, 1, 0, op_in, NULL, tcg_ctx);
+    tcg_movi(t_one, 1, 0, op_in, &op, tcg_ctx);
+    set_conditional_instrumentation_label(op, label_both_concrete->id);
 
     if (size != 0 && size < sizeof(uintptr_t)) {
 
         TCGTemp* t_size = new_non_conflicting_temp(TCG_TYPE_I64);
-        tcg_movi(t_size, size, 0, op_in, NULL, tcg_ctx);
+        tcg_movi(t_size, size, 0, op_in, &op, tcg_ctx);
+        set_conditional_instrumentation_label(op, label_both_concrete->id);
 
         tcg_store_n(t_out, t_size, offsetof(Expr, op3), 0, 1, sizeof(uintptr_t),
-                    op_in, NULL, tcg_ctx);
+                    op_in, &op, tcg_ctx);
+        set_conditional_instrumentation_label(op, label_both_concrete->id);
 
         tcg_store_n(t_out, t_one, offsetof(Expr, op3_is_const), 0, 0,
-                    sizeof(uint8_t), op_in, NULL, tcg_ctx);
+                    sizeof(uint8_t), op_in, &op, tcg_ctx);
+        set_conditional_instrumentation_label(op, label_both_concrete->id);
     }
 
     // if t_a is concrete, then store its concrete value into t_out expr
@@ -1515,17 +1564,18 @@ static inline void qemu_binop(OPKIND opkind, TCGTemp* t_op_out, TCGTemp* t_op_a,
     tcg_brcond(label_ta_not_concrete, t_a, t_zero, TCG_COND_NE, 0, 0, op_in,
                NULL, tcg_ctx);
 
-    MARK_TEMP_AS_ALLOCATED(t_op_a);
-    tcg_mov(t_a, t_op_a, 0, 0, op_in, NULL, tcg_ctx);
-    MARK_TEMP_AS_NOT_ALLOCATED(t_op_a);
+    tcg_mov(t_a, t_op_a_copy, 0, 1, op_in, &op, tcg_ctx);
+    set_conditional_instrumentation_label(op, label_ta_not_concrete->id);
 
     tcg_store_n(t_out, t_one, offsetof(Expr, op1_is_const), 0, 0,
-                sizeof(uint8_t), op_in, NULL, tcg_ctx);
+                sizeof(uint8_t), op_in, &op, tcg_ctx);
+    set_conditional_instrumentation_label(op, label_ta_not_concrete->id);
 
     tcg_set_label(label_ta_not_concrete, op_in, NULL, tcg_ctx);
 
     tcg_store_n(t_out, t_a, offsetof(Expr, op1), 0, 1, sizeof(uintptr_t), op_in,
-                NULL, tcg_ctx);
+                &op, tcg_ctx);
+    set_conditional_instrumentation_label(op, label_both_concrete->id);
 
     // if t_b is concrete, then store its concrete value into t_out expr
 
@@ -1533,25 +1583,26 @@ static inline void qemu_binop(OPKIND opkind, TCGTemp* t_op_out, TCGTemp* t_op_a,
     tcg_brcond(label_tb_not_concrete, t_b, t_zero, TCG_COND_NE, 0, 1, op_in,
                NULL, tcg_ctx);
 
-    MARK_TEMP_AS_ALLOCATED(t_op_b);
-    tcg_mov(t_b, t_op_b, 0, 0, op_in, NULL, tcg_ctx);
-    MARK_TEMP_AS_NOT_ALLOCATED(t_op_b);
+    tcg_mov(t_b, t_op_b_copy, 0, 1, op_in, &op, tcg_ctx);
+    set_conditional_instrumentation_label(op, label_tb_not_concrete->id);
 
     tcg_store_n(t_out, t_one, offsetof(Expr, op2_is_const), 0, 1,
-                sizeof(uint8_t), op_in, NULL, tcg_ctx);
+                sizeof(uint8_t), op_in, &op, tcg_ctx);
+    set_conditional_instrumentation_label(op, label_tb_not_concrete->id);
 
     tcg_set_label(label_tb_not_concrete, op_in, NULL, tcg_ctx);
 
     tcg_store_n(t_out, t_b, offsetof(Expr, op2), 0, 1, sizeof(uintptr_t), op_in,
-                NULL, tcg_ctx);
+                &op, tcg_ctx);
+    set_conditional_instrumentation_label(op, label_both_concrete->id);
 
 #if 0
     tcg_print_const_str("Binary op:", op_in, &op, tcg_ctx);
     mark_insn_as_instrumentation(op);
-    add_void_call_1(print_expr, t_out, op_in, &op, tcg_ctx);
-    mark_insn_as_instrumentation(op);
-    tcg_print_const_str("Binary op: DONE", op_in, &op, tcg_ctx);
-    mark_insn_as_instrumentation(op);
+    //add_void_call_1(print_expr, t_out, op_in, &op, tcg_ctx);
+    //mark_insn_as_instrumentation(op);
+    //tcg_print_const_str("Binary op: DONE", op_in, &op, tcg_ctx);
+    //mark_insn_as_instrumentation(op);
 #endif
 
     // add_void_call_1(print_expr, t_out, op_in, &op, tcg_ctx);
@@ -1564,7 +1615,13 @@ static inline void qemu_binop(OPKIND opkind, TCGTemp* t_op_out, TCGTemp* t_op_a,
     tcg_movi(t_out_expr, (uintptr_t)&s_temps[out], 0, op_in, NULL, tcg_ctx);
     tcg_store_n(t_out_expr, t_out, 0, 1, 1, sizeof(uintptr_t), op_in, NULL,
                 tcg_ctx);
-
+#if 0
+    tcg_temp_free_internal(t_zero);
+    tcg_temp_free_internal(t_a);
+    tcg_temp_free_internal(t_b);
+    tcg_temp_free_internal(t_op_a_copy);
+    tcg_temp_free_internal(t_op_b_copy);
+#endif
     CHECK_TEMPS_COUNT(tcg_ctx);
 }
 
@@ -1590,16 +1647,13 @@ static inline void qemu_unop(OPKIND opkind, TCGTemp* t_op_out, TCGTemp* t_op_a,
 {
     SAVE_TEMPS_COUNT(tcg_ctx);
 
-    // TCGOp *op;
-
-    preserve_op_load(t_op_a, op_in, tcg_ctx);
+    TCGOp *op;
 
     size_t out = temp_idx(t_op_out);
     size_t a   = temp_idx(t_op_a);
 
     // check whether t_op_a is concrete
 
-    TCGLabel* label_a_concrete = gen_new_label();
     TCGTemp*  t_a              = new_non_conflicting_temp(TCG_TYPE_PTR);
     tcg_movi(t_a, (uintptr_t)&s_temps[a], 0, op_in, NULL, tcg_ctx);
     tcg_load_n(t_a, t_a, 0, 0, 0, sizeof(uintptr_t), op_in, NULL, tcg_ctx);
@@ -1612,23 +1666,27 @@ static inline void qemu_unop(OPKIND opkind, TCGTemp* t_op_out, TCGTemp* t_op_a,
     tcg_binop(t_out, t_zero, t_zero, 0, 0, 0, XOR, op_in, NULL,
               tcg_ctx); // force TCG to allocate the temp into a reg
 
+    TCGLabel* label_a_concrete = gen_new_label();
     tcg_brcond(label_a_concrete, t_a, t_zero, TCG_COND_EQ, 0, 1, op_in, NULL,
                tcg_ctx);
 
-    allocate_new_expr(
-        t_out, op_in,
-        tcg_ctx); // FixMe: we assume that Expr is zero-initialzed!
+    // FixMe: we assume that Expr is zero-initialzed!
+    allocate_new_expr_conditional(t_out, op_in, tcg_ctx, label_a_concrete);
 
     TCGTemp* t_opkind = new_non_conflicting_temp(TCG_TYPE_I64);
-    tcg_movi(t_opkind, opkind, 0, op_in, NULL, tcg_ctx);
+    tcg_movi(t_opkind, opkind, 0, op_in, &op, tcg_ctx);
+    set_conditional_instrumentation_label(op, label_a_concrete->id);
     tcg_store_n(t_out, t_opkind, offsetof(Expr, opkind), 0, 1, sizeof(uint8_t),
-                op_in, NULL, tcg_ctx);
+                op_in, &op, tcg_ctx);
+    set_conditional_instrumentation_label(op, label_a_concrete->id);
 
     tcg_store_n(t_out, t_a, offsetof(Expr, op1), 0, 1, sizeof(uintptr_t), op_in,
-                NULL, tcg_ctx);
+                &op, tcg_ctx);
+    set_conditional_instrumentation_label(op, label_a_concrete->id);
 
     tcg_store_n(t_out, t_size, offsetof(Expr, op2), 0, 0, sizeof(uintptr_t),
-                op_in, NULL, tcg_ctx);
+                op_in, &op, tcg_ctx);
+    set_conditional_instrumentation_label(op, label_a_concrete->id);
 
     tcg_set_label(label_a_concrete, op_in, NULL, tcg_ctx);
 
@@ -2253,11 +2311,13 @@ static inline void qemu_load_helper(uintptr_t orig_addr,
     TCGMemOp  mem_op = get_mem_op(mem_op_offset);
     uintptr_t offset = get_mem_offset(mem_op_offset);
 
-    // assert((mem_op & MO_BE) == 0); // FixMe: extend to BE
-
     // number of bytes to load
     size_t    size = get_mem_op_size(mem_op);
     uintptr_t addr = orig_addr + offset;
+
+#if 0
+    printf("Loading %lu bytes from %p at offset %lu\n", size, (void*)orig_addr, offset);
+#endif
 
 #if SYMBOLIC_COSTANT_ACCESS
     if (addr_idx > 0 && s_temps[addr_idx]) {
@@ -2430,15 +2490,6 @@ static inline void qemu_load_helper(uintptr_t orig_addr,
         return;
     }
 
-#if 0
-    if (orig_addr > 0x61f490 && orig_addr < 0x61f490 + 256) {
-        printf("Loading %lu bytes: t[%ld] = *(0x%p + %lu)\n", size, val_idx,
-               (void*)orig_addr, offset);
-    }
-    // printf("Loading %lu bytes from %p at offset %lu\n", size, (void
-    // *)orig_addr, offset);
-#endif
-
     Expr* e = NULL;
     for (size_t i = 0; i < size; i++) {
         if (exprs[i] != NULL && exprs[i]->opkind == EXTRACT8 &&
@@ -2494,14 +2545,6 @@ static inline void qemu_load_helper(uintptr_t orig_addr,
         e                = n_expr;
         // printf("Zero extending on load. %lu\n", (8 * size));
     }
-
-#if 0
-    // 
-    if (orig_addr > 0x61f490 && orig_addr < 0x61f490 + 256) {
-          printf("Load expr:\n");
-        print_expr(e);
-    }
-#endif
 
     s_temps[val_idx] = e;
 }
@@ -2745,6 +2788,10 @@ static inline void qemu_store_helper(uintptr_t orig_addr,
     size_t    size = get_mem_op_size(mem_op);
     uintptr_t addr = orig_addr + offset;
 
+#if 0
+    printf("Store at %lx\n", addr);
+#endif
+
     uintptr_t norm_addr = (orig_addr / SLICE_SIZE) * SLICE_SIZE;
     uintptr_t hash_addr = HASH_ADDR(norm_addr);
     uintptr_t idx       = hash_addr % CONST_MAP_SIZE;
@@ -2796,8 +2843,6 @@ static inline void qemu_store_helper(uintptr_t orig_addr,
         for (size_t i = 0; i < size; i++)
             l3_page->entries[l3_page_idx + i] = NULL;
     } else {
-
-        // printf("Store at %lx\n", addr);
 
         for (size_t i = 0; i < size; i++) {
             Expr* e    = new_expr();
@@ -2960,8 +3005,8 @@ static inline void extend(TCGTemp* t_op_to, TCGTemp* t_op_from,
     size_t to   = temp_idx(t_op_to);
     size_t from = temp_idx(t_op_from);
 
-#if 0
     TCGOp* op;
+#if 0
     tcg_print_const_str("Zero-extending", op_in, &op, tcg_ctx);
     //mark_insn_as_instrumentation(op);
 #endif
@@ -2986,12 +3031,12 @@ static inline void extend(TCGTemp* t_op_to, TCGTemp* t_op_from,
 
     // create a ZEXT 32 expr
 
-    allocate_new_expr(
-        t_out, op_in,
-        tcg_ctx); // FixMe: we assume that Expr is zero-initialzed!
+    // FixMe: we assume that Expr is zero-initialzed!
+    allocate_new_expr_conditional(t_out, op_in, tcg_ctx, label_op_is_const);
 
     tcg_store_n(t_out, t_from, offsetof(Expr, op1), 0, 1, sizeof(uintptr_t),
-                op_in, NULL, tcg_ctx);
+                op_in, &op, tcg_ctx);
+    set_conditional_instrumentation_label(op, label_op_is_const->id);
 
     uint8_t   opkind;
     uintptr_t opkind_const_param;
@@ -3025,19 +3070,25 @@ static inline void extend(TCGTemp* t_op_to, TCGTemp* t_op_from,
     }
 
     TCGTemp* t_opkind = new_non_conflicting_temp(TCG_TYPE_I64);
-    tcg_movi(t_opkind, opkind, 0, op_in, NULL, tcg_ctx);
+    tcg_movi(t_opkind, opkind, 0, op_in, &op, tcg_ctx);
+    set_conditional_instrumentation_label(op, label_op_is_const->id);
     tcg_store_n(t_out, t_opkind, offsetof(Expr, opkind), 0, 1, sizeof(uint8_t),
-                op_in, NULL, tcg_ctx);
+                op_in, &op, tcg_ctx);
+    set_conditional_instrumentation_label(op, label_op_is_const->id);
 
     TCGTemp* t_const_param = new_non_conflicting_temp(TCG_TYPE_PTR);
-    tcg_movi(t_const_param, opkind_const_param, 0, op_in, NULL, tcg_ctx);
+    tcg_movi(t_const_param, opkind_const_param, 0, op_in, &op, tcg_ctx);
+    set_conditional_instrumentation_label(op, label_op_is_const->id);
     tcg_store_n(t_out, t_const_param, offsetof(Expr, op2), 0, 1, sizeof(Expr*),
-                op_in, NULL, tcg_ctx);
+                op_in, &op, tcg_ctx);
+    set_conditional_instrumentation_label(op, label_op_is_const->id);
 
     TCGTemp* t_one = new_non_conflicting_temp(TCG_TYPE_PTR);
-    tcg_movi(t_one, 1, 0, op_in, NULL, tcg_ctx);
+    tcg_movi(t_one, 1, 0, op_in, &op, tcg_ctx);
+    set_conditional_instrumentation_label(op, label_op_is_const->id);
     tcg_store_n(t_out, t_one, offsetof(Expr, op2_is_const), 0, 1,
-                sizeof(uint8_t), op_in, NULL, tcg_ctx);
+                sizeof(uint8_t), op_in, &op, tcg_ctx);
+    set_conditional_instrumentation_label(op, label_op_is_const->id);
 
     // add_void_call_1(print_expr, t_out, op_in, &op, tcg_ctx);
     // mark_insn_as_instrumentation(op);
@@ -3627,6 +3678,7 @@ static inline void end_symbolic_mode(void)
     if (finalization_done) {
         return;
     }
+    finalization_done = 1;
     //
     next_query[0].query  = FINAL_QUERY;
     queue_query[0].query = SHM_DONE;
@@ -3840,6 +3892,7 @@ static inline void qemu_deposit_helper(uintptr_t packed_idx, uintptr_t a,
     s_temps[out_idx] = e;
 }
 
+#if 0
 static inline void qemu_deposit(TCGTemp* t_op_out, TCGTemp* t_op_a,
                                 TCGTemp* t_op_b, uintptr_t pos, uintptr_t len,
                                 TCGOp* op_in, TCGContext* tcg_ctx)
@@ -3942,6 +3995,7 @@ static inline void qemu_deposit(TCGTemp* t_op_out, TCGTemp* t_op_a,
 
     CHECK_TEMPS_COUNT(tcg_ctx);
 }
+#endif
 
 static inline void qemu_extract_helper(uintptr_t packed_idx, uintptr_t a)
 {
@@ -3990,6 +4044,8 @@ static inline void qemu_extract(TCGTemp* t_op_out, TCGTemp* t_op_a,
 {
     SAVE_TEMPS_COUNT(tcg_ctx);
 
+    TCGOp* op;
+
     size_t op_out_idx = temp_idx(t_op_out);
     size_t op_a_idx   = temp_idx(t_op_a);
 
@@ -4010,27 +4066,33 @@ static inline void qemu_extract(TCGTemp* t_op_out, TCGTemp* t_op_a,
     tcg_brcond(label_a_concrete, t_a, t_zero, TCG_COND_EQ, 0, 1, op_in, NULL,
                tcg_ctx);
 
-    allocate_new_expr(
-        t_out, op_in,
-        tcg_ctx); // FixMe: we assume that Expr is zero-initialzed!
+    // FixMe: we assume that Expr is zero-initialzed!
+    allocate_new_expr_conditional(t_out, op_in, tcg_ctx, label_a_concrete);
 
     TCGTemp* t_opkind = new_non_conflicting_temp(TCG_TYPE_I64);
     tcg_movi(t_opkind, QZEXTRACT, 0, op_in, NULL, tcg_ctx);
+    set_conditional_instrumentation_label(op, label_a_concrete->id);
     tcg_store_n(t_out, t_opkind, offsetof(Expr, opkind), 0, 1, sizeof(uint8_t),
-                op_in, NULL, tcg_ctx);
+                op_in, &op, tcg_ctx);
+    set_conditional_instrumentation_label(op, label_a_concrete->id);
 
     tcg_store_n(t_out, t_a, offsetof(Expr, op1), 0, 1, sizeof(uint64_t), op_in,
-                NULL, tcg_ctx);
+                &op, tcg_ctx);
+    set_conditional_instrumentation_label(op, label_a_concrete->id);
 
     TCGTemp* t_pos = new_non_conflicting_temp(TCG_TYPE_I64);
-    tcg_movi(t_pos, pos, 0, op_in, NULL, tcg_ctx);
+    tcg_movi(t_pos, pos, 0, op_in, &op, tcg_ctx);
+    set_conditional_instrumentation_label(op, label_a_concrete->id);
     tcg_store_n(t_out, t_pos, offsetof(Expr, op2), 0, 1, sizeof(uint64_t),
-                op_in, NULL, tcg_ctx);
+                op_in, &op, tcg_ctx);
+    set_conditional_instrumentation_label(op, label_a_concrete->id);
 
     TCGTemp* t_len = new_non_conflicting_temp(TCG_TYPE_I64);
-    tcg_movi(t_len, len, 0, op_in, NULL, tcg_ctx);
+    tcg_movi(t_len, len, 0, op_in, &op, tcg_ctx);
+    set_conditional_instrumentation_label(op, label_a_concrete->id);
     tcg_store_n(t_out, t_len, offsetof(Expr, op3), 0, 1, sizeof(uint64_t),
-                op_in, NULL, tcg_ctx);
+                op_in, &op, tcg_ctx);
+    set_conditional_instrumentation_label(op, label_a_concrete->id);
 
     tcg_set_label(label_a_concrete, op_in, NULL, tcg_ctx);
 
@@ -4061,6 +4123,10 @@ static inline void qemu_binop_low_high_helper(OPKIND    opkind,
                                               uintptr_t packed_idx, uintptr_t a,
                                               uintptr_t b)
 {
+#if 0
+    printf("qemu_binop_low_high_helper\n");
+#endif
+
     uintptr_t out_high_idx = UNPACK_0(packed_idx);
     uintptr_t out_low_idx  = UNPACK_1(packed_idx);
     uintptr_t a_idx        = UNPACK_2(packed_idx);
@@ -4123,6 +4189,10 @@ static inline void qemu_binop_low_high_helper(OPKIND    opkind,
 static inline void qemu_binop_half_helper(OPKIND opkind, uintptr_t packed_idx,
                                           uintptr_t a, uintptr_t b)
 {
+#if 0
+    printf("qemu_binop_half_helper\n");
+#endif
+
     uintptr_t out_high_idx = UNPACK_0(packed_idx);
     uintptr_t out_low_idx  = UNPACK_1(packed_idx);
     uintptr_t a_idx        = UNPACK_2(packed_idx);
@@ -4702,14 +4772,15 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                         new_non_conflicting_temp(TCG_TYPE_PTR);
                     tcg_movi(t_from_idx, (uintptr_t)temp_idx(from), 0, op, NULL,
                              tcg_ctx);
-                    if (size == sizeof(uintptr_t)) {
+
+                    if (size == sizeof(uintptr_t) || size == 0) {
                         add_void_call_2(move_temp_helper, t_from_idx, t_to_idx,
                                         op, NULL, tcg_ctx);
                     } else {
                         TCGTemp* t_size =
                             new_non_conflicting_temp(TCG_TYPE_PTR);
                         tcg_movi(t_size, (uintptr_t)size, 0, op, NULL, tcg_ctx);
-                        add_void_call_3(move_temp_helper, t_from_idx, t_to_idx,
+                        add_void_call_3(move_temp_size_helper, t_from_idx, t_to_idx,
                                         t_size, op, NULL, tcg_ctx);
                         tcg_temp_free_internal(t_size);
                     }
@@ -6104,7 +6175,7 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                     tcg_movi(t_size,
                              (uintptr_t)op->opc == INDEX_op_bswap32_i64 ? 4 : 0,
                              0, op, NULL, tcg_ctx);
-#if 0
+#if 1
                     qemu_unop(get_opkind(op->opc), t_out, t_a, t_size, op, tcg_ctx);
 #else
                     TCGTemp* t_opkind = new_non_conflicting_temp(TCG_TYPE_PTR);
