@@ -118,8 +118,9 @@ typedef enum OPKIND {
     MAX,
     SIGNED_SATURATION,
     UNSIGNED_SATURATION,
+    NAND,
     // double binop
-    MUL_HIGH, // 61
+    MUL_HIGH, // 62
     MULU_HIGH,
     //
     EFLAGS_ALL_ADD,

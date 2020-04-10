@@ -3355,24 +3355,10 @@ static void setcond_helper(uintptr_t a, uintptr_t b, uintptr_t cond,
     s_temps[out_idx] = setcond_expr;
 }
 
-static void branch_helper(uintptr_t a, uintptr_t b, uintptr_t cond,
-                          uintptr_t packed_idx, uintptr_t pc, uintptr_t addr_to)
+static inline void branch_helper_internal(uintptr_t a, uintptr_t b, uintptr_t cond,
+                            Expr* expr_a, Expr* expr_b, size_t size,
+                            uintptr_t pc, uintptr_t addr_to)
 {
-    size_t a_idx = UNPACK_0(packed_idx);
-    size_t b_idx = UNPACK_1(packed_idx);
-    size_t size  = UNPACK_3(packed_idx);
-
-    Expr* expr_a = s_temps[a_idx];
-    Expr* expr_b = s_temps[b_idx];
-    if (expr_a == NULL && expr_b == NULL)
-        return; // early exit
-
-#if 0
-    printf("Branch at %lx: %lu %s %lu\n", pc, a_idx, opkind_to_str(get_opkind_from_cond(cond)), b_idx);
-    //print_temp(a_idx);
-    // print_temp(b_idx);
-#endif
-
     Expr*   branch_expr = new_expr();
     TCGCond sat_cond    = check_branch_cond_helper(a, b, cond);
     branch_expr->opkind = get_opkind_from_cond(sat_cond);
@@ -3432,6 +3418,28 @@ static void branch_helper(uintptr_t a, uintptr_t b, uintptr_t cond,
     printf("Branch at %lx\n", pc);
     print_expr(branch_expr);
 #endif
+}
+
+static void branch_helper(uintptr_t a, uintptr_t b, uintptr_t cond,
+                          uintptr_t packed_idx, uintptr_t pc, uintptr_t addr_to)
+{
+    size_t a_idx = UNPACK_0(packed_idx);
+    size_t b_idx = UNPACK_1(packed_idx);
+    size_t size  = UNPACK_3(packed_idx);
+
+    Expr* expr_a = s_temps[a_idx];
+    Expr* expr_b = s_temps[b_idx];
+    if (expr_a == NULL && expr_b == NULL)
+        return; // early exit
+
+#if 0
+    printf("Branch at %lx: %lu %s %lu\n", pc, a_idx, opkind_to_str(get_opkind_from_cond(cond)), b_idx);
+    //print_temp(a_idx);
+    // print_temp(b_idx);
+#endif
+
+    branch_helper_internal(a, b, cond, expr_a, expr_b, size, pc, addr_to);
+
 #if 0
     if (pc == 0x4134DC) {
         exit(0);
@@ -4978,6 +4986,7 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                 }
                 break;
 
+            case INDEX_op_qemu_ld_i32: // ToDo: check this
             case INDEX_op_qemu_ld_i64:
                 mark_temp_as_in_use(arg_temp(op->args[0]));
                 mark_temp_as_in_use(arg_temp(op->args[1]));
@@ -5716,6 +5725,7 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                         tcg_temp_free_internal(t_packed_idx);
 
                     } else if (strcmp(helper_name, "pand_xmm") == 0 ||
+                               strcmp(helper_name, "pandn_xmm") == 0 ||
                                strcmp(helper_name, "pxor_xmm") == 0 ||
                                strcmp(helper_name, "por_xmm") == 0 ||
                                strcmp(helper_name, "paddb_xmm") == 0 ||
@@ -5750,8 +5760,13 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                                 break;
                             case 'a': {
                                 if (helper_name[2] == 'n') {
-                                    opkind = AND;
-                                    slice  = 1;
+                                    if (helper_name[4] == '_'){
+                                        opkind = AND;
+                                        slice  = 1;
+                                    } else {
+                                        opkind = NAND;
+                                        slice  = 1;
+                                    }
                                 } else {
                                     opkind = ADD;
                                     slice  = suffix_to_slice(helper_name[4], 0);
@@ -6154,7 +6169,7 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                     } else if (strcmp(helper_name, "cvtsq2sd") == 0
                                 || strcmp(helper_name, "cvtsq2ss") == 0) {
 
-                        // we do not yet support floating polling_time
+                        // we do not yet support floating point
 
                         TCGTemp* t_dst = arg_temp(op->args[1]);
 
@@ -6174,15 +6189,19 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
 
                     } else if (strcmp(helper_name, "divsd") == 0
                                 || strcmp(helper_name, "divss") == 0
+                                || strcmp(helper_name, "addsd") == 0
                                 || strcmp(helper_name, "subss") == 0
+                                || strcmp(helper_name, "subsd") == 0
+                                || strcmp(helper_name, "mulsd") == 0
                                 || strcmp(helper_name, "cvtss2sd") == 0
                                 || strcmp(helper_name, "comisd") == 0 
                                 || strcmp(helper_name, "ucomiss") == 0
                                 || strcmp(helper_name, "comiss") == 0
                                 || strcmp(helper_name, "ucomisd") == 0
-                                || strcmp(helper_name, "cvtsd2ss") == 0) {
+                                || strcmp(helper_name, "cvtsd2ss") == 0
+                                || strcmp(helper_name, "cmpnlesd") == 0) {
 
-                        // we do not yet support floating polling_time
+                        // we do not yet support floating point
                         // concretize src and dst
 
                         TCGTemp* t_dst = arg_temp(op->args[1]);
@@ -6206,7 +6225,7 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
 
                     } else if (strcmp(helper_name, "movmskpd") == 0) {
 
-                        // we do not yet support floating polling_time
+                        // we do not yet support floating point
 
                         TCGTemp* t_reg = arg_temp(op->args[0]);
                         TCGTemp* t_src = arg_temp(op->args[2]);
@@ -6223,12 +6242,176 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
 
                         clear_temp(temp_idx(t_reg), op, tcg_ctx);
 
-                    } else if (strcmp(helper_name, "fnstcw") == 0) {
+                    } else if (strcmp(helper_name, "fnstcw") == 0
+                                || strcmp(helper_name, "fstl_ST0") == 0
+                                || strcmp(helper_name, "cvttsd2sq") == 0) {
 
-                        // we do not yet support floating polling_time
+                        // we do not yet support floating point
 
                         TCGTemp* t_reg = arg_temp(op->args[0]);
                         clear_temp(temp_idx(t_reg), op, tcg_ctx);
+
+                    } else if (strcmp(helper_name, "fildl_ST0") == 0
+                                || strcmp(helper_name, "flds_FT0") == 0
+                                || strcmp(helper_name, "flds_ST0") == 0
+                                || strcmp(helper_name, "fildll_ST0") == 0) {
+
+                        // we do not yet support floating point
+
+                        // ToDo: should we concretize the reg src?
+
+                    } else if (strcmp(helper_name, "fmul_ST0_FT0") == 0
+                                || strcmp(helper_name, "fpop") == 0
+                                || strcmp(helper_name, "fmov_FT0_STN") == 0
+                                || strcmp(helper_name, "fdiv_ST0_FT0") == 0
+                                || strcmp(helper_name, "fcomi_ST0_FT0") == 0
+                                || strcmp(helper_name, "fxchg_ST0_STN") == 0
+                                || strcmp(helper_name, "fmov_STN_ST0") == 0) {
+
+                        // we do not yet support floating point
+
+                    } else if(strcmp(helper_name, "atomic_fetch_addl_le") == 0
+                        || strcmp(helper_name, "atomic_add_fetchl_le") == 0
+                        || strcmp(helper_name, "atomic_or_fetchl_le") == 0
+                        || strcmp(helper_name, "atomic_fetch_orl_le") == 0) {
+
+                        TCGTemp* t_out = arg_temp(op->args[0]);
+                        TCGTemp* t_ptr_a = arg_temp(op->args[2]);
+                        TCGTemp* t_val_b = arg_temp(op->args[3]);
+
+                        OPKIND opkind;
+                        // order:
+                        //  - 0: return the fetched value before op
+                        //  - 1: return the result of the op
+                        uint64_t order;
+                        if (helper_name[7] == 'o') {
+                            opkind = OR;
+                            order = 1;
+                        } else if (helper_name[7] == 'a') {
+                            opkind = ADD;
+                            order = 1;
+                        } else if (helper_name[7] == 'f') {
+                            if (helper_name[13] == 'a') {
+                                opkind = ADD;
+                                order = 0;
+                            } else if (helper_name[13] == 'o') {
+                                opkind = OR;
+                                order = 0;
+                            } else {
+                                tcg_abort();
+                            }
+                        } else {
+                            tcg_abort();
+                        }
+
+                        uint64_t size = 4;
+
+                        uint64_t v = 0;
+                        v          = PACK_0(v, temp_idx(t_out));
+                        v          = PACK_1(v, temp_idx(t_ptr_a));
+                        v          = PACK_2(v, temp_idx(t_val_b));
+
+                        uintptr_t size_order_opkind = opkind;
+                        size_order_opkind |= order << 8;
+                        size_order_opkind |= size << 12;
+                        v          = PACK_3(v, size_order_opkind);
+
+                        TCGTemp* t_packed_info =
+                            new_non_conflicting_temp(TCG_TYPE_PTR);
+                        tcg_movi(t_packed_info, v, 0, op, NULL, tcg_ctx);
+
+                        MARK_TEMP_AS_ALLOCATED(t_ptr_a);
+                        MARK_TEMP_AS_ALLOCATED(t_val_b);
+                        add_void_call_3(atomic_fetch_op, t_packed_info,
+                                        t_ptr_a, t_val_b, op, NULL, tcg_ctx);
+                        MARK_TEMP_AS_NOT_ALLOCATED(t_ptr_a);
+                        MARK_TEMP_AS_NOT_ALLOCATED(t_val_b);
+                        tcg_temp_free_internal(t_packed_info);
+
+                    } else if (strcmp(helper_name, "atomic_cmpxchgl_le") == 0
+                                || strcmp(helper_name, "atomic_cmpxchgq_le") == 0) {
+
+                        TCGTemp* t_out = arg_temp(op->args[0]);
+                        TCGTemp* t_ptr_a = arg_temp(op->args[2]);
+                        TCGTemp* t_val_b = arg_temp(op->args[3]);
+                        TCGTemp* t_val_c = arg_temp(op->args[3]);
+
+                        uint64_t size;
+                        if (helper_name[14] == 'l') {
+                            size = 4;
+                        } else if (helper_name[14] == 'q') {
+                            size = 8;
+                        } else {
+                            tcg_abort();
+                        }
+
+                        uint64_t v = 0;
+                        v          = PACK_0(v, temp_idx(t_out));
+                        v          = PACK_1(v, temp_idx(t_ptr_a));
+                        v          = PACK_2(v, temp_idx(t_val_b));
+
+                        uint64_t t_c_idx_size = size;
+                        t_c_idx_size |= temp_idx(t_val_c) << 4;
+                        v          = PACK_3(v, t_c_idx_size);
+
+                        TCGTemp* t_packed_info =
+                            new_non_conflicting_temp(TCG_TYPE_PTR);
+                        tcg_movi(t_packed_info, v, 0, op, NULL, tcg_ctx);
+
+                        TCGTemp* t_pc =
+                            new_non_conflicting_temp(TCG_TYPE_PTR);
+                        tcg_movi(t_pc, pc, 0, op, NULL, tcg_ctx);
+
+                        TCGTemp* t_addr_to =
+                            new_non_conflicting_temp(TCG_TYPE_PTR);
+                        tcg_movi(t_addr_to, pc + 2, 0, op, NULL, tcg_ctx);
+
+                        MARK_TEMP_AS_ALLOCATED(t_ptr_a);
+                        MARK_TEMP_AS_ALLOCATED(t_val_b);
+                        add_void_call_5(cmpxchg_handler, t_packed_info,
+                                        t_ptr_a, t_val_b,
+                                        t_pc, t_addr_to,
+                                        op, NULL, tcg_ctx);
+                        MARK_TEMP_AS_NOT_ALLOCATED(t_ptr_a);
+                        MARK_TEMP_AS_NOT_ALLOCATED(t_val_b);
+
+                        tcg_temp_free_internal(t_packed_info);
+                        tcg_temp_free_internal(t_pc);
+                        tcg_temp_free_internal(t_addr_to);
+
+                    } else if (strcmp(helper_name, "atomic_xchgl_le") == 0
+                                || strcmp(helper_name, "atomic_xchgq_le") == 0) {
+
+                        TCGTemp* t_out = arg_temp(op->args[0]);
+                        TCGTemp* t_ptr_a = arg_temp(op->args[2]);
+                        TCGTemp* t_val_b = arg_temp(op->args[3]);
+
+                        uint64_t size;
+                        if (helper_name[11] == 'l') {
+                            size = 4;
+                        } else if (helper_name[11] == 'q') {
+                            size = 8;
+                        } else {
+                            tcg_abort();
+                        }
+
+                        uint64_t v = 0;
+                        v          = PACK_0(v, temp_idx(t_out));
+                        v          = PACK_1(v, temp_idx(t_ptr_a));
+                        v          = PACK_2(v, temp_idx(t_val_b));
+                        v          = PACK_3(v, size);
+
+                        TCGTemp* t_packed_info =
+                            new_non_conflicting_temp(TCG_TYPE_PTR);
+                        tcg_movi(t_packed_info, v, 0, op, NULL, tcg_ctx);
+
+                        MARK_TEMP_AS_ALLOCATED(t_ptr_a);
+                        add_void_call_2(xchg_handler,
+                                        t_packed_info, t_ptr_a,
+                                        op, NULL, tcg_ctx);
+                        MARK_TEMP_AS_NOT_ALLOCATED(t_ptr_a);
+
+                        tcg_temp_free_internal(t_packed_info);
 
                     } else {
 
@@ -6247,7 +6430,7 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                         if (!helper_is_whitelisted) {
                             printf("Helper %s is not instrumented\n",
                                    helper_name);
-                            tcg_abort();
+                            //tcg_abort();
                         }
                     }
                 }
@@ -6399,7 +6582,7 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                 if (instrument) {
                     TCGTemp* t_out = arg_temp(op->args[0]);
                     TCGTemp* t_a   = arg_temp(op->args[1]);
-#if 1
+#if 0 // Bugged on bloaty
                     uintptr_t pos = (uintptr_t)op->args[2];
                     uintptr_t len = (uintptr_t)op->args[3];
                     qemu_extract(t_out, t_a, pos, len, op, tcg_ctx);
@@ -6535,7 +6718,7 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                 if (instrument) {
                     const TCGOpDef* def = &tcg_op_defs[op->opc];
                     printf("Unhandled TCG instruction: %s\n", def->name);
-                    tcg_abort();
+                    //tcg_abort();
                 }
         }
 

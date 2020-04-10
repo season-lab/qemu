@@ -989,6 +989,231 @@ static void qemu_xmm_pack(uint64_t* dst_addr, uint64_t* src_addr,
     }
 }
 
+static inline void atomic_fetch_op( uint64_t packed_info,
+                                    uintptr_t a_ptr,
+                                    uintptr_t b_val)
+{
+    uintptr_t t_out_idx         = UNPACK_0(packed_info);
+    uintptr_t t_a_idx           = UNPACK_1(packed_info);
+    uintptr_t t_b_idx           = UNPACK_2(packed_info);
+    uintptr_t size_order_opkind = UNPACK_3(packed_info);
+
+    uintptr_t opkind = size_order_opkind & 0xFF;
+    uintptr_t order = (size_order_opkind >> 8) & 0xF;
+    uintptr_t size = size_order_opkind >> 12;
+
+    if (s_temps[t_a_idx]) {
+        // ToDo: memory slice
+        load_concretization(s_temps[t_a_idx], a_ptr);
+    }
+
+    Expr** a_exprs =
+        get_expr_addr(a_ptr, size, 0, NULL);
+
+    if (a_exprs == NULL && s_temps[t_b_idx] == NULL) {
+        s_temps[t_out_idx] = NULL;
+    }
+
+    int a_is_not_null = 0;
+    if (a_exprs) {
+        for (size_t i = 0; i < size && a_is_not_null == 0; i++) {
+            a_is_not_null |= a_exprs[i] != NULL;
+        }
+    }
+
+    if (!a_is_not_null && s_temps[t_out_idx] == NULL) {
+        s_temps[t_out_idx] = NULL;
+    }
+
+    Expr* e_a = NULL;
+    uintptr_t a_val = 0;
+    if (a_exprs == NULL || !a_is_not_null) {
+        switch (size) {
+            case 1:
+                a_val = *((uint8_t*)a_ptr);
+                break;
+            case 2:
+                a_val = *((uint16_t*)a_ptr);
+                break;
+            case 4:
+                a_val = *((uint32_t*)a_ptr);
+                break;
+            case 8:
+                a_val = *((uint64_t*)a_ptr);
+                break;
+            default:
+                tcg_abort();
+        }
+    } else {
+        e_a = build_concat_expr(a_exprs, (void*) a_ptr, size, 0);
+    }
+
+    Expr* e   = new_expr();
+    e->opkind = opkind;
+    SET_EXPR_OP(e->op1, e->op1_is_const, e_a, a_val);
+    SET_EXPR_OP(e->op2, e->op2_is_const, s_temps[t_out_idx], b_val);
+    SET_EXPR_CONST_OP(e->op3, e->op3_is_const, size);
+
+    if (order == 0) {
+        s_temps[t_out_idx] = e_a;
+    } else {
+        s_temps[t_out_idx] = e;
+    }
+
+    if (a_exprs == NULL) {
+        a_exprs = get_expr_addr(a_ptr, size, 1, NULL);
+    }
+    for (size_t i = 0; i < size; i++) {
+        Expr* e_byte   = new_expr();
+        e_byte->opkind = EXTRACT8;
+        e_byte->op1    = e;
+        SET_EXPR_CONST_OP(e_byte->op2, e_byte->op2_is_const, i);
+        a_exprs[i] = e_byte;
+    }
+}
+
+static void cmpxchg_handler(uint64_t packed_info,
+                            uintptr_t a_ptr,
+                            uintptr_t b_val,
+                            uintptr_t pc,
+                            uintptr_t addr_to)
+{
+    uintptr_t t_out_idx     = UNPACK_0(packed_info);
+    uintptr_t t_a_idx       = UNPACK_1(packed_info);
+    uintptr_t t_b_idx       = UNPACK_2(packed_info);
+    uintptr_t t_c_idx_size  = UNPACK_3(packed_info);
+
+    uintptr_t size = t_c_idx_size & 0xF;
+    uintptr_t t_c_idx = t_c_idx_size >> 4;
+
+    if (s_temps[t_a_idx]) {
+        // ToDo: memory slice
+        load_concretization(s_temps[t_a_idx], a_ptr);
+    }
+
+    Expr** a_exprs = get_expr_addr(a_ptr, size, 0, NULL);
+    Expr* expr_b = s_temps[t_b_idx];
+    Expr* expr_c = s_temps[t_c_idx];
+
+    int a_is_not_null = 0;
+    if (a_exprs) {
+        for (size_t i = 0; i < size && a_is_not_null == 0; i++) {
+            a_is_not_null |= a_exprs[i] != NULL;
+        }
+    }
+
+    if ((a_exprs == NULL || !a_is_not_null)
+            && expr_b == NULL && expr_c == NULL) {
+        s_temps[t_out_idx] = NULL;
+    }
+
+    uintptr_t a_val;
+    switch (size) {
+        case 1:
+            a_val = *((uint8_t*)a_ptr);
+            break;
+        case 2:
+            a_val = *((uint16_t*)a_ptr);
+            break;
+        case 4:
+            a_val = *((uint32_t*)a_ptr);
+            break;
+        case 8:
+            a_val = *((uint64_t*)a_ptr);
+            break;
+        default:
+            tcg_abort();
+    }
+
+    Expr* expr_a = NULL;
+    if (a_exprs != NULL && a_is_not_null) {
+        expr_a = build_concat_expr(a_exprs, (void*) a_ptr, size, 0);
+    }
+
+    if ((a_exprs != NULL && a_is_not_null) || expr_b != NULL) {
+        branch_helper_internal(a_val, b_val, TCG_COND_EQ, expr_a, expr_b, size, pc, addr_to);
+    }
+
+    if (a_val == b_val) {
+        if (expr_c == NULL) {
+            // clear out memory
+            if (a_exprs) {
+                for (size_t i = 0; i < size; i++) {
+                    a_exprs[i] = NULL;
+                }
+            }
+        } else {
+            // write memory
+            if (a_exprs == NULL) {
+                a_exprs = get_expr_addr(a_ptr, size, 1, NULL);
+            }
+            for (size_t i = 0; i < size; i++) {
+                Expr* e_byte   = new_expr();
+                e_byte->opkind = EXTRACT8;
+                e_byte->op1    = expr_c;
+                SET_EXPR_CONST_OP(e_byte->op2, e_byte->op2_is_const, i);
+                a_exprs[i] = e_byte;
+            }
+        }
+    } else {
+        s_temps[t_b_idx] = expr_a;
+    }
+}
+
+static void xchg_handler(uint64_t packed_info,
+                            uintptr_t a_ptr)
+{
+    uintptr_t t_out_idx     = UNPACK_0(packed_info);
+    uintptr_t t_a_idx       = UNPACK_1(packed_info);
+    uintptr_t t_b_idx       = UNPACK_2(packed_info);
+    uintptr_t size          = UNPACK_3(packed_info);
+
+    if (s_temps[t_a_idx]) {
+        // ToDo: memory slice
+        load_concretization(s_temps[t_a_idx], a_ptr);
+    }
+
+    Expr** a_exprs = get_expr_addr(a_ptr, size, 0, NULL);
+    Expr* expr_b = s_temps[t_b_idx];
+
+    int a_is_not_null = 0;
+    if (a_exprs) {
+        for (size_t i = 0; i < size && a_is_not_null == 0; i++) {
+            a_is_not_null |= a_exprs[i] != NULL;
+        }
+    }
+
+    if ((a_exprs == NULL || !a_is_not_null)
+            && expr_b == NULL) {
+        s_temps[t_out_idx] = NULL;
+    }
+
+    Expr* expr_a = NULL;
+    if (a_exprs != NULL && a_is_not_null) {
+        expr_a = build_concat_expr(a_exprs, (void*) a_ptr, size, 0);
+    }
+    s_temps[t_out_idx] = expr_a;
+
+    if (s_temps[t_b_idx] != NULL) {
+        if (a_exprs == NULL) {
+            a_exprs = get_expr_addr(a_ptr, size, 1, NULL);
+        }
+        for (size_t i = 0; i < size; i++) {
+            Expr* e_byte   = new_expr();
+            e_byte->opkind = EXTRACT8;
+            e_byte->op1    = s_temps[t_b_idx];
+            SET_EXPR_CONST_OP(e_byte->op2, e_byte->op2_is_const, i);
+            a_exprs[i] = e_byte;
+        }
+    } else {
+        if (a_exprs != NULL && a_is_not_null) {
+            for (size_t i = 0; i < size; i++) {
+                a_exprs[i] = NULL;
+            }
+        }
+    }
+}
+
 #define XO(X) offsetof(X86XSaveArea, X)
 
 static Expr* xmm_save_state[XMM_BYTES * 16];
