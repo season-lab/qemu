@@ -11948,6 +11948,8 @@ static abi_long do_syscall1(void *cpu_env, int num, abi_long arg1,
 
 #include "../tcg/symbolic/symbolic-instrumentation.h"
 
+#include <pthread.h>
+
 abi_long do_syscall(void *cpu_env, int num, abi_long arg1,
                     abi_long arg2, abi_long arg3, abi_long arg4,
                     abi_long arg5, abi_long arg6, abi_long arg7,
@@ -12019,7 +12021,7 @@ abi_long do_syscall(void *cpu_env, int num, abi_long arg1,
             syscall_no = SYS_NOT_INTERESTING;
     }
     if (syscall_no == SYS_EXIT) {
-        qemu_syscall_helper(syscall_no, arg1, arg2, arg3, arg4, arg5, arg6, arg7, 0);
+        qemu_syscall_helper(syscall_no, arg1, arg2, arg3, arg4, arg5, arg6, arg7, pthread_self());
     }
 #endif
 

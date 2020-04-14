@@ -409,6 +409,8 @@ static inline const char* opkind_to_str(uint8_t opkind)
             return "SYMBOLIC_LOAD";
         case SYMBOLIC_STORE:
             return "SYMBOLIC_STORE";
+        case MEMORY_CONCRETIZATION:
+            return "MEMORY_CONCRETIZATION";
 
         default:
             printf("\nstr(opkind=%u) is unknown\n", opkind);

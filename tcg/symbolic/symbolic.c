@@ -2,6 +2,7 @@
 #include <sys/ipc.h>
 #include <sys/shm.h>
 #include <time.h>
+#include <pthread.h>
 
 #include "qemu/osdep.h"
 #include "qemu-common.h"
@@ -80,6 +81,7 @@ Query* next_query  = NULL;
 
 TCGContext*   internal_tcg_context = NULL;
 static size_t page_size            = 0;
+pthread_t     main_thread          = 0;
 
 typedef struct {
     uint8_t shared_counter;
@@ -432,6 +434,8 @@ void init_symbolic_mode(void)
         input_fp[FD_STDIN]->offset = 0;
         input_fp[FD_STDIN]->shared_counter = 1;
     }
+
+    main_thread = pthread_self();
 }
 
 static inline int count_free_temps(TCGContext* tcg_ctx)
@@ -3853,7 +3857,9 @@ void qemu_syscall_helper(uintptr_t syscall_no, uintptr_t syscall_arg0,
         }
         //
         case SYS_EXIT: {
-            end_symbolic_mode();
+            if (ret_val == main_thread) {
+                end_symbolic_mode();
+            }
             break;
         }
         //
