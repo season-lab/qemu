@@ -13,7 +13,7 @@
 #include "symbolic-instrumentation.h"
 
 //#define SYMBOLIC_DEBUG
-#define DISABLE_SOLVER
+//#define DISABLE_SOLVER
 #define SYMBOLIC_COSTANT_ACCESS 0
 
 #define QUEUE_OP_MAX_SIZE 128
@@ -24,8 +24,8 @@ extern TCGOp* tcg_op_insert_before_op(TCGContext* s, TCGOp* op, TCGOp* new_op);
 
 uintptr_t symbolic_pc;
 
-TCGOp* symb_current_gen_op = NULL;
-int symb_restore_pass = 0;
+TCGOp*              symb_current_gen_op                   = NULL;
+int                 symb_restore_pass                     = 0;
 ConditionalTempSync conditional_temp_syncs[TCG_MAX_TEMPS] = {0};
 
 // symbolic temps
@@ -80,6 +80,16 @@ Query* next_query  = NULL;
 
 TCGContext*   internal_tcg_context = NULL;
 static size_t page_size            = 0;
+
+typedef struct {
+    uint8_t shared_counter;
+    off_t  offset;
+} FileDescriptorStatus;
+
+#define FD_STDIN 0
+static Expr* input_exprs[MAX_INPUT_SIZE] = {0};
+#define MAX_FP 128
+static FileDescriptorStatus* input_fp[MAX_FP] = {0};
 
 // from tcg.c
 typedef struct TCGHelperInfo {
@@ -416,6 +426,12 @@ void init_symbolic_mode(void)
 #if 0
     const_base_ht = g_hash_table_new(NULL, NULL);
 #endif
+
+    if (s_config.symbolic_inject_input_mode == READ_FD_0) {
+        input_fp[FD_STDIN]         = malloc(sizeof(FileDescriptorStatus));
+        input_fp[FD_STDIN]->offset = 0;
+        input_fp[FD_STDIN]->shared_counter = 1;
+    }
 }
 
 static inline int count_free_temps(TCGContext* tcg_ctx)
@@ -1192,7 +1208,8 @@ void print_temp(size_t idx)
 }
 
 static inline void allocate_new_expr_conditional(TCGTemp* t_out, TCGOp* op_in,
-                                     TCGContext* tcg_ctx, TCGLabel* label)
+                                                 TCGContext* tcg_ctx,
+                                                 TCGLabel*   label)
 {
     SAVE_TEMPS_COUNT(tcg_ctx);
     TCGOp* op;
@@ -1470,7 +1487,7 @@ static inline void qemu_binop(OPKIND opkind, TCGTemp* t_op_out, TCGTemp* t_op_a,
 {
     SAVE_TEMPS_COUNT(tcg_ctx);
 
-    TCGOp __attribute__((unused)) *op;
+    TCGOp __attribute__((unused)) * op;
 
     size_t out = temp_idx(t_op_out);
     size_t a   = temp_idx(t_op_a);
@@ -1647,14 +1664,14 @@ static inline void qemu_unop(OPKIND opkind, TCGTemp* t_op_out, TCGTemp* t_op_a,
 {
     SAVE_TEMPS_COUNT(tcg_ctx);
 
-    TCGOp *op;
+    TCGOp* op;
 
     size_t out = temp_idx(t_op_out);
     size_t a   = temp_idx(t_op_a);
 
     // check whether t_op_a is concrete
 
-    TCGTemp*  t_a              = new_non_conflicting_temp(TCG_TYPE_PTR);
+    TCGTemp* t_a = new_non_conflicting_temp(TCG_TYPE_PTR);
     tcg_movi(t_a, (uintptr_t)&s_temps[a], 0, op_in, NULL, tcg_ctx);
     tcg_load_n(t_a, t_a, 0, 0, 0, sizeof(uintptr_t), op_in, NULL, tcg_ctx);
 
@@ -3355,9 +3372,10 @@ static void setcond_helper(uintptr_t a, uintptr_t b, uintptr_t cond,
     s_temps[out_idx] = setcond_expr;
 }
 
-static inline void branch_helper_internal(uintptr_t a, uintptr_t b, uintptr_t cond,
-                            Expr* expr_a, Expr* expr_b, size_t size,
-                            uintptr_t pc, uintptr_t addr_to)
+static inline void branch_helper_internal(uintptr_t a, uintptr_t b,
+                                          uintptr_t cond, Expr* expr_a,
+                                          Expr* expr_b, size_t size,
+                                          uintptr_t pc, uintptr_t addr_to)
 {
     Expr*   branch_expr = new_expr();
     TCGCond sat_cond    = check_branch_cond_helper(a, b, cond);
@@ -3425,7 +3443,7 @@ static void branch_helper(uintptr_t a, uintptr_t b, uintptr_t cond,
 {
     size_t a_idx = UNPACK_0(packed_idx);
     size_t b_idx = UNPACK_1(packed_idx);
-    size_t size  = UNPACK_3(packed_idx);
+    size_t size  = UNPACK_2(packed_idx);
 
     Expr* expr_a = s_temps[a_idx];
     Expr* expr_b = s_temps[b_idx];
@@ -3433,8 +3451,10 @@ static void branch_helper(uintptr_t a, uintptr_t b, uintptr_t cond,
         return; // early exit
 
 #if 0
-    printf("Branch at %lx: %lu %s %lu\n", pc, a_idx, opkind_to_str(get_opkind_from_cond(cond)), b_idx);
-    //print_temp(a_idx);
+    printf("Branch %lu %s %lu\n", a_idx, opkind_to_str(get_opkind_from_cond(cond)), b_idx);
+    print_expr(expr_a);
+    print_expr(expr_b);
+    // print_temp(a_idx);
     // print_temp(b_idx);
 #endif
 
@@ -3616,15 +3636,6 @@ static inline TCGTemp* tcg_find_temp_arch_reg(TCGContext* tcg_ctx,
     tcg_abort();
 }
 
-#define FD_STDIN 0
-static Expr* input_exprs[MAX_INPUT_SIZE] = {0};
-#define MAX_FP          128
-#define FP_UNINTIALIZED 0
-#define FP_CLOSED       1
-#define FP_ZERO_OFFSET  2
-// fp >= 0: offset in the inputfile
-static intptr_t input_fp[MAX_FP] = {0};
-
 static inline void read_from_input(intptr_t offset, uintptr_t addr, size_t size)
 {
     assert(offset >= 0 && "Invalid offset");
@@ -3692,7 +3703,7 @@ static inline void end_symbolic_mode(void)
     queue_query[0].query = SHM_DONE;
     //
     printf("\nNumber of queries: %lu\n", (next_query - queue_query) - 1);
-    printf("Number of expressions: %lu\n", GET_EXPR_IDX(next_free_expr) - 1);
+    printf("Number of expressions: %lu\n", GET_EXPR_IDX(next_free_expr));
     printf("Number of memory slices: %lu\n", slices_count);
 }
 
@@ -3704,6 +3715,8 @@ static const uint8_t count_class_binary[256] = {
 
 void qemu_syscall_helper(uintptr_t syscall_no, uintptr_t syscall_arg0,
                          uintptr_t syscall_arg1, uintptr_t syscall_arg2,
+                         uintptr_t syscall_arg3, uintptr_t syscall_arg4,
+                         uintptr_t syscall_arg5, uintptr_t syscall_arg6,
                          uintptr_t ret_val)
 {
     if (s_config.coverage_tracer) {
@@ -3745,48 +3758,47 @@ void qemu_syscall_helper(uintptr_t syscall_no, uintptr_t syscall_arg0,
                 // printf("Opening file: %s vs %s\n", fname,
                 // s_config.inputfile);
                 if (strcmp(fname, s_config.inputfile) == 0) {
-                    input_fp[fp] = FP_ZERO_OFFSET; // offset 0
+
+                    if (input_fp[fp]) {
+                        if (input_fp[fp]->shared_counter == 1) {
+                            free(input_fp[fp]);
+                        } else {
+                            input_fp[fp]->shared_counter -= 1;
+                        }
+                        input_fp[fp] = NULL;
+                    }
+
+                    input_fp[fp]         = malloc(sizeof(FileDescriptorStatus));
+                    input_fp[fp]->offset = 0;
+                    input_fp[fp]->shared_counter = 1;
                     // printf("Opening input file: %s\n", fname);
                 }
             }
             break;
         //
         case SYS_CLOSE:
-            fp           = syscall_arg0;
-            input_fp[fp] = FP_CLOSED;
+            fp = syscall_arg0;
+            if (((int)ret_val) >= 0 && input_fp[fp]) {
+                if (input_fp[fp]->shared_counter == 1) {
+                    free(input_fp[fp]);
+                } else {
+                    input_fp[fp]->shared_counter -= 1;
+                }
+                input_fp[fp] = NULL;
+            }
             break;
         //
         case SYS_SEEK:
             fp = syscall_arg0;
-            if (s_config.symbolic_inject_input_mode == READ_FD_0 &&
-                fp == FD_STDIN && input_fp[fp] != FP_CLOSED) {
+            if (((int)ret_val) >= 0 && input_fp[fp]) {
                 off_t offset = syscall_arg1;
                 int   whence = syscall_arg2;
                 switch (whence) {
                     case SEEK_CUR:
-                        if (input_fp[fp] == FP_UNINTIALIZED) {
-                            input_fp[fp] = offset + FP_ZERO_OFFSET;
-                        } else {
-                            assert(input_fp[fp] >= FP_ZERO_OFFSET);
-                            input_fp[fp] += offset;
-                        }
+                        input_fp[fp]->offset += offset;
                         break;
                     case SEEK_SET:
-                        input_fp[fp] = offset + FP_ZERO_OFFSET;
-                        break;
-                    default:
-                        tcg_abort();
-                }
-            } else if (s_config.symbolic_inject_input_mode == FROM_FILE &&
-                       input_fp[fp] >= FP_ZERO_OFFSET) {
-                off_t offset = syscall_arg1;
-                int   whence = syscall_arg2;
-                switch (whence) {
-                    case SEEK_CUR:
-                        input_fp[fp] += offset;
-                        break;
-                    case SEEK_SET:
-                        input_fp[fp] = offset + FP_ZERO_OFFSET;
+                        input_fp[fp]->offset = offset;
                         break;
                     default:
                         tcg_abort();
@@ -3796,32 +3808,54 @@ void qemu_syscall_helper(uintptr_t syscall_no, uintptr_t syscall_arg0,
         //
         case SYS_READ:
             fp = syscall_arg0;
-            if (s_config.symbolic_inject_input_mode == READ_FD_0 &&
-                fp == FD_STDIN) {
-
-                if (input_fp[fp] == FP_CLOSED) {
+            if (!input_fp[fp]) {
+                // debug: check if we are reading from stdin
+                if (s_config.symbolic_inject_input_mode == READ_FD_0 &&
+                    fp == FD_STDIN) {
                     printf("Reading from stdin but fp has been previosly "
                            "closed. What do we need to do?");
                     tcg_abort();
-                } else if (input_fp[fp] == FP_UNINTIALIZED) {
-                    // first read from stdin, set offset to zero
-                    input_fp[fp] = FP_ZERO_OFFSET;
                 }
-                read_from_input(input_fp[fp] - FP_ZERO_OFFSET, syscall_arg1,
-                                ret_val);
-                input_fp[fp] += ret_val;
-
-            } else if (s_config.symbolic_inject_input_mode == FROM_FILE &&
-                       input_fp[fp] >= FP_ZERO_OFFSET) {
-                read_from_input(input_fp[fp] - FP_ZERO_OFFSET, syscall_arg1,
-                                ret_val);
-                input_fp[fp] += ret_val;
+            } else if (((int)ret_val) >= 0) {
+                read_from_input(input_fp[fp]->offset, syscall_arg1, ret_val);
+                input_fp[fp]->offset += ret_val;
             }
             break;
         //
+        case SYS_DUP: {
+            int oldfp = syscall_arg0;
+            fp        = ((int)ret_val);
+            if (fp >= 0 && input_fp[oldfp]) {
+                input_fp[fp] = input_fp[oldfp];
+                input_fp[fp]->shared_counter += 1;
+            }
+            break;
+        }
+        //
+        case SYS_MMAP: {
+            if (ret_val != CONST(MAP_FAILED)) {
+                fp = syscall_arg4;
+                if (input_fp[fp]) {
+                    size_t length = syscall_arg1;
+                    int    flags  = (int)syscall_arg3;
+                    off_t offset = syscall_arg5;
+                    if (flags & MAP_SHARED) {
+                        printf("shared mapping is not yet implemented\n");
+                    }
+                    read_from_input(offset, ret_val, length);
+                }
+            }
+            break;
+        }
+        //
+        case SYS_MUNMAP: {
+            break;
+        }
+        //
         case SYS_EXIT: {
             end_symbolic_mode();
-        } break;
+            break;
+        }
         //
         default:
             tcg_abort();
@@ -4400,14 +4434,14 @@ static inline void concretize_mem(uintptr_t addr, uintptr_t size)
         return;
     }
 
-    Expr* bytes_expr = NULL;
+    Expr*     bytes_expr  = NULL;
     uintptr_t bytes_value = 0;
-    size_t bytes_count = 0;
+    size_t    bytes_count = 0;
     for (size_t i = 0; i < size; i++) {
         if (exprs[i]) {
             if (bytes_expr == NULL) {
-                bytes_expr = exprs[i];
-                bytes_value = *(((uint8_t*) addr) + i);
+                bytes_expr  = exprs[i];
+                bytes_value = *(((uint8_t*)addr) + i);
                 bytes_count += 1;
             } else {
 
@@ -4418,7 +4452,7 @@ static inline void concretize_mem(uintptr_t addr, uintptr_t size)
 
                 bytes_expr = e_byte;
 
-                bytes_value |= *(((uint8_t*) addr) + i) << (bytes_count * 8);
+                bytes_value |= *(((uint8_t*)addr) + i) << (bytes_count * 8);
                 bytes_count += 1;
 
                 if (bytes_count == sizeof(uintptr_t)) {
@@ -4431,7 +4465,7 @@ static inline void concretize_mem(uintptr_t addr, uintptr_t size)
                     next_query[0].address = 0;
                     next_query++;
                     //
-                    bytes_expr = NULL;
+                    bytes_expr  = NULL;
                     bytes_value = 0;
                     bytes_count = 0;
                 }
@@ -4860,8 +4894,8 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                         TCGTemp* t_size =
                             new_non_conflicting_temp(TCG_TYPE_PTR);
                         tcg_movi(t_size, (uintptr_t)size, 0, op, NULL, tcg_ctx);
-                        add_void_call_3(move_temp_size_helper, t_from_idx, t_to_idx,
-                                        t_size, op, NULL, tcg_ctx);
+                        add_void_call_3(move_temp_size_helper, t_from_idx,
+                                        t_to_idx, t_size, op, NULL, tcg_ctx);
                         tcg_temp_free_internal(t_size);
                     }
                     tcg_temp_free_internal(t_to_idx);
@@ -5435,6 +5469,7 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                     uint64_t v = 0;
                     v          = PACK_0(v, temp_idx(t_a));
                     v          = PACK_1(v, temp_idx(t_b));
+                    v          = PACK_2(v, 0); // size
 
                     TCGTemp* t_packed_idx =
                         new_non_conflicting_temp(TCG_TYPE_PTR);
@@ -5760,7 +5795,7 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                                 break;
                             case 'a': {
                                 if (helper_name[2] == 'n') {
-                                    if (helper_name[4] == '_'){
+                                    if (helper_name[4] == '_') {
                                         opkind = AND;
                                         slice  = 1;
                                     } else {
@@ -6166,8 +6201,8 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                         //  that glibc uses optimized libraries
                         //  Should we do the same?
 
-                    } else if (strcmp(helper_name, "cvtsq2sd") == 0
-                                || strcmp(helper_name, "cvtsq2ss") == 0) {
+                    } else if (strcmp(helper_name, "cvtsq2sd") == 0 ||
+                               strcmp(helper_name, "cvtsq2ss") == 0) {
 
                         // we do not yet support floating point
 
@@ -6187,19 +6222,19 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                         MARK_TEMP_AS_NOT_ALLOCATED(t_dst);
                         tcg_temp_free_internal(t_size);
 
-                    } else if (strcmp(helper_name, "divsd") == 0
-                                || strcmp(helper_name, "divss") == 0
-                                || strcmp(helper_name, "addsd") == 0
-                                || strcmp(helper_name, "subss") == 0
-                                || strcmp(helper_name, "subsd") == 0
-                                || strcmp(helper_name, "mulsd") == 0
-                                || strcmp(helper_name, "cvtss2sd") == 0
-                                || strcmp(helper_name, "comisd") == 0 
-                                || strcmp(helper_name, "ucomiss") == 0
-                                || strcmp(helper_name, "comiss") == 0
-                                || strcmp(helper_name, "ucomisd") == 0
-                                || strcmp(helper_name, "cvtsd2ss") == 0
-                                || strcmp(helper_name, "cmpnlesd") == 0) {
+                    } else if (strcmp(helper_name, "divsd") == 0 ||
+                               strcmp(helper_name, "divss") == 0 ||
+                               strcmp(helper_name, "addsd") == 0 ||
+                               strcmp(helper_name, "subss") == 0 ||
+                               strcmp(helper_name, "subsd") == 0 ||
+                               strcmp(helper_name, "mulsd") == 0 ||
+                               strcmp(helper_name, "cvtss2sd") == 0 ||
+                               strcmp(helper_name, "comisd") == 0 ||
+                               strcmp(helper_name, "ucomiss") == 0 ||
+                               strcmp(helper_name, "comiss") == 0 ||
+                               strcmp(helper_name, "ucomisd") == 0 ||
+                               strcmp(helper_name, "cvtsd2ss") == 0 ||
+                               strcmp(helper_name, "cmpnlesd") == 0) {
 
                         // we do not yet support floating point
                         // concretize src and dst
@@ -6242,40 +6277,44 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
 
                         clear_temp(temp_idx(t_reg), op, tcg_ctx);
 
-                    } else if (strcmp(helper_name, "fnstcw") == 0
-                                || strcmp(helper_name, "fstl_ST0") == 0
-                                || strcmp(helper_name, "cvttsd2sq") == 0) {
+                    } else if (strcmp(helper_name, "fnstcw") == 0 ||
+                               strcmp(helper_name, "fstl_ST0") == 0 ||
+                               strcmp(helper_name, "cvttsd2sq") == 0) {
 
                         // we do not yet support floating point
 
                         TCGTemp* t_reg = arg_temp(op->args[0]);
                         clear_temp(temp_idx(t_reg), op, tcg_ctx);
 
-                    } else if (strcmp(helper_name, "fildl_ST0") == 0
-                                || strcmp(helper_name, "flds_FT0") == 0
-                                || strcmp(helper_name, "flds_ST0") == 0
-                                || strcmp(helper_name, "fildll_ST0") == 0) {
+                    } else if (strcmp(helper_name, "fildl_ST0") == 0 ||
+                               strcmp(helper_name, "flds_FT0") == 0 ||
+                               strcmp(helper_name, "flds_ST0") == 0 ||
+                               strcmp(helper_name, "fildll_ST0") == 0) {
 
                         // we do not yet support floating point
 
                         // ToDo: should we concretize the reg src?
 
-                    } else if (strcmp(helper_name, "fmul_ST0_FT0") == 0
-                                || strcmp(helper_name, "fpop") == 0
-                                || strcmp(helper_name, "fmov_FT0_STN") == 0
-                                || strcmp(helper_name, "fdiv_ST0_FT0") == 0
-                                || strcmp(helper_name, "fcomi_ST0_FT0") == 0
-                                || strcmp(helper_name, "fxchg_ST0_STN") == 0
-                                || strcmp(helper_name, "fmov_STN_ST0") == 0) {
+                    } else if (strcmp(helper_name, "fmul_ST0_FT0") == 0 ||
+                               strcmp(helper_name, "fpop") == 0 ||
+                               strcmp(helper_name, "fmov_FT0_STN") == 0 ||
+                               strcmp(helper_name, "fdiv_ST0_FT0") == 0 ||
+                               strcmp(helper_name, "fcomi_ST0_FT0") == 0 ||
+                               strcmp(helper_name, "fxchg_ST0_STN") == 0 ||
+                               strcmp(helper_name, "fmov_STN_ST0") == 0) {
 
                         // we do not yet support floating point
 
-                    } else if(strcmp(helper_name, "atomic_fetch_addl_le") == 0
-                        || strcmp(helper_name, "atomic_add_fetchl_le") == 0
-                        || strcmp(helper_name, "atomic_or_fetchl_le") == 0
-                        || strcmp(helper_name, "atomic_fetch_orl_le") == 0) {
+                    } else if (strcmp(helper_name, "atomic_fetch_addl_le") ==
+                                   0 ||
+                               strcmp(helper_name, "atomic_add_fetchl_le") ==
+                                   0 ||
+                               strcmp(helper_name, "atomic_or_fetchl_le") ==
+                                   0 ||
+                               strcmp(helper_name, "atomic_fetch_orl_le") ==
+                                   0) {
 
-                        TCGTemp* t_out = arg_temp(op->args[0]);
+                        TCGTemp* t_out   = arg_temp(op->args[0]);
                         TCGTemp* t_ptr_a = arg_temp(op->args[2]);
                         TCGTemp* t_val_b = arg_temp(op->args[3]);
 
@@ -6286,17 +6325,17 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                         uint64_t order;
                         if (helper_name[7] == 'o') {
                             opkind = OR;
-                            order = 1;
+                            order  = 1;
                         } else if (helper_name[7] == 'a') {
                             opkind = ADD;
-                            order = 1;
+                            order  = 1;
                         } else if (helper_name[7] == 'f') {
                             if (helper_name[13] == 'a') {
                                 opkind = ADD;
-                                order = 0;
+                                order  = 0;
                             } else if (helper_name[13] == 'o') {
                                 opkind = OR;
-                                order = 0;
+                                order  = 0;
                             } else {
                                 tcg_abort();
                             }
@@ -6314,7 +6353,7 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                         uintptr_t size_order_opkind = opkind;
                         size_order_opkind |= order << 8;
                         size_order_opkind |= size << 12;
-                        v          = PACK_3(v, size_order_opkind);
+                        v = PACK_3(v, size_order_opkind);
 
                         TCGTemp* t_packed_info =
                             new_non_conflicting_temp(TCG_TYPE_PTR);
@@ -6322,16 +6361,16 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
 
                         MARK_TEMP_AS_ALLOCATED(t_ptr_a);
                         MARK_TEMP_AS_ALLOCATED(t_val_b);
-                        add_void_call_3(atomic_fetch_op, t_packed_info,
-                                        t_ptr_a, t_val_b, op, NULL, tcg_ctx);
+                        add_void_call_3(atomic_fetch_op, t_packed_info, t_ptr_a,
+                                        t_val_b, op, NULL, tcg_ctx);
                         MARK_TEMP_AS_NOT_ALLOCATED(t_ptr_a);
                         MARK_TEMP_AS_NOT_ALLOCATED(t_val_b);
                         tcg_temp_free_internal(t_packed_info);
 
-                    } else if (strcmp(helper_name, "atomic_cmpxchgl_le") == 0
-                                || strcmp(helper_name, "atomic_cmpxchgq_le") == 0) {
+                    } else if (strcmp(helper_name, "atomic_cmpxchgl_le") == 0 ||
+                               strcmp(helper_name, "atomic_cmpxchgq_le") == 0) {
 
-                        TCGTemp* t_out = arg_temp(op->args[0]);
+                        TCGTemp* t_out   = arg_temp(op->args[0]);
                         TCGTemp* t_ptr_a = arg_temp(op->args[2]);
                         TCGTemp* t_val_b = arg_temp(op->args[3]);
                         TCGTemp* t_val_c = arg_temp(op->args[3]);
@@ -6352,14 +6391,13 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
 
                         uint64_t t_c_idx_size = size;
                         t_c_idx_size |= temp_idx(t_val_c) << 4;
-                        v          = PACK_3(v, t_c_idx_size);
+                        v = PACK_3(v, t_c_idx_size);
 
                         TCGTemp* t_packed_info =
                             new_non_conflicting_temp(TCG_TYPE_PTR);
                         tcg_movi(t_packed_info, v, 0, op, NULL, tcg_ctx);
 
-                        TCGTemp* t_pc =
-                            new_non_conflicting_temp(TCG_TYPE_PTR);
+                        TCGTemp* t_pc = new_non_conflicting_temp(TCG_TYPE_PTR);
                         tcg_movi(t_pc, pc, 0, op, NULL, tcg_ctx);
 
                         TCGTemp* t_addr_to =
@@ -6368,10 +6406,9 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
 
                         MARK_TEMP_AS_ALLOCATED(t_ptr_a);
                         MARK_TEMP_AS_ALLOCATED(t_val_b);
-                        add_void_call_5(cmpxchg_handler, t_packed_info,
-                                        t_ptr_a, t_val_b,
-                                        t_pc, t_addr_to,
-                                        op, NULL, tcg_ctx);
+                        add_void_call_5(cmpxchg_handler, t_packed_info, t_ptr_a,
+                                        t_val_b, t_pc, t_addr_to, op, NULL,
+                                        tcg_ctx);
                         MARK_TEMP_AS_NOT_ALLOCATED(t_ptr_a);
                         MARK_TEMP_AS_NOT_ALLOCATED(t_val_b);
 
@@ -6379,10 +6416,10 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                         tcg_temp_free_internal(t_pc);
                         tcg_temp_free_internal(t_addr_to);
 
-                    } else if (strcmp(helper_name, "atomic_xchgl_le") == 0
-                                || strcmp(helper_name, "atomic_xchgq_le") == 0) {
+                    } else if (strcmp(helper_name, "atomic_xchgl_le") == 0 ||
+                               strcmp(helper_name, "atomic_xchgq_le") == 0) {
 
-                        TCGTemp* t_out = arg_temp(op->args[0]);
+                        TCGTemp* t_out   = arg_temp(op->args[0]);
                         TCGTemp* t_ptr_a = arg_temp(op->args[2]);
                         TCGTemp* t_val_b = arg_temp(op->args[3]);
 
@@ -6406,8 +6443,7 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                         tcg_movi(t_packed_info, v, 0, op, NULL, tcg_ctx);
 
                         MARK_TEMP_AS_ALLOCATED(t_ptr_a);
-                        add_void_call_2(xchg_handler,
-                                        t_packed_info, t_ptr_a,
+                        add_void_call_2(xchg_handler, t_packed_info, t_ptr_a,
                                         op, NULL, tcg_ctx);
                         MARK_TEMP_AS_NOT_ALLOCATED(t_ptr_a);
 
@@ -6430,7 +6466,7 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                         if (!helper_is_whitelisted) {
                             printf("Helper %s is not instrumented\n",
                                    helper_name);
-                            //tcg_abort();
+                            // tcg_abort();
                         }
                     }
                 }
@@ -6511,7 +6547,8 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                              (uintptr_t)op->opc == INDEX_op_bswap32_i64 ? 4 : 0,
                              0, op, NULL, tcg_ctx);
 #if 1
-                    qemu_unop(get_opkind(op->opc), t_out, t_a, t_size, op, tcg_ctx);
+                    qemu_unop(get_opkind(op->opc), t_out, t_a, t_size, op,
+                              tcg_ctx);
 #else
                     TCGTemp* t_opkind = new_non_conflicting_temp(TCG_TYPE_PTR);
                     tcg_movi(t_opkind, (uintptr_t)get_opkind(op->opc), 0, op,
@@ -6718,7 +6755,7 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                 if (instrument) {
                     const TCGOpDef* def = &tcg_op_defs[op->opc];
                     printf("Unhandled TCG instruction: %s\n", def->name);
-                    //tcg_abort();
+                    tcg_abort();
                 }
         }
 

@@ -24,10 +24,10 @@
 #define SHM_DONE            ((void*)0xABCDABCD)
 #define MEM_BARRIER()       asm volatile("" ::: "memory")
 
-#define PACK_0(p, v) (p | (((uint64_t) v) & 0xFFFF))
-#define PACK_1(p, v) (p | ((((uint64_t) v) & 0xFFFF) << 16))
-#define PACK_2(p, v) (p | ((((uint64_t) v) & 0xFFFF) << 32))
-#define PACK_3(p, v) (p | ((((uint64_t) v) & 0xFFFF) << 48))
+#define PACK_0(p, v) (p | (((uint64_t)v) & 0xFFFF))
+#define PACK_1(p, v) (p | ((((uint64_t)v) & 0xFFFF) << 16))
+#define PACK_2(p, v) (p | ((((uint64_t)v) & 0xFFFF) << 32))
+#define PACK_3(p, v) (p | ((((uint64_t)v) & 0xFFFF) << 48))
 
 #define UNPACK_0(p) (p & 0xFFFF)
 #define UNPACK_1(p) ((p >> 16) & 0xFFFF)
@@ -97,9 +97,9 @@ typedef enum OPKIND {
     QSEXTRACT, // same as EXTRACT but using arithmetic shift
     QZEXTRACT2,
     //
-    CTZ, // count trailing zeros (x86: BSF, TZCNT)
-    CLZ, // count leading zeros (x86: BSR)
-    BSWAP,
+    CTZ,   // count trailing zeros (x86: BSF, TZCNT)
+    CLZ,   // count leading zeros (x86: BSR)
+    BSWAP, // 44
     RCL,
     //
     ITE, // 44
@@ -203,10 +203,10 @@ typedef struct Query {
         QueryArgs8 args8;
         uintptr_t  args64;
         struct {
-            uint16_t  index;
-            uint16_t  count;
-            uint16_t  index_inv;
-            uint16_t  count_inv;
+            uint16_t index;
+            uint16_t count;
+            uint16_t index_inv;
+            uint16_t count_inv;
         } args16;
     };
 } Query;
@@ -218,6 +218,8 @@ extern Expr* pool;
 static inline const char* opkind_to_str(uint8_t opkind)
 {
     switch (opkind) {
+        case IS_CONST:
+            return "const_data";
         case IS_SYMBOLIC:
             return "symbolic_data";
         case NOT:
@@ -230,6 +232,8 @@ static inline const char* opkind_to_str(uint8_t opkind)
             return "-";
         case MUL:
             return "*";
+        case MULU:
+            return "*u";
         case DIV:
             return "/";
         case DIVU:
@@ -297,11 +301,17 @@ static inline const char* opkind_to_str(uint8_t opkind)
 
         case CTZ:
             return "CTZ";
+        case CLZ:
+            return "CLZ";
+        case BSWAP:
+            return "BSWAP";
         case RCL:
             return "RCL";
 
         case DEPOSIT:
             return "DEPOSIT";
+        case QZEXTRACT:
+            return "QZEXTRACT";
         case QZEXTRACT2:
             return "QZEXTRACT2";
 
@@ -320,6 +330,18 @@ static inline const char* opkind_to_str(uint8_t opkind)
             return "CMPB";
         case PMOVMSKB:
             return "PMOVMSKB";
+
+        case MIN:
+            return "MIN";
+        case MAX:
+            return "MAX";
+
+        case SIGNED_SATURATION:
+            return "SIGNED_SATURATION";
+        case UNSIGNED_SATURATION:
+            return "UNSIGNED_SATURATION";
+        case NAND:
+            return "NAND";
 
         case MUL_HIGH:
             return "MUL_HIGH";
@@ -431,7 +453,7 @@ static inline void print_expr_internal(Expr* expr, uint8_t reset)
 
             printf(" %s", opkind_to_str(expr->opkind));
 
-            if (expr->opkind != NEG && expr->opkind != PMOVMSKB) {
+            if (expr->opkind != NEG && expr->opkind != PMOVMSKB && expr->opkind != BSWAP) {
                 if (expr->op2_is_const || expr->opkind == EXTRACT8 ||
                     expr->opkind == ZEXT || expr->opkind == SEXT ||
                     expr->op2 == NULL)
@@ -464,7 +486,8 @@ static inline void print_expr_internal(Expr* expr, uint8_t reset)
                     assert(expr->op2);
             }
 
-            if (!expr->op2_is_const && expr->opkind != EXTRACT8 &&
+            if (!expr->op2_is_const && expr->opkind != EXTRACT8  &&
+                expr->opkind != BSWAP  &&
                 expr->opkind != ZEXT && expr->opkind != SEXT &&
                 expr->op2 != NULL) {
                 assert(GET_EXPR_IDX(expr->op2) < MAX_PRINT_CHECK);

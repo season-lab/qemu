@@ -9,6 +9,10 @@ typedef enum SyscallNo {
     SYS_CLOSE,
     SYS_SEEK,
     SYS_EXIT,
+    SYS_DUP,
+    SYS_MMAP,
+    SYS_MMAP2,
+    SYS_MUNMAP,
     SYS_NOT_INTERESTING
 } SyscallNo;
 

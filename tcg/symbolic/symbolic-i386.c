@@ -623,11 +623,14 @@ static void qemu_xmm_op_internal(uintptr_t opkind, uint8_t* dst_addr,
 
         uint8_t src_is_not_null = 0;
         uint8_t dst_is_not_null = 0;
-        assert(src_expr_addr && dst_expr_addr);
         for (size_t k = 0; k < slice && !src_is_not_null && !dst_is_not_null;
              k++) {
-            src_is_not_null |= src_expr_addr[i + k] != NULL;
-            dst_is_not_null |= dst_expr_addr[i + k] != NULL;
+            if (src_expr_addr) {
+                src_is_not_null |= src_expr_addr[i + k] != NULL;
+            }
+            if (dst_expr_addr) {
+                dst_is_not_null |= dst_expr_addr[i + k] != NULL;
+            }
         }
         if (!src_is_not_null && !dst_is_not_null) {
             // no need to clear dst since it is already fully concrete
@@ -635,13 +638,22 @@ static void qemu_xmm_op_internal(uintptr_t opkind, uint8_t* dst_addr,
         }
 
 #if 0
-        // uintptr_t pc = packed_slice_pc >> 8;
+        uintptr_t pc = packed_slice_pc >> 8;
         printf("[+] qemu_xmm_op: pc=%lx opkind=%s src_addr=%p dst_addr=%p slice=%lu count=%ld\n",
             pc, opkind_to_str(opkind), src_addr, dst_addr, slice, i);
 #endif
 
         Expr* e   = new_expr();
         e->opkind = opkind;
+
+        if (src_expr_addr == NULL) {
+            src_expr_addr =
+                get_expr_addr((uintptr_t)src_addr, n_bytes, 1, NULL);
+        }
+        if (dst_expr_addr == NULL) {
+            dst_expr_addr =
+                get_expr_addr((uintptr_t)dst_addr, n_bytes, 1, NULL);
+        }
 
         Expr* src_slice;
         Expr* dst_slice;
@@ -989,9 +1001,8 @@ static void qemu_xmm_pack(uint64_t* dst_addr, uint64_t* src_addr,
     }
 }
 
-static inline void atomic_fetch_op( uint64_t packed_info,
-                                    uintptr_t a_ptr,
-                                    uintptr_t b_val)
+static inline void atomic_fetch_op(uint64_t packed_info, uintptr_t a_ptr,
+                                   uintptr_t b_val)
 {
     uintptr_t t_out_idx         = UNPACK_0(packed_info);
     uintptr_t t_a_idx           = UNPACK_1(packed_info);
@@ -999,19 +1010,19 @@ static inline void atomic_fetch_op( uint64_t packed_info,
     uintptr_t size_order_opkind = UNPACK_3(packed_info);
 
     uintptr_t opkind = size_order_opkind & 0xFF;
-    uintptr_t order = (size_order_opkind >> 8) & 0xF;
-    uintptr_t size = size_order_opkind >> 12;
+    uintptr_t order  = (size_order_opkind >> 8) & 0xF;
+    uintptr_t size   = size_order_opkind >> 12;
 
     if (s_temps[t_a_idx]) {
         // ToDo: memory slice
         load_concretization(s_temps[t_a_idx], a_ptr);
     }
 
-    Expr** a_exprs =
-        get_expr_addr(a_ptr, size, 0, NULL);
+    Expr** a_exprs = get_expr_addr(a_ptr, size, 0, NULL);
 
     if (a_exprs == NULL && s_temps[t_b_idx] == NULL) {
         s_temps[t_out_idx] = NULL;
+        return;
     }
 
     int a_is_not_null = 0;
@@ -1021,11 +1032,12 @@ static inline void atomic_fetch_op( uint64_t packed_info,
         }
     }
 
-    if (!a_is_not_null && s_temps[t_out_idx] == NULL) {
+    if (!a_is_not_null && s_temps[t_b_idx] == NULL) {
         s_temps[t_out_idx] = NULL;
+        return;
     }
 
-    Expr* e_a = NULL;
+    Expr*     e_a   = NULL;
     uintptr_t a_val = 0;
     if (a_exprs == NULL || !a_is_not_null) {
         switch (size) {
@@ -1045,13 +1057,15 @@ static inline void atomic_fetch_op( uint64_t packed_info,
                 tcg_abort();
         }
     } else {
-        e_a = build_concat_expr(a_exprs, (void*) a_ptr, size, 0);
+        e_a = build_concat_expr(a_exprs, (void*)a_ptr, size, 0);
     }
-
+#if 0
+    printf("atomic_fetch_op: expr_a=%p expr_b=%p\n", a_exprs, s_temps[t_b_idx]);
+#endif
     Expr* e   = new_expr();
     e->opkind = opkind;
     SET_EXPR_OP(e->op1, e->op1_is_const, e_a, a_val);
-    SET_EXPR_OP(e->op2, e->op2_is_const, s_temps[t_out_idx], b_val);
+    SET_EXPR_OP(e->op2, e->op2_is_const, s_temps[t_b_idx], b_val);
     SET_EXPR_CONST_OP(e->op3, e->op3_is_const, size);
 
     if (order == 0) {
@@ -1072,18 +1086,15 @@ static inline void atomic_fetch_op( uint64_t packed_info,
     }
 }
 
-static void cmpxchg_handler(uint64_t packed_info,
-                            uintptr_t a_ptr,
-                            uintptr_t b_val,
-                            uintptr_t pc,
-                            uintptr_t addr_to)
+static void cmpxchg_handler(uint64_t packed_info, uintptr_t a_ptr,
+                            uintptr_t b_val, uintptr_t pc, uintptr_t addr_to)
 {
-    uintptr_t t_out_idx     = UNPACK_0(packed_info);
-    uintptr_t t_a_idx       = UNPACK_1(packed_info);
-    uintptr_t t_b_idx       = UNPACK_2(packed_info);
-    uintptr_t t_c_idx_size  = UNPACK_3(packed_info);
+    uintptr_t t_out_idx    = UNPACK_0(packed_info);
+    uintptr_t t_a_idx      = UNPACK_1(packed_info);
+    uintptr_t t_b_idx      = UNPACK_2(packed_info);
+    uintptr_t t_c_idx_size = UNPACK_3(packed_info);
 
-    uintptr_t size = t_c_idx_size & 0xF;
+    uintptr_t size    = t_c_idx_size & 0xF;
     uintptr_t t_c_idx = t_c_idx_size >> 4;
 
     if (s_temps[t_a_idx]) {
@@ -1092,8 +1103,8 @@ static void cmpxchg_handler(uint64_t packed_info,
     }
 
     Expr** a_exprs = get_expr_addr(a_ptr, size, 0, NULL);
-    Expr* expr_b = s_temps[t_b_idx];
-    Expr* expr_c = s_temps[t_c_idx];
+    Expr*  expr_b  = s_temps[t_b_idx];
+    Expr*  expr_c  = s_temps[t_c_idx];
 
     int a_is_not_null = 0;
     if (a_exprs) {
@@ -1102,9 +1113,10 @@ static void cmpxchg_handler(uint64_t packed_info,
         }
     }
 
-    if ((a_exprs == NULL || !a_is_not_null)
-            && expr_b == NULL && expr_c == NULL) {
+    if ((a_exprs == NULL || !a_is_not_null) && expr_b == NULL &&
+        expr_c == NULL) {
         s_temps[t_out_idx] = NULL;
+        return;
     }
 
     uintptr_t a_val;
@@ -1127,11 +1139,16 @@ static void cmpxchg_handler(uint64_t packed_info,
 
     Expr* expr_a = NULL;
     if (a_exprs != NULL && a_is_not_null) {
-        expr_a = build_concat_expr(a_exprs, (void*) a_ptr, size, 0);
+        expr_a = build_concat_expr(a_exprs, (void*)a_ptr, size, 0);
     }
 
     if ((a_exprs != NULL && a_is_not_null) || expr_b != NULL) {
-        branch_helper_internal(a_val, b_val, TCG_COND_EQ, expr_a, expr_b, size, pc, addr_to);
+#if 0
+        printf("cmpxchg: a_exprs=%p a_is_not_null=%d expr_b=%p\n", 
+            a_exprs, a_is_not_null, expr_b);
+#endif
+        branch_helper_internal(a_val, b_val, TCG_COND_EQ, expr_a, expr_b, 
+                                size == 8 ? 0 : size, pc, addr_to);
     }
 
     if (a_val == b_val) {
@@ -1160,13 +1177,12 @@ static void cmpxchg_handler(uint64_t packed_info,
     }
 }
 
-static void xchg_handler(uint64_t packed_info,
-                            uintptr_t a_ptr)
+static void xchg_handler(uint64_t packed_info, uintptr_t a_ptr)
 {
-    uintptr_t t_out_idx     = UNPACK_0(packed_info);
-    uintptr_t t_a_idx       = UNPACK_1(packed_info);
-    uintptr_t t_b_idx       = UNPACK_2(packed_info);
-    uintptr_t size          = UNPACK_3(packed_info);
+    uintptr_t t_out_idx = UNPACK_0(packed_info);
+    uintptr_t t_a_idx   = UNPACK_1(packed_info);
+    uintptr_t t_b_idx   = UNPACK_2(packed_info);
+    uintptr_t size      = UNPACK_3(packed_info);
 
     if (s_temps[t_a_idx]) {
         // ToDo: memory slice
@@ -1174,7 +1190,7 @@ static void xchg_handler(uint64_t packed_info,
     }
 
     Expr** a_exprs = get_expr_addr(a_ptr, size, 0, NULL);
-    Expr* expr_b = s_temps[t_b_idx];
+    Expr*  expr_b  = s_temps[t_b_idx];
 
     int a_is_not_null = 0;
     if (a_exprs) {
@@ -1183,14 +1199,14 @@ static void xchg_handler(uint64_t packed_info,
         }
     }
 
-    if ((a_exprs == NULL || !a_is_not_null)
-            && expr_b == NULL) {
+    if ((a_exprs == NULL || !a_is_not_null) && expr_b == NULL) {
         s_temps[t_out_idx] = NULL;
+        return;
     }
 
     Expr* expr_a = NULL;
     if (a_exprs != NULL && a_is_not_null) {
-        expr_a = build_concat_expr(a_exprs, (void*) a_ptr, size, 0);
+        expr_a = build_concat_expr(a_exprs, (void*)a_ptr, size, 0);
     }
     s_temps[t_out_idx] = expr_a;
 
@@ -1403,7 +1419,7 @@ static void qemu_divl_EAX(uint64_t packed_idx, uintptr_t rax, uintptr_t rdx,
         SET_EXPR_CONST_OP(eax->op3, eax->op3_is_const, 0);
 
         Expr* t_0   = new_expr();
-        eax->opkind = EXTRACT;
+        t_0->opkind = EXTRACT;
         SET_EXPR_OP(t_0->op1, t_0->op1_is_const, s_temps[t_0_idx], t0);
         SET_EXPR_CONST_OP(t_0->op2, t_0->op2_is_const, 31);
         SET_EXPR_CONST_OP(t_0->op3, t_0->op3_is_const, 0);
@@ -1417,6 +1433,8 @@ static void qemu_divl_EAX(uint64_t packed_idx, uintptr_t rax, uintptr_t rdx,
         d->opkind = mode == 0 ? DIVU : DIV;
         d->op1    = edxeax;
         d->op2    = t_0;
+
+        // print_expr(d);
 
         Expr* d2   = new_expr();
         d2->opkind = EXTRACT;

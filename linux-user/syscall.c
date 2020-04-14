@@ -11995,6 +11995,22 @@ abi_long do_syscall(void *cpu_env, int num, abi_long arg1,
         case TARGET_NR_lseek:
             syscall_no = SYS_SEEK;
             break;
+        case TARGET_NR_dup:
+        case TARGET_NR_dup2:
+        case TARGET_NR_dup3:
+            syscall_no = SYS_DUP;
+            break;
+        case TARGET_NR_mmap:
+            syscall_no = SYS_MMAP;
+            break;
+#if defined(TARGET_NR_mmap2)
+        case TARGET_NR_mmap2:
+            syscall_no = SYS_MMAP2;
+            break;
+#endif
+        case TARGET_NR_munmap:
+            syscall_no = SYS_MUNMAP;
+            break;
         case TARGET_NR_exit:
         case TARGET_NR_exit_group:
             syscall_no = SYS_EXIT;
@@ -12003,7 +12019,7 @@ abi_long do_syscall(void *cpu_env, int num, abi_long arg1,
             syscall_no = SYS_NOT_INTERESTING;
     }
     if (syscall_no == SYS_EXIT) {
-        qemu_syscall_helper(syscall_no, arg1, arg2, arg3, 0);
+        qemu_syscall_helper(syscall_no, arg1, arg2, arg3, arg4, arg5, arg6, arg7, 0);
     }
 #endif
 
@@ -12022,7 +12038,7 @@ abi_long do_syscall(void *cpu_env, int num, abi_long arg1,
 
 #ifdef SYMBOLIC_INSTRUMENTATION
     if (syscall_no != SYS_NOT_INTERESTING) {
-        qemu_syscall_helper(syscall_no, arg1, arg2, arg3, ret);
+        qemu_syscall_helper(syscall_no, arg1, arg2, arg3, arg4, arg5, arg6, arg7, ret);
     }
 #endif
 

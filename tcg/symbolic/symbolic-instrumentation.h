@@ -7,6 +7,8 @@
 extern int  symbolic_force_flush_cache;
 extern void qemu_syscall_helper(uintptr_t syscall_no, uintptr_t syscall_arg0,
                                 uintptr_t syscall_arg1, uintptr_t syscall_arg2,
+                                uintptr_t syscall_arg3, uintptr_t syscall_arg4,
+                                uintptr_t syscall_arg5, uintptr_t syscall_arg6,
                                 uintptr_t ret_val);
 
 #include "syscall_nr.h"
