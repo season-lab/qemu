@@ -28,6 +28,8 @@ uintptr_t symbolic_pc;
 TCGOp*              symb_current_gen_op                   = NULL;
 int                 symb_restore_pass                     = 0;
 ConditionalTempSync conditional_temp_syncs[TCG_MAX_TEMPS] = {0};
+uint64_t symbolic_start_code = 0;
+uint64_t symbolic_end_code = 0;
 
 // symbolic temps
 Expr* s_temps[TCG_MAX_TEMPS] = {0};
@@ -60,7 +62,8 @@ static uint8_t  virgin_bitmap[BRANCH_BITMAP_SIZE] = {0};
 static uint8_t* bitmap                            = NULL;
 static uint16_t prev_loc                          = 0;
 
-GHashTable* coverage_log_ht = NULL;
+GHashTable* coverage_log_bb_ht = NULL;
+GHashTable* coverage_log_edges_ht = NULL;
 
 // path constraints
 Expr* path_constraints = NULL;
@@ -168,7 +171,12 @@ static inline void    load_configuration(void)
 {
     char* var = getenv("COVERAGE_TRACER_LOG");
     if (var) {
-        s_config.coverage_tracer_log = var;
+        s_config.coverage_tracer_log_bb = var;
+    }
+
+    var = getenv("COVERAGE_TRACER_LOG_EDGES");
+    if (var) {
+        s_config.coverage_tracer_log_edges = var;
     }
 
     var = getenv("COVERAGE_TRACER_FILTER_LIB");
@@ -339,8 +347,11 @@ void init_symbolic_mode(void)
     if (s_config.coverage_tracer) {
         load_coverage_bitmap(s_config.coverage_tracer, bitmap,
                              BRANCH_BITMAP_SIZE);
-        if (s_config.coverage_tracer_log) {
-            load_coverage_log(s_config.coverage_tracer_log, &coverage_log_ht);
+        if (s_config.coverage_tracer_log_bb) {
+            load_coverage_log(s_config.coverage_tracer_log_bb, &coverage_log_bb_ht);
+        }
+        if (s_config.coverage_tracer_log_edges) {
+            load_coverage_log(s_config.coverage_tracer_log_edges, &coverage_log_edges_ht);
         }
         return;
     }
@@ -1097,13 +1108,14 @@ static inline void visitTB(uintptr_t cur_loc)
 {
     // printf("visiting TB 0x%lx\n", cur_loc);
 
-    if (s_config.coverage_tracer_filter_lib > 0 && cur_loc > 0x600000) {
+    if (s_config.coverage_tracer_filter_lib > 0 &&
+            (cur_loc > symbolic_end_code || cur_loc < symbolic_start_code)) {
         return;
     }
 
-    if (coverage_log_ht) {
+    if (coverage_log_bb_ht) {
         if (s_config.coverage_tracer_filter_lib >= 0) {
-            g_hash_table_add(coverage_log_ht, (gpointer)cur_loc);
+            g_hash_table_add(coverage_log_bb_ht, (gpointer)cur_loc);
         }
     }
 
@@ -1119,6 +1131,12 @@ static inline void visitTB(uintptr_t cur_loc)
     // printf("Callstack hash %x\n", callstack.hash);
 
     index &= BRANCH_BITMAP_SIZE - 1;
+
+    if (coverage_log_edges_ht) {
+        if (s_config.coverage_tracer_filter_lib >= 0) {
+            g_hash_table_add(coverage_log_edges_ht, (gpointer)index);
+        }
+    }
 
     // update bitmap for this run
     if (virgin_bitmap[index] < 255) {
@@ -3732,9 +3750,11 @@ void qemu_syscall_helper(uintptr_t syscall_no, uintptr_t syscall_arg0,
                 virgin_bitmap[i] = count_class_binary[virgin_bitmap[i]];
                 // new edge?
                 if (!bitmap[i] && virgin_bitmap[i]) {
+#if 0
                     if (s_config.coverage_tracer_filter_lib < 0) {
-                        g_hash_table_add(coverage_log_ht, (gpointer)i);
+                        g_hash_table_add(coverage_log_bb_ht, (gpointer)i);
                     }
+#endif
                 }
                 // merge
                 bitmap[i] |= virgin_bitmap[i];
@@ -3742,9 +3762,13 @@ void qemu_syscall_helper(uintptr_t syscall_no, uintptr_t syscall_arg0,
 
             save_coverage_bitmap(s_config.coverage_tracer, bitmap,
                                  BRANCH_BITMAP_SIZE);
-            if (s_config.coverage_tracer_log) {
-                save_coverage_log(s_config.coverage_tracer_log,
-                                  &coverage_log_ht);
+            if (s_config.coverage_tracer_log_bb) {
+                save_coverage_log(s_config.coverage_tracer_log_bb,
+                                  &coverage_log_bb_ht);
+            }
+            if (s_config.coverage_tracer_log_edges) {
+                save_coverage_log(s_config.coverage_tracer_log_edges,
+                                  &coverage_log_edges_ht);
             }
         }
         return;

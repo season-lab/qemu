@@ -11947,7 +11947,6 @@ static abi_long do_syscall1(void *cpu_env, int num, abi_long arg1,
 }
 
 #include "../tcg/symbolic/symbolic-instrumentation.h"
-
 #include <pthread.h>
 
 abi_long do_syscall(void *cpu_env, int num, abi_long arg1,

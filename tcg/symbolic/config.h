@@ -25,7 +25,8 @@ typedef struct SymbolicConfig {
     uintptr_t plt_stub_printf;
     //
     const char* coverage_tracer;
-    const char* coverage_tracer_log;
+    const char* coverage_tracer_log_bb;
+    const char* coverage_tracer_log_edges;
     int8_t      coverage_tracer_filter_lib;
 } SymbolicConfig;
 

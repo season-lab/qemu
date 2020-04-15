@@ -22,6 +22,8 @@
 
 #define ELF_OSABI   ELFOSABI_SYSV
 
+#include "../tcg/symbolic/symbolic-instrumentation.h"
+
 /* from personality.h */
 
 /*
@@ -2430,9 +2432,19 @@ static void load_elf_image(const char *image_name, int image_fd,
             if (elf_prot & PROT_EXEC) {
                 if (vaddr < info->start_code) {
                     info->start_code = vaddr;
+#ifdef SYMBOLIC_INSTRUMENTATION
+                    if (!symbolic_start_code) {
+                        symbolic_start_code = vaddr;
+                    }
+#endif
                 }
                 if (vaddr_ef > info->end_code) {
                     info->end_code = vaddr_ef;
+#ifdef SYMBOLIC_INSTRUMENTATION
+                    if (!symbolic_end_code) {
+                        symbolic_end_code = vaddr_ef;
+                    }
+#endif
                 }
             }
             if (elf_prot & PROT_WRITE) {
