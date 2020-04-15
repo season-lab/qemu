@@ -39,7 +39,8 @@
 typedef enum OPKIND {
     RESERVED,
     //
-    IS_CONST, // constants could also be embedded within an operand
+    IS_CONST,   // constants could also be embedded within an operand
+                // for now, we assume 8 bit constants!
     IS_SYMBOLIC,
     // unary
     NEG,
@@ -80,7 +81,8 @@ typedef enum OPKIND {
     SEXT, // SEXT(arg0, n): sign-extend arg0 from the n-1 msb bits
     // binary
     CONCAT,   // 34
-    CONCAT8,  // CONCAT8(arg0, arg1): concat one byte (arg1) to arg0
+    CONCAT8L,  // CONCAT8(arg0, arg1): concat arg1 (1 byte) to arg0
+    CONCAT8R,  // CONCAT8(arg0, arg1): concat arg0 to arg1 (1 byte)
     EXTRACT8, // EXTRACT8(arg0, i): extract i-th byte from arg0
     EXTRACT,
     // ternary
@@ -95,20 +97,20 @@ typedef enum OPKIND {
                // e.g., EXTRACT(arg0, arg1, 8, 4):
                //  when N_BITS=32 then arg0 = (arg1 << 20) >> 28
     QSEXTRACT, // same as EXTRACT but using arithmetic shift
-    QZEXTRACT2,
+    QZEXTRACT2, // 42
     //
     CTZ,   // count trailing zeros (x86: BSF, TZCNT)
     CLZ,   // count leading zeros (x86: BSR)
-    BSWAP, // 44
+    BSWAP, // 45
     RCL,
     //
-    ITE, // 44
+    ITE, // 47
     ITE_EQ_ZERO,
     ITE_NE_ZERO,
     OR_3,
     XOR_3,
     // XMM
-    PMOVMSKB, // 49
+    PMOVMSKB, // 52
     CMP_EQ,
     CMP_GT,
     CMP_GE,
@@ -120,10 +122,10 @@ typedef enum OPKIND {
     UNSIGNED_SATURATION,
     NAND,
     // double binop
-    MUL_HIGH, // 62
+    MUL_HIGH, // 63
     MULU_HIGH,
     //
-    EFLAGS_ALL_ADD,
+    EFLAGS_ALL_ADD, // 65
     EFLAGS_ALL_ADCB,
     EFLAGS_ALL_ADCW,
     EFLAGS_ALL_ADCL,
@@ -296,8 +298,10 @@ static inline const char* opkind_to_str(uint8_t opkind)
             return "EXTRACT8";
         case EXTRACT:
             return "EXTRACT";
-        case CONCAT8:
-            return "CONCAT8";
+        case CONCAT8R:
+            return "CONCAT8R";
+        case CONCAT8L:
+            return "CONCAT8L";
 
         case CTZ:
             return "CTZ";

@@ -536,7 +536,7 @@ static inline Expr* build_concat_expr(Expr** exprs, void* addr, size_t size,
             }
         } else {
             Expr* n_expr   = new_expr();
-            n_expr->opkind = CONCAT8;
+            n_expr->opkind = CONCAT8R;
             if (exprs[idx] == NULL) {
                 // fetch the concrete value, embed it in the expr
                 uint8_t* byte_addr   = ((uint8_t*)addr) + idx;

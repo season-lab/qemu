@@ -15,7 +15,7 @@
 
 //#define SYMBOLIC_DEBUG
 //#define DISABLE_SOLVER
-#define SYMBOLIC_COSTANT_ACCESS 0
+#define SYMBOLIC_COSTANT_ACCESS 1
 
 #define QUEUE_OP_MAX_SIZE 128
 size_t        op_to_add_size               = 0;
@@ -2538,7 +2538,7 @@ static inline void qemu_load_helper(uintptr_t orig_addr,
                     e = exprs[i];
             } else {
                 Expr* n_expr   = new_expr();
-                n_expr->opkind = CONCAT8;
+                n_expr->opkind = CONCAT8R;
 
                 n_expr->op1 = e;
 
@@ -2666,7 +2666,7 @@ static inline void qemu_load(TCGTemp* t_addr, TCGTemp* t_val, uintptr_t offset,
             allocate_new_expr(t_new_expr, op_in, tcg_ctx);
 
             TCGTemp* t_opkind = new_non_conflicting_temp(TCG_TYPE_I64);
-            tcg_movi(t_opkind, CONCAT8, 0, op_in, NULL, tcg_ctx);
+            tcg_movi(t_opkind, CONCAT8L, 0, op_in, NULL, tcg_ctx);
             tcg_store_n(t_new_expr, t_opkind, offsetof(Expr, opkind), 0, 1,
                         sizeof(uint8_t), op_in, NULL, tcg_ctx);
 
@@ -4452,7 +4452,7 @@ static inline void concretize_mem(uintptr_t addr, uintptr_t size)
             } else {
 
                 Expr* e_byte   = new_expr();
-                e_byte->opkind = CONCAT;
+                e_byte->opkind = CONCAT8L;
                 e_byte->op1    = exprs[i];
                 e_byte->op2    = bytes_expr;
 
