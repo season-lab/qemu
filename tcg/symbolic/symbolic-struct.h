@@ -135,7 +135,7 @@ typedef enum OPKIND {
     EFLAGS_ALL_SBBB,
     EFLAGS_ALL_SBBW,
     EFLAGS_ALL_SBBL,
-    EFLAGS_ALL_SBBQ,
+    EFLAGS_ALL_SBBQ, // 75
     EFLAGS_ALL_LOGIC,
     EFLAGS_ALL_INC,
     EFLAGS_ALL_DEC,
@@ -147,7 +147,7 @@ typedef enum OPKIND {
     EFLAGS_ALL_ADCOX,
     EFLAGS_ALL_RCL,
     //
-    EFLAGS_C_ADD,
+    EFLAGS_C_ADD, // 86
     EFLAGS_C_ADCB,
     EFLAGS_C_ADCW,
     EFLAGS_C_ADCL,
@@ -157,12 +157,12 @@ typedef enum OPKIND {
     EFLAGS_C_SBBB,
     EFLAGS_C_SBBW,
     EFLAGS_C_SBBL,
-    EFLAGS_C_SBBQ,
+    EFLAGS_C_SBBQ, // 96
     EFLAGS_C_LOGIC,
     EFLAGS_C_SHL,
     EFLAGS_C_BMILG,
     //
-    SYMBOLIC_PC,
+    SYMBOLIC_PC, // 100
     SYMBOLIC_JUMP_TABLE_ACCESS,
     MEMORY_SLICE,
     MEMORY_SLICE_ACCESS,
@@ -408,6 +408,8 @@ static inline const char* opkind_to_str(uint8_t opkind)
         case SYMBOLIC_PC:
             return "SYMBOLIC_PC";
         case MEMORY_SLICE:
+            return "MEMORY_SLICE";
+        case MEMORY_SLICE_ACCESS:
             return "MEMORY_SLICE";
         case SYMBOLIC_LOAD:
             return "SYMBOLIC_LOAD";

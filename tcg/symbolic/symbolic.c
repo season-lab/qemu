@@ -2269,7 +2269,6 @@ static inline uintptr_t find_const_base(Expr* e, int depth)
 
 #if SYMBOLIC_COSTANT_ACCESS
 static uintptr_t symbolic_access_id = MAX_INPUT_SIZE;
-#endif
 
 typedef struct {
     uintptr_t base;
@@ -2281,6 +2280,7 @@ typedef struct {
 #define HASH_ADDR(a)   ((a >> 8) ^ (a << 8))
 #define CONST_MAP_SIZE 0x1000
 static MemorySlice const_mem_map[CONST_MAP_SIZE] = {0};
+#endif
 static uintptr_t   slices_count                  = 0;
 
 static inline Expr* get_base_expr(Expr* e)
@@ -2298,6 +2298,12 @@ static inline Expr* get_base_expr(Expr* e)
 static Expr*       last_load_concretization = NULL;
 static inline void load_concretization(Expr* addr_expr, uintptr_t addr)
 {
+#if 0
+    if (CONST(addr_expr) < 0x500000) {
+        tcg_abort();
+    }
+#endif
+
     Expr* base_expr = get_base_expr(addr_expr);
 
     if (last_load_concretization != base_expr) {
@@ -2359,8 +2365,13 @@ static inline void qemu_load_helper(uintptr_t orig_addr,
 #endif
 
 #if SYMBOLIC_COSTANT_ACCESS
-    if (addr_idx > 0 && s_temps[addr_idx]) {
-        // printf("\nSymbolic Access\n");
+    if (addr_idx < TCG_MAX_TEMPS && s_temps[addr_idx]) {
+#if 0
+        if (CONST(s_temps[addr_idx]) < 0x500000) {
+           printf("\nSymbolic Access: %p\n", s_temps[addr_idx]);
+           tcg_abort();
+        }
+#endif
         uintptr_t base = find_const_base(s_temps[addr_idx], 0);
         if (IS_LIKELY_CONST_BASE(base)) {
 #if 0
@@ -2474,6 +2485,16 @@ static inline void qemu_load_helper(uintptr_t orig_addr,
                     k += 1;
                 }
 
+                if (size < 8) {
+                    Expr*     n_expr = new_expr();
+                    uintptr_t opkind = get_mem_op_signextend(mem_op) ? SEXT : ZEXT;
+                    n_expr->opkind   = opkind;
+                    n_expr->op1      = e;
+                    n_expr->op2      = (Expr*)(8 * size);
+                    e                = n_expr;
+                    // printf("Zero extending on load. %lu\n", (8 * size));
+                }
+
                 symbolic_access_id += 1;
                 s_temps[val_idx] = e;
 
@@ -2487,9 +2508,11 @@ static inline void qemu_load_helper(uintptr_t orig_addr,
                        ((char*)next_free_expr) - ((char*)initial_free_expr));
                 next_free_expr = initial_free_expr;
 
+                // printf("Load concretization: expr=%p", s_temps[addr_idx]);
                 load_concretization(s_temps[addr_idx], orig_addr);
             }
         } else {
+            // printf("Load concretization: expr=%p", s_temps[addr_idx]);
             load_concretization(s_temps[addr_idx], orig_addr);
         }
     }
@@ -2831,6 +2854,7 @@ static inline void qemu_store_helper(uintptr_t orig_addr,
     printf("Store at %lx\n", addr);
 #endif
 
+#if SYMBOLIC_COSTANT_ACCESS
     uintptr_t norm_addr = (orig_addr / SLICE_SIZE) * SLICE_SIZE;
     uintptr_t hash_addr = HASH_ADDR(norm_addr);
     uintptr_t idx       = hash_addr % CONST_MAP_SIZE;
@@ -2847,6 +2871,7 @@ static inline void qemu_store_helper(uintptr_t orig_addr,
 #endif
         const_mem_map[idx].status = 2;
     }
+#endif
 
     if (s_temps[addr_idx]) {
         store_concretization(s_temps[addr_idx], orig_addr);
@@ -3473,7 +3498,7 @@ static void branch_helper(uintptr_t a, uintptr_t b, uintptr_t cond,
         return; // early exit
 
 #if 0
-    printf("Branch %lu %s %lu\n", a_idx, opkind_to_str(get_opkind_from_cond(cond)), b_idx);
+    printf("Branch at 0x%lx %lu %s %lu\n", pc, a_idx, opkind_to_str(get_opkind_from_cond(cond)), b_idx);
     print_expr(expr_a);
     print_expr(expr_b);
     // print_temp(a_idx);
@@ -3711,6 +3736,19 @@ static inline void read_from_input(intptr_t offset, uintptr_t addr, size_t size)
             l2_page_idx++;
         }
     }
+
+#if SYMBOLIC_COSTANT_ACCESS
+    uintptr_t norm_addr = (addr / SLICE_SIZE) * SLICE_SIZE;
+    uintptr_t hash_addr = HASH_ADDR(norm_addr);
+    uintptr_t idx       = hash_addr % CONST_MAP_SIZE;
+    uint8_t   status    = const_mem_map[idx].status;
+    if (status == 0) {
+        const_mem_map[idx].status = 2;
+        const_mem_map[idx].base   = norm_addr;
+    } else if (status == 1) {
+        const_mem_map[idx].status = 2;
+    }
+#endif
 }
 
 static int         finalization_done = 0;
@@ -5092,7 +5130,6 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                         qemu_load(t_ptr, t_val, offset, mem_op, op,
                                 tcg_ctx); // bugged
 #else
-                        MARK_TEMP_AS_ALLOCATED(t_ptr);
                         TCGTemp* t_mem_op =
                             new_non_conflicting_temp(TCG_TYPE_PTR);
                         tcg_movi(t_mem_op,
@@ -5107,6 +5144,7 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                             new_non_conflicting_temp(TCG_TYPE_PTR);
                         tcg_movi(t_val_idx, (uintptr_t)temp_idx(t_val), 0, op,
                                  NULL, tcg_ctx);
+                        MARK_TEMP_AS_ALLOCATED(t_ptr);
                         add_void_call_4(qemu_load_helper, t_ptr, t_mem_op,
                                         t_ptr_idx, t_val_idx, op, NULL,
                                         tcg_ctx);
@@ -5277,7 +5315,7 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                                      op, NULL, tcg_ctx);
                             TCGTemp* t_ptr_idx =
                                 new_non_conflicting_temp(TCG_TYPE_PTR);
-                            tcg_movi(t_ptr_idx, (uintptr_t)0, 0, op, NULL,
+                            tcg_movi(t_ptr_idx, (uintptr_t) TCG_MAX_TEMPS + 1, 0, op, NULL,
                                      tcg_ctx);
                             TCGTemp* t_val_idx =
                                 new_non_conflicting_temp(TCG_TYPE_PTR);
@@ -5573,13 +5611,12 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                 break;
 
             case INDEX_op_call:
-#if 1
                 for (size_t i = 0; i < TCGOP_CALLO(op); i++)
                     mark_temp_as_in_use(arg_temp(op->args[i]));
                 for (size_t i = 0; i < TCGOP_CALLI(op); i++)
                     mark_temp_as_in_use(
                         arg_temp(op->args[TCGOP_CALLO(op) + i]));
-#endif
+
                 if (instrument) {
 
                     const char* helper_name = tcg_find_helper(

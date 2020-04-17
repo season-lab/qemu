@@ -3178,19 +3178,30 @@ static void temp_sync(TCGContext *s, TCGTemp *ts, TCGRegSet allocated_regs,
             // the conditional code
             if (is_instrumentation(symb_current_gen_op) && !symb_restore_pass) {
                 unsigned label_id = get_conditional_instrumentation_label(symb_current_gen_op);
+                if (conditional_temp_syncs[temp_idx(ts)].ts == NULL) {
 #if 0
-                printf("Saving temp ");
-                if (ts->temp_global) {
-                    printf("%s", ts->name);
-                } else {
-                    printf("%lu", temp_idx(ts) - s->nb_globals);
-                }
-                printf(" in reg %u for label %u\n", ts->reg, label_id);
+                    printf("Saving temp ");
+                    if (ts->temp_global) {
+                        printf("%s", ts->name);
+                    } else {
+                        printf("%lu", temp_idx(ts) - s->nb_globals);
+                    }
+                    printf(" in reg %u for label %u\n", ts->reg, label_id);
 #endif
-                assert(conditional_temp_syncs[temp_idx(ts)].ts == NULL);
-                conditional_temp_syncs[temp_idx(ts)].ts = ts;
-                conditional_temp_syncs[temp_idx(ts)].reg = ts->reg;
-                conditional_temp_syncs[temp_idx(ts)].label_id = label_id;
+                    conditional_temp_syncs[temp_idx(ts)].ts = ts;
+                    conditional_temp_syncs[temp_idx(ts)].where = TO_REG;
+                    conditional_temp_syncs[temp_idx(ts)].reg = ts->reg;
+                    conditional_temp_syncs[temp_idx(ts)].label_id = label_id;
+                } else {
+                    // we may spill a temp that was loaded in the conditional
+                    // instrumentation code and thus it was originally
+                    // synced into memory. if this is done by the same
+                    // label then we are fine otherwise we are screwed
+                    // and we should add a list for each temp.
+                    if (conditional_temp_syncs[temp_idx(ts)].label_id != label_id) {
+                        tcg_abort();
+                    }
+                }
             }
 #endif
             tcg_out_st(s, ts->type, ts->reg,
@@ -3457,6 +3468,19 @@ static void tcg_reg_alloc_mov(TCGContext *s, const TCGOp *op)
         }
 #endif
     }
+
+#ifdef TCG_INSTRUMENTATION
+    // if ots is TEMP_VAL_MEM and we are doing
+    // conditional instrumentation code, we need
+    // to track that the ots temp should be
+    // synced before exiting the conditional code
+    if (is_instrumentation(op) && ots->val_type == TEMP_VAL_MEM) {
+        unsigned label_id = get_conditional_instrumentation_label(symb_current_gen_op);
+        conditional_temp_syncs[temp_idx(ots)].ts = ots;
+        conditional_temp_syncs[temp_idx(ots)].where = TO_MEM;
+        conditional_temp_syncs[temp_idx(ots)].label_id = label_id;
+    }
+#endif
 
     /* If the source value is in memory we're going to be forced
        to have it in a register in order to perform the copy.  Copy
@@ -3805,7 +3829,8 @@ static void tcg_reg_alloc_op(TCGContext *s, const TCGOp *op)
                                     i_allocated_regs | o_allocated_regs,
                                     op->output_pref[k], ts->indirect_base);
 #ifdef TCG_INSTRUMENTATION
-            } else if (is_instrumentation(op) && ts->val_type == TEMP_VAL_REG) {
+            } else if (is_instrumentation(op)
+                        && ts->val_type == TEMP_VAL_REG) {
                 // if the temp is alive, reuse the same reg
                 // to avoid problems in branching instrumentation
                 reg = ts->reg;
@@ -4403,10 +4428,13 @@ int tcg_gen_code(TCGContext *s, TranslationBlock *tb)
                 // this is needed for two reasons:
                 //  (1) allow restore in the correct reg
                 //  (2) allow other temps to be restored in the reg
+                // We also sync any temp that was original synced
+                // before executing the conditional instrumentation
+                // code.
                 for (size_t i = 0; i < TCG_MAX_TEMPS; i++) {
                     ConditionalTempSync* cts = &conditional_temp_syncs[i];
                     if (cts->ts != NULL && label_id == cts->label_id) {
-                        if (cts->ts->val_type == TEMP_VAL_REG) {
+                        if (cts->where == TO_REG && cts->ts->val_type == TEMP_VAL_REG) {
 #if 0
                             printf("Dumping for restore pass temp ");
                             if (cts->ts->temp_global) {
@@ -4417,6 +4445,9 @@ int tcg_gen_code(TCGContext *s, TranslationBlock *tb)
                             printf(" at reg %u for label %u\n", cts->reg, label_id);
 #endif
                             tcg_reg_free(s, cts->ts->reg, s->reserved_regs);
+                        } else if (cts->where == TO_MEM) {
+                            tcg_reg_free(s, cts->ts->reg, s->reserved_regs);
+                            cts->ts = NULL;
                         }
                     }
                 }
@@ -4425,6 +4456,7 @@ int tcg_gen_code(TCGContext *s, TranslationBlock *tb)
                 for (size_t i = 0; i < TCG_MAX_TEMPS; i++) {
                     if (conditional_temp_syncs[i].ts != NULL &&
                             label_id == conditional_temp_syncs[i].label_id) {
+                        assert(conditional_temp_syncs[i].where == TO_REG);
 #if 0
                         printf("Restoring temp ");
                         if (conditional_temp_syncs[i].ts->temp_global) {

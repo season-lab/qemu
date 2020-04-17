@@ -17,7 +17,7 @@
 
 #define TCG_INSTRUMENTATION
 
-typedef enum RESTORE_LOC { TO_REG, TO_MEM, TO_CONST } RESTORE_LOC;
+typedef enum RESTORE_LOC { INVALID, TO_REG, TO_MEM, TO_CONST } RESTORE_LOC;
 
 typedef struct temp_to_restore_t {
     TCGTemp*        ts;
@@ -147,6 +147,7 @@ typedef enum {
 typedef struct {
     TCGTemp* ts;
     TCGReg   reg;
+    RESTORE_LOC where;
     unsigned label_id;
 } ConditionalTempSync;
 
