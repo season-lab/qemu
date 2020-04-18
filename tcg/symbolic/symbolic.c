@@ -3497,10 +3497,12 @@ static void branch_helper(uintptr_t a, uintptr_t b, uintptr_t cond,
     if (expr_a == NULL && expr_b == NULL)
         return; // early exit
 
-#if 0
+#if 1
+if (0x40dd9f == pc) {
     printf("Branch at 0x%lx %lu %s %lu\n", pc, a_idx, opkind_to_str(get_opkind_from_cond(cond)), b_idx);
     print_expr(expr_a);
     print_expr(expr_b);
+}
     // print_temp(a_idx);
     // print_temp(b_idx);
 #endif

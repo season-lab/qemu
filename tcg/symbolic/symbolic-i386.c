@@ -1402,10 +1402,10 @@ static void qemu_divl_EAX(uint64_t packed_idx, uintptr_t rax, uintptr_t rdx,
         s_temps[t_rax_idx] = NULL;
         s_temps[t_rdx_idx] = NULL;
     } else {
-
-        // print_expr(s_temps[t_rdx_idx]);
-        // print_expr(s_temps[t_rax_idx]);
-
+#if 0
+        print_expr(s_temps[t_rdx_idx]);
+        print_expr(s_temps[t_rax_idx]);
+#endif
         Expr* edx   = new_expr();
         edx->opkind = EXTRACT;
         SET_EXPR_OP(edx->op1, edx->op1_is_const, s_temps[t_rdx_idx], rdx);
@@ -1427,14 +1427,12 @@ static void qemu_divl_EAX(uint64_t packed_idx, uintptr_t rax, uintptr_t rdx,
         Expr* edxeax   = new_expr();
         edxeax->opkind = CONCAT;
         edxeax->op1    = edx;
-        edxeax->op1    = eax;
+        edxeax->op2    = eax;
 
         Expr* d   = new_expr();
         d->opkind = mode == 0 ? DIVU : DIV;
         d->op1    = edxeax;
         d->op2    = t_0;
-
-        // print_expr(d);
 
         Expr* d2   = new_expr();
         d2->opkind = EXTRACT;
@@ -1442,8 +1440,6 @@ static void qemu_divl_EAX(uint64_t packed_idx, uintptr_t rax, uintptr_t rdx,
         SET_EXPR_CONST_OP(d2->op2, d2->op2_is_const, 31);
         SET_EXPR_CONST_OP(d2->op3, d2->op3_is_const, 0);
         s_temps[t_rax_idx] = d2;
-
-        // print_expr(d2);
 
         Expr* r   = new_expr();
         r->opkind = mode == 0 ? REMU : REM;
