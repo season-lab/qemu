@@ -2707,7 +2707,7 @@ static inline void qemu_load(TCGTemp* t_addr, TCGTemp* t_val, uintptr_t offset,
             allocate_new_expr(t_new_expr, op_in, tcg_ctx);
 
             TCGTemp* t_opkind = new_non_conflicting_temp(TCG_TYPE_I64);
-            tcg_movi(t_opkind, CONCAT8L, 0, op_in, NULL, tcg_ctx);
+            tcg_movi(t_opkind, CONCAT8R, 0, op_in, NULL, tcg_ctx);
             tcg_store_n(t_new_expr, t_opkind, offsetof(Expr, opkind), 0, 1,
                         sizeof(uint8_t), op_in, NULL, tcg_ctx);
 
@@ -3497,7 +3497,7 @@ static void branch_helper(uintptr_t a, uintptr_t b, uintptr_t cond,
     if (expr_a == NULL && expr_b == NULL)
         return; // early exit
 
-#if 1
+#if 0
 if (0x40dd9f == pc) {
     printf("Branch at 0x%lx %lu %s %lu\n", pc, a_idx, opkind_to_str(get_opkind_from_cond(cond)), b_idx);
     print_expr(expr_a);
@@ -3985,7 +3985,8 @@ static inline void qemu_movcond(TCGTemp* t_op_out, TCGTemp* t_op_a,
 }
 
 static inline void qemu_deposit_helper(uintptr_t packed_idx, uintptr_t a,
-                                       uintptr_t b, uintptr_t poslen)
+                                       uintptr_t b, 
+                                       uintptr_t poslen)
 {
     uintptr_t out_idx = UNPACK_0(packed_idx);
     uintptr_t a_idx   = UNPACK_1(packed_idx);
@@ -4002,6 +4003,14 @@ static inline void qemu_deposit_helper(uintptr_t packed_idx, uintptr_t a,
     SET_EXPR_OP(e->op2, e->op2_is_const, s_temps[b_idx], b);
     SET_EXPR_CONST_OP(e->op3, e->op3_is_const, poslen);
     s_temps[out_idx] = e;
+#if 0
+    printf("DEPOSIT pc=%lx\n", pc);
+    print_expr(e);
+
+    if (s_temps[b_idx] == NULL && b == 0x55) {
+        //tcg_abort();
+    }
+#endif
 }
 
 #if 0
@@ -5340,6 +5349,12 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                                    offset, pc);
                             tcg_abort();
                         }
+                    } else {
+                        // this is need, e.g., when the DF
+                        // flag is loaded: 
+                        //      ld32s_i64 tmp0,env,$0xac
+                        TCGTemp* t = arg_temp(op->args[0]);
+                        clear_temp(temp_idx(t), op, tcg_ctx);
                     }
                 }
                 break;
@@ -6670,6 +6685,9 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                     TCGTemp* t_poslen = new_non_conflicting_temp(TCG_TYPE_PTR);
                     tcg_movi(t_poslen, (uintptr_t)v2, 0, op, NULL, tcg_ctx);
 
+                    // TCGTemp* t_pc = new_non_conflicting_temp(TCG_TYPE_PTR);
+                    // tcg_movi(t_pc, (uintptr_t)pc, 0, op, NULL, tcg_ctx);
+
                     MARK_TEMP_AS_ALLOCATED(t_a);
                     MARK_TEMP_AS_ALLOCATED(t_b);
                     add_void_call_4(qemu_deposit_helper, t_packed_idx, t_a, t_b,
@@ -6678,6 +6696,7 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                     MARK_TEMP_AS_NOT_ALLOCATED(t_b);
                     tcg_temp_free_internal(t_packed_idx);
                     tcg_temp_free_internal(t_poslen);
+                    //tcg_temp_free_internal(t_pc);
 #endif
                 }
                 break;

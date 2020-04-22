@@ -536,7 +536,7 @@ static inline Expr* build_concat_expr(Expr** exprs, void* addr, size_t size,
             }
         } else {
             Expr* n_expr   = new_expr();
-            n_expr->opkind = CONCAT8R;
+            n_expr->opkind = CONCAT8L;
             if (exprs[idx] == NULL) {
                 // fetch the concrete value, embed it in the expr
                 uint8_t* byte_addr   = ((uint8_t*)addr) + idx;
@@ -667,8 +667,8 @@ static void qemu_xmm_op_internal(uintptr_t opkind, uint8_t* dst_addr,
             e->op1 = dst_slice;
             e->op2 = src_slice;
         } else {
-            SET_EXPR_OP(e->op1, e->op1_is_const, src_expr_addr[i], src_addr[i]);
-            SET_EXPR_OP(e->op2, e->op2_is_const, dst_expr_addr[i], dst_addr[i]);
+            SET_EXPR_OP(e->op1, e->op1_is_const, dst_expr_addr[i], dst_addr[i]);
+            SET_EXPR_OP(e->op2, e->op2_is_const, src_expr_addr[i], src_addr[i]);
         }
 
         SET_EXPR_CONST_OP(e->op3, e->op3_is_const, slice);
@@ -689,6 +689,7 @@ static void qemu_xmm_op_internal(uintptr_t opkind, uint8_t* dst_addr,
             dst_expr_addr[i] = e;
         }
     }
+
 }
 
 static void qemu_xmm_op(uintptr_t opkind, uint8_t* dst_addr, uint8_t* src_addr,
@@ -795,9 +796,16 @@ static void qemu_xmm_pmovmskb(uintptr_t dst_idx, uint64_t* src_addr,
     e->opkind        = PMOVMSKB;
     e->op1           = src_expr;
     s_temps[dst_idx] = e;
+#if 0
+    printf("qemu_xmm_pmovmskb: symbolic xmm reg\n");
+    print_expr(e);
 
-    // printf("qemu_xmm_pmovmskb: symbolic xmm reg\n");
-    // print_expr(e);
+    if (GET_EXPR_IDX(e) == 24525) {
+        printf("XMM_A: %lx\n", *src_addr);
+        printf("XMM_B: %lx\n", *(src_addr+1));
+        tcg_abort();
+    }
+#endif
 }
 
 static void qemu_xmm_movl_mm_T0(uint64_t* dst_addr, uintptr_t src_idx)

@@ -451,7 +451,7 @@ static inline void print_expr_internal(Expr* expr, uint8_t reset)
         if (expr->opkind == IS_SYMBOLIC)
             printf(" INPUT_%lu\n", (uintptr_t)expr->op1);
         else if (expr->opkind == IS_CONST)
-            printf(" 0x%lu\n", (uintptr_t)expr->op1);
+            printf(" 0x%lx\n", (uintptr_t)expr->op1);
         else {
 
             if (expr->op1_is_const || expr->op1 == NULL)
