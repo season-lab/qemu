@@ -169,6 +169,7 @@ typedef enum OPKIND {
     SYMBOLIC_LOAD,
     SYMBOLIC_STORE,
     MEMORY_CONCRETIZATION,
+    CONSISTENCY_CHECK,
 } OPKIND;
 
 typedef enum EXTENDKIND {
@@ -456,8 +457,12 @@ static inline void print_expr_internal(Expr* expr, uint8_t reset)
 
             if (expr->op1_is_const || expr->op1 == NULL)
                 printf(" 0x%lx", (uintptr_t)expr->op1);
-            else
+            else {
                 printf(" E_%lu", GET_EXPR_IDX(expr->op1));
+                if (GET_EXPR_IDX(expr->op1) >= MAX_PRINT_CHECK) {
+                    printf("Invalid value: %lx\n", (uintptr_t)(expr->op1));
+                }
+            }
 
             printf(" %s", opkind_to_str(expr->opkind));
 
@@ -484,6 +489,11 @@ static inline void print_expr_internal(Expr* expr, uint8_t reset)
             assert(expr != expr->op2);
 
             if (!expr->op1_is_const && expr->op1 != NULL) {
+
+                if (GET_EXPR_IDX(expr->op1) >= MAX_PRINT_CHECK) {
+                    printf("Invalid value: %lx\n", (uintptr_t)(expr->op1));
+                }
+
                 assert(GET_EXPR_IDX(expr->op1) < MAX_PRINT_CHECK);
                 if (!printed[GET_EXPR_IDX(expr->op1)]) {
                     printf("E_%lu:: ", GET_EXPR_IDX(expr->op1));
@@ -532,7 +542,7 @@ static inline void print_expr(Expr* expr)
 
 #define SET_EXPR_CONST_OP(op, op_is_const, c_arg)                              \
     do {                                                                       \
-        op          = EXPR_CONST_OP(c_arg);                                    \
+        op          = EXPR_CONST_OP((c_arg));                                    \
         op_is_const = 1;                                                       \
     } while (0);
 

@@ -16,6 +16,7 @@
 //#define SYMBOLIC_DEBUG
 //#define DISABLE_SOLVER
 #define SYMBOLIC_COSTANT_ACCESS 1
+#define DEBUG_EXPR_CONSISTENCY 0
 
 #define QUEUE_OP_MAX_SIZE 128
 size_t        op_to_add_size               = 0;
@@ -62,6 +63,11 @@ static uint8_t  virgin_bitmap[BRANCH_BITMAP_SIZE] = {0};
 static uint8_t* bitmap                            = NULL;
 static uint16_t prev_loc                          = 0;
 
+#if DEBUG_EXPR_CONSISTENCY
+static uintptr_t current_tb_pc = 0;
+#endif
+
+
 GHashTable* coverage_log_bb_ht = NULL;
 GHashTable* coverage_log_edges_ht = NULL;
 
@@ -79,7 +85,7 @@ Expr* next_free_expr = NULL;
 Expr* last_expr      = NULL; // ToDo: unsafe
 
 // query pool
-Query* queue_query = NULL;
+Query* query_queue = NULL;
 Query* next_query  = NULL;
 
 TCGContext*   internal_tcg_context = NULL;
@@ -400,8 +406,8 @@ void init_symbolic_mode(void)
     pool = shmat(expr_pool_shm_id, EXPR_POOL_ADDR, 0);
     assert(pool);
 
-    queue_query = shmat(query_shm_id, NULL, 0);
-    assert(queue_query);
+    query_queue = shmat(query_shm_id, NULL, 0);
+    assert(query_queue);
 #if BRANCH_COVERAGE == FUZZOLIC
     bitmap = shmat(bitmap_shm_id, NULL, 0);
     assert(bitmap);
@@ -409,13 +415,13 @@ void init_symbolic_mode(void)
 
 #else
     pool        = g_malloc0(sizeof(Expr) * EXPR_POOL_CAPACITY);
-    queue_query = g_malloc0(sizeof(Query) * EXPR_QUERY_CAPACITY);
+    query_queue = g_malloc0(sizeof(Query) * EXPR_QUERY_CAPACITY);
     bitmap      = g_malloc0(sizeof(uint8_t) * BRANCH_BITMAP_SIZE);
 
     printf("\nTRACER in NO SOLVER mode\n");
 #endif
 
-    // printf("POOL_ADDR=%p\n", pool);
+    printf("POOL_ADDR=%p\n", pool);
 
 #if 0
     for (size_t i = 0; i < EXPR_POOL_CAPACITY; i++)
@@ -423,7 +429,7 @@ void init_symbolic_mode(void)
 #endif
 
     next_free_expr = pool;
-    next_query     = queue_query;
+    next_query     = query_queue;
 
 #ifndef DISABLE_SOLVER
     while (next_query[0].query != (void*)SHM_READY) {
@@ -1106,7 +1112,14 @@ void helper_instrument_ret(target_ulong pc)
 
 static inline void visitTB(uintptr_t cur_loc)
 {
-    // printf("visiting TB 0x%lx\n", cur_loc);
+    //printf("visiting TB 0x%lx\n", cur_loc);
+
+#if DEBUG_EXPR_CONSISTENCY
+    current_tb_pc = cur_loc;
+#if BRANCH_COVERAGE != FUZZOLIC
+    return;
+#endif
+#endif
 
     if (s_config.coverage_tracer_filter_lib > 0 &&
             (cur_loc > symbolic_end_code || cur_loc < symbolic_start_code)) {
@@ -1300,13 +1313,12 @@ static inline void move_temp_size_helper(size_t from, size_t to, size_t size)
             print_temp(to);
     }
 #endif
-
     Expr* from_expr = s_temps[from];
     if (from_expr && size < sizeof(uintptr_t)) {
         Expr* e   = new_expr();
         e->opkind = EXTRACT;
         e->op1    = from_expr;
-        SET_EXPR_CONST_OP(e->op2, e->op2_is_const, (size * 8) - 1);
+        SET_EXPR_CONST_OP(e->op2, e->op2_is_const, 31);
         SET_EXPR_CONST_OP(e->op3, e->op3_is_const, 0);
         from_expr = e;
     }
@@ -1327,6 +1339,40 @@ static inline void move_temp_helper(size_t from, size_t to)
 #endif
     s_temps[to] = s_temps[from];
 }
+
+#if DEBUG_EXPR_CONSISTENCY
+static void add_consistency_check(Expr* e, uintptr_t value, size_t size, OPKIND opkind)
+{
+    Expr*     consistency_expr = new_expr();
+    consistency_expr->opkind   = CONSISTENCY_CHECK;
+    consistency_expr->op1      = e;
+    SET_EXPR_CONST_OP(consistency_expr->op2, consistency_expr->op2_is_const, value);
+    //
+    next_query[0].query   = consistency_expr;
+    next_query[0].address = current_tb_pc;
+    next_query++;
+    //
+    if (size == 0) {
+        size = 8;
+    }
+    printf("CONSISTENCY_CHECK id=%lu size=%lu type=%s pc=%lx\n",
+        GET_QUERY_IDX(next_query - 1), size, opkind_to_str(opkind), current_tb_pc);
+}
+
+static void add_consistency_check_addr(Expr* e, uintptr_t addr, size_t size, OPKIND opkind) 
+{
+    assert(size > 0);
+    uintptr_t concrete_value = 0;
+    for (size_t i = 0; i < size; i++) {
+        uintptr_t v = *(((uint8_t*)addr) + i);
+        concrete_value |= v << (8 * i);
+        // printf("Concrete byte: %lx\n", v);
+    }
+    //
+    printf("CONSISTENCY CHECK %s for addr=%lx size=%lu\n", opkind_to_str(opkind), addr, size);
+    add_consistency_check(e, concrete_value, size, opkind);
+}
+#endif
 
 static inline void move_temp(size_t from, size_t to, size_t size, TCGOp* op_in,
                              TCGContext* tcg_ctx)
@@ -1500,6 +1546,15 @@ static inline void qemu_binop_helper(uintptr_t opkind, uintptr_t packed_idx,
     }
 
     s_temps[out_idx] = binop_expr;
+
+#if DEBUG_EXPR_CONSISTENCY
+    if (expr_a) {
+        add_consistency_check(expr_a, a, size, opkind);
+    }
+    if (expr_b) {
+        add_consistency_check(expr_b, b, size, opkind);
+    }
+#endif
 }
 
 // Binary operation: t_out = t_a opkind t_b
@@ -1677,8 +1732,12 @@ static inline void qemu_unop_helper(uintptr_t opkind, uintptr_t t_out_idx,
     Expr* unop_expr   = new_expr();
     unop_expr->opkind = (OPKIND)opkind;
     unop_expr->op1    = expr_a;
-    SET_EXPR_CONST_OP(unop_expr->op1, unop_expr->op1_is_const, size);
+    SET_EXPR_CONST_OP(unop_expr->op2, unop_expr->op2_is_const, size);
     s_temps[t_out_idx] = unop_expr;
+
+#if DEBUG_EXPR_CONSISTENCY
+    add_consistency_check(expr_a, t_op_a, size, opkind);
+#endif
 }
 
 static inline void qemu_unop(OPKIND opkind, TCGTemp* t_op_out, TCGTemp* t_op_a,
@@ -2349,6 +2408,21 @@ static inline void store_concretization(Expr* addr_expr, uintptr_t addr)
     }
 }
 
+#if DEBUG_EXPR_CONSISTENCY
+static void add_consistency_check_load(Expr* e, uintptr_t addr, size_t size) 
+{
+    uintptr_t concrete_value = 0;
+    for (size_t i = 0; i < size; i++) {
+        uintptr_t v = *(((uint8_t*)addr) + i);
+        concrete_value |= v << (8 * i);
+        // printf("Concrete byte: %lx\n", v);
+    }
+    //
+    printf("CONSISTENCY CHECK LOAD for addr=%lx size=%lu\n", addr, size);
+    add_consistency_check(e, concrete_value, size, SYMBOLIC_LOAD);
+}
+#endif
+
 static inline void qemu_load_helper(uintptr_t orig_addr,
                                     uintptr_t mem_op_offset, uintptr_t addr_idx,
                                     uintptr_t val_idx)
@@ -2493,6 +2567,11 @@ static inline void qemu_load_helper(uintptr_t orig_addr,
                     n_expr->op2      = (Expr*)(8 * size);
                     e                = n_expr;
                     // printf("Zero extending on load. %lu\n", (8 * size));
+#if 0
+                    if (GET_EXPR_IDX(e) == 1028) {
+                        tcg_abort();
+                    }
+#endif
                 }
 
                 symbolic_access_id += 1;
@@ -2501,6 +2580,10 @@ static inline void qemu_load_helper(uintptr_t orig_addr,
                 next_query[0].query   = q;
                 next_query[0].address = 0;
                 next_query++;
+
+#if DEBUG_EXPR_CONSISTENCY
+                add_consistency_check_load(e, addr, size);
+#endif
 
                 return;
             } else {
@@ -2541,9 +2624,8 @@ static inline void qemu_load_helper(uintptr_t orig_addr,
     Expr*   exprs[8]         = {NULL};
     uint8_t expr_is_not_null = 0;
     for (size_t i = 0; i < size; i++) {
-        size_t idx       = (mem_op & MO_BE) ? i : size - i - 1;
-        exprs[i]         = l3_page->entries[l3_page_idx + idx];
-        expr_is_not_null = expr_is_not_null | (exprs[idx] != 0);
+        exprs[i]         = l3_page->entries[l3_page_idx + i];
+        expr_is_not_null = expr_is_not_null | (exprs[i] != 0);
     }
 
     if (expr_is_not_null == 0) // early exit
@@ -2553,21 +2635,41 @@ static inline void qemu_load_helper(uintptr_t orig_addr,
     }
 
     Expr* e = NULL;
+#if 1
     for (size_t i = 0; i < size; i++) {
         if (exprs[i] != NULL && exprs[i]->opkind == EXTRACT8 &&
-            CONST(exprs[i]->op2) == size - i - 1) {
+            CONST(exprs[i]->op2) == i) {
             // ToDo: we are assuming that size(op1) == size
             //       which my be not true.
-            e = exprs[i]->op1;
+            if (e && e != exprs[i]->op1) {
+                e = NULL;
+                break;
+            } else {
+                e = exprs[i]->op1;
+            }
         } else {
             e = NULL;
             break;
         }
     }
 
+    if (e) {
+        // safety check
+        if (l3_page->entries[l3_page_idx + size] != NULL &&
+            l3_page->entries[l3_page_idx + size]->opkind == EXTRACT8 &&
+            l3_page->entries[l3_page_idx + size]->op1 == e) {
+
+            // the object e is larger than what we are
+            // reading!
+            e = NULL;
+        }
+    }
+#endif
+
     if (e == NULL) {
-        for (size_t i = 0; i < size; i++) {
-            if (i == 0) {
+        for (ssize_t i = size - 1; i >= 0; i--) {
+        // for (size_t i = 0; i < size; i++) {
+            if (i == size - 1) {
                 if (exprs[i] == NULL) {
                     // allocate a new expr for the concrete value
                     e                  = new_expr();
@@ -2575,8 +2677,20 @@ static inline void qemu_load_helper(uintptr_t orig_addr,
                     uint8_t* byte_addr = ((uint8_t*)addr) + i;
                     uint8_t  byte      = *byte_addr;
                     e->op1             = (Expr*)((uintptr_t)byte);
-                } else
+#if 0
+                    if (addr + i >= 0x8d28b0 && addr + i <= 0x8d28b0 + 8) {
+                        printf("\nLoading concrete %lu-byte (%x) from %lx\n", i, byte, addr + i);
+                    }
+# endif
+                } else {
                     e = exprs[i];
+#if 0
+                    if (addr + i >= 0x8d28b0 && addr + i <= 0x8d28b0 + 8) {
+                        printf("\nLoading %lu-byte (%x) from %lx\n", i, *(((uint8_t*)addr) + i), addr + i);
+                        print_expr(e);
+                    }
+#endif
+                }
             } else {
                 Expr* n_expr   = new_expr();
                 n_expr->opkind = CONCAT8R;
@@ -2589,15 +2703,35 @@ static inline void qemu_load_helper(uintptr_t orig_addr,
                     uint8_t  byte        = *byte_addr;
                     n_expr->op2          = (Expr*)((uintptr_t)byte);
                     n_expr->op2_is_const = 1;
+#if 0
+                    if (addr + i >= 0x8d28b0 && addr + i <= 0x8d28b0 + 8) {
+                        printf("\nLoading concrete %lu-byte (%x) from %lx\n", i, *(((uint8_t*)addr) + i), addr + i);
+                    }
+#endif
                 } else {
                     n_expr->op2 = exprs[i];
+#if 0
+                    if (addr + i >= 0x8d28b0 && addr + i <= 0x8d28b0 + 8) {
+                        printf("\nLoading %lu-byte (%x) from %lx\n", i, *(((uint8_t*)addr) + i), addr + i);
+                        print_expr(n_expr->op2);
+                    }
+#endif
                 }
 
                 e = n_expr;
             }
         }
+    } 
+#if 0
+    else {
+        for (size_t i = 0; i < size; i++) {
+            if (addr + i >= 0x8d28b0 && addr + i <= 0x8d28b0 + 8) {
+                printf("\nLoading byte from %lx [OPTIMIZED]\n", addr + i);
+                print_expr(e);
+            }
+        }
     }
-
+#endif
     if (size < 8) {
         Expr*     n_expr = new_expr();
         uintptr_t opkind = get_mem_op_signextend(mem_op) ? SEXT : ZEXT;
@@ -2606,9 +2740,23 @@ static inline void qemu_load_helper(uintptr_t orig_addr,
         n_expr->op2      = (Expr*)(8 * size);
         e                = n_expr;
         // printf("Zero extending on load. %lu\n", (8 * size));
+#if 0
+        if (GET_EXPR_IDX(e) == 1267) {
+            printf("\nEXTENDING: Loading %lu bytes from %lx\n", size, addr);
+            print_expr(n_expr);
+            tcg_abort();
+        }
+#endif
     }
 
     s_temps[val_idx] = e;
+
+#if DEBUG_EXPR_CONSISTENCY
+    add_consistency_check_load(e, addr, size);
+    if (addr == 0x40007fd628) {
+        print_expr(e);
+    }
+#endif
 }
 
 static inline void qemu_load(TCGTemp* t_addr, TCGTemp* t_val, uintptr_t offset,
@@ -2842,7 +2990,12 @@ static inline void qemu_multi_page_store(l3_page_t* l3_page,
 
 static inline void qemu_store_helper(uintptr_t orig_addr,
                                      uintptr_t mem_op_offset,
-                                     uintptr_t addr_idx, uintptr_t val_idx)
+                                     uintptr_t addr_idx, 
+                                     uintptr_t val_idx
+#if DEBUG_EXPR_CONSISTENCY
+                                     , uintptr_t concrete_val
+#endif
+                                     )
 {
     TCGMemOp  mem_op = get_mem_op(mem_op_offset);
     uintptr_t offset = get_mem_offset(mem_op_offset);
@@ -2851,7 +3004,7 @@ static inline void qemu_store_helper(uintptr_t orig_addr,
     uintptr_t addr = orig_addr + offset;
 
 #if 0
-    printf("Store at %lx\n", addr);
+    printf("Store %lu bytes at %lx\n", size, addr);
 #endif
 
 #if SYMBOLIC_COSTANT_ACCESS
@@ -2904,9 +3057,21 @@ static inline void qemu_store_helper(uintptr_t orig_addr,
     }
 
     if (s_temps[val_idx] == NULL) {
-        for (size_t i = 0; i < size; i++)
+        for (size_t i = 0; i < size; i++) {
             l3_page->entries[l3_page_idx + i] = NULL;
+#if 0
+            if (addr + i >= 0x8d28b0 && addr + i <= 0x8d28b0 + 8) {
+                printf("Storing concrete (size=%lu, val=%lx) at %lx\n", size, concrete_val, addr + i);
+                printf("Index: %lu page=%p\n", l3_page_idx + i, l3_page);
+            }
+#endif
+        }
     } else {
+
+#if DEBUG_EXPR_CONSISTENCY
+        printf("CONSISTENCY CHECK STORE for addr=%lx size=%lu\n", addr, size);
+        add_consistency_check(s_temps[val_idx], concrete_val, size, SYMBOLIC_STORE);
+#endif
 
         for (size_t i = 0; i < size; i++) {
             Expr* e    = new_expr();
@@ -2918,6 +3083,13 @@ static inline void qemu_store_helper(uintptr_t orig_addr,
             // printf("Storing byte at index %lu\n", i);
 #if 0
             if (orig_addr > 0x61f490 && orig_addr < 0x61f490 + 256) {
+                print_expr(e);
+            }
+#endif
+#if 0
+            if (addr + i >= 0x8d28b0 && addr + i <= 0x8d28b0 + 8) {
+                printf("\nStoring at %lx (size=%lu) expression:\n", addr + i, size);
+                printf("Index: %lu page=%p\n", l3_page_idx + i, l3_page);
                 print_expr(e);
             }
 #endif
@@ -3059,6 +3231,10 @@ static inline void qemu_extend_helper(uintptr_t packed_idx)
     e->op1    = s_temps[a_idx];
     SET_EXPR_CONST_OP(e->op2, e->op2_is_const, opkind_const_param);
     s_temps[out_idx] = e;
+
+    if (GET_EXPR_IDX(e) == 1028) {
+        tcg_abort();
+    }
 }
 
 static inline void extend(TCGTemp* t_op_to, TCGTemp* t_op_from,
@@ -3473,7 +3649,7 @@ static inline void branch_helper_internal(uintptr_t a, uintptr_t b,
     next_query++;
 #endif
     // assert(next_query[0].query == 0);
-    assert(next_query < queue_query + EXPR_QUERY_CAPACITY);
+    assert(next_query < query_queue + EXPR_QUERY_CAPACITY);
 
     // printf("Submitted a query\n");
     // uintptr_t query_id = next_query - queue_query;
@@ -3728,6 +3904,8 @@ static inline void read_from_input(intptr_t offset, uintptr_t addr, size_t size)
                 e_byte->op1         = (Expr*)(offset); // ID
                 e_byte->op2         = (Expr*)1;        // number of bytes
                 input_exprs[offset] = e_byte;
+
+                // printf("Input byte %lu: %x\n", offset, *((uint8_t*)addr));
             }
             l3_page->entries[l3_page_idx + i] = e_byte;
             addr += 1;
@@ -3762,9 +3940,9 @@ static inline void end_symbolic_mode(void)
     finalization_done = 1;
     //
     next_query[0].query  = FINAL_QUERY;
-    queue_query[0].query = SHM_DONE;
+    query_queue[0].query = SHM_DONE;
     //
-    printf("\nNumber of queries: %lu\n", (next_query - queue_query) - 1);
+    printf("\nNumber of queries: %lu\n", (next_query - query_queue) - 1);
     printf("Number of expressions: %lu\n", GET_EXPR_IDX(next_free_expr));
     printf("Number of memory slices: %lu\n", slices_count);
 }
@@ -4305,6 +4483,19 @@ static inline void qemu_binop_low_high_helper(OPKIND    opkind,
     }
 
     s_temps[out_high_idx] = binop_high_expr;
+#if 0
+    printf("MULU HIGH LOW\n");
+    print_expr(binop_low_expr);
+    print_expr(binop_high_expr);
+#endif
+#if DEBUG_EXPR_CONSISTENCY
+    if (expr_a) {
+        add_consistency_check(expr_a, a, 8, opkind);
+    }
+    if (expr_b) {
+        add_consistency_check(expr_b, b, 8, opkind);
+    }
+#endif
 }
 
 static inline void qemu_binop_half_helper(OPKIND opkind, uintptr_t packed_idx,
@@ -4375,6 +4566,19 @@ static inline void qemu_binop_half_helper(OPKIND opkind, uintptr_t packed_idx,
     binop_high_expr->op3 = (Expr*)(-4); // ToDo
 
     s_temps[out_high_idx] = binop_high_expr;
+#if 0
+    printf("MUL(U)_HALF HIGH LOW\n");
+    print_expr(binop_low_expr);
+    print_expr(binop_high_expr);
+#endif
+#if DEBUG_EXPR_CONSISTENCY
+    if (expr_a) {
+        add_consistency_check(expr_a, a, 4, opkind);
+    }
+    if (expr_b) {
+        add_consistency_check(expr_b, b, 4, opkind);
+    }
+#endif
 }
 
 static inline EXTENDKIND get_extend_kind(TCGOpcode opkind)
@@ -4854,7 +5058,7 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
 
             case INDEX_op_insn_start:
 
-#if BRANCH_COVERAGE == FUZZOLIC
+#if BRANCH_COVERAGE == FUZZOLIC || DEBUG_EXPR_CONSISTENCY
                 if (hit_first_instr == 0) {
                     TCGTemp* t_pc = new_non_conflicting_temp(TCG_TYPE_PTR);
                     tcg_movi(t_pc, (uintptr_t)tb_pc, 0, op, NULL, tcg_ctx);
@@ -5232,7 +5436,6 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                         uintptr_t offset = (uintptr_t)get_mmuidx(op->args[2]);
                         qemu_store(t_ptr, t_val, offset, mem_op, op, tcg_ctx);
 #else
-                        MARK_TEMP_AS_ALLOCATED(t_ptr);
                         TCGTemp* t_mem_op =
                             new_non_conflicting_temp(TCG_TYPE_PTR);
                         tcg_movi(t_mem_op,
@@ -5247,9 +5450,18 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                             new_non_conflicting_temp(TCG_TYPE_PTR);
                         tcg_movi(t_val_idx, (uintptr_t)temp_idx(t_val), 0, op,
                                  NULL, tcg_ctx);
+                        MARK_TEMP_AS_ALLOCATED(t_ptr);
+#if DEBUG_EXPR_CONSISTENCY
+                        MARK_TEMP_AS_ALLOCATED(t_val);
+                        add_void_call_5(qemu_store_helper, t_ptr, t_mem_op,
+                                        t_ptr_idx, t_val_idx, t_val,
+                                        op, NULL, tcg_ctx);
+                        MARK_TEMP_AS_NOT_ALLOCATED(t_val);
+#else
                         add_void_call_4(qemu_store_helper, t_ptr, t_mem_op,
                                         t_ptr_idx, t_val_idx, op, NULL,
                                         tcg_ctx);
+#endif
                         MARK_TEMP_AS_NOT_ALLOCATED(t_ptr);
                         tcg_temp_free_internal(t_mem_op);
                         tcg_temp_free_internal(t_ptr_idx);
@@ -5920,6 +6132,8 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                             default:
                                 tcg_abort();
                         }
+
+                        assert(slice > 0);
 
                         TCGTemp* t_opkind =
                             new_non_conflicting_temp(TCG_TYPE_PTR);

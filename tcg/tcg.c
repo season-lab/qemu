@@ -3324,12 +3324,63 @@ void temp_load(TCGContext *s, TCGTemp *ts, TCGRegSet desired_regs,
                             preferred_regs, ts->indirect_base);
         tcg_out_movi(s, ts->type, reg, ts->val);
         ts->mem_coherent = 0;
+#ifdef TCG_INSTRUMENTATION
+        if (is_instrumentation(symb_current_gen_op) && !symb_restore_pass) {
+
+            if (conditional_temp_syncs[temp_idx(ts)].ts != NULL) {
+                tcg_abort();
+            }
+
+            unsigned label_id = get_conditional_instrumentation_label(symb_current_gen_op);
+            conditional_temp_syncs[temp_idx(ts)].ts = ts;
+            conditional_temp_syncs[temp_idx(ts)].where = TO_CONST;
+            conditional_temp_syncs[temp_idx(ts)].label_id = label_id;
+#if 0
+            printf("Saving temp const ");
+            if (ts->temp_global) {
+                printf("%s", ts->name);
+            } else {
+                printf("%lu", temp_idx(ts) - s->nb_globals);
+            }
+            printf(" for label %u\n", label_id);
+#endif
+        }
+#endif
         break;
     case TEMP_VAL_MEM:
         reg = tcg_reg_alloc(s, desired_regs, allocated_regs,
                             preferred_regs, ts->indirect_base);
         tcg_out_ld(s, ts->type, reg, ts->mem_base->reg, ts->mem_offset);
         ts->mem_coherent = 1;
+#ifdef TCG_INSTRUMENTATION
+        if (is_instrumentation(symb_current_gen_op) && !symb_restore_pass) {
+            unsigned label_id = get_conditional_instrumentation_label(symb_current_gen_op);
+#if 0
+            printf("Saving temp memory ");
+            if (ts->temp_global) {
+                printf("%s", ts->name);
+            } else {
+                printf("%lu", temp_idx(ts) - s->nb_globals);
+            }
+            printf(" for label %u\n", label_id);
+#endif
+            int safe_to_skip = 0;
+            if (conditional_temp_syncs[temp_idx(ts)].ts != NULL) {
+                if (label_id == conditional_temp_syncs[temp_idx(ts)].label_id) {
+                    safe_to_skip = 1;
+                } else {
+                    printf("Temp is already marked for restoration by label %u\n",
+                                conditional_temp_syncs[temp_idx(ts)].label_id);
+                    tcg_abort();
+                }
+            }
+            if (!safe_to_skip) {
+                conditional_temp_syncs[temp_idx(ts)].ts = ts;
+                conditional_temp_syncs[temp_idx(ts)].where = TO_MEM;
+                conditional_temp_syncs[temp_idx(ts)].label_id = label_id;
+            }
+        }
+#endif
         break;
     case TEMP_VAL_DEAD:
     default:
@@ -3450,6 +3501,12 @@ static void tcg_reg_alloc_mov(TCGContext *s, const TCGOp *op)
     otype = ots->type;
     itype = ts->type;
 
+#ifdef TCG_INSTRUMENTATION
+    if (is_instrumentation(symb_current_gen_op) && IS_DEAD_ARG(1)) {
+        conditional_temp_syncs[temp_idx(ts)].ts = NULL;
+    }
+#endif
+
     if (ts->val_type == TEMP_VAL_CONST) {
 #ifdef TCG_INSTRUMENTATION
             if(!is_instrumentation(op)) {
@@ -3476,9 +3533,30 @@ static void tcg_reg_alloc_mov(TCGContext *s, const TCGOp *op)
     // synced before exiting the conditional code
     if (is_instrumentation(op) && ots->val_type == TEMP_VAL_MEM) {
         unsigned label_id = get_conditional_instrumentation_label(symb_current_gen_op);
-        conditional_temp_syncs[temp_idx(ots)].ts = ots;
-        conditional_temp_syncs[temp_idx(ots)].where = TO_MEM;
-        conditional_temp_syncs[temp_idx(ots)].label_id = label_id;
+#if 0
+        printf("Saving temp memory ");
+        if (ts->temp_global) {
+            printf("%s", ots->name);
+        } else {
+            printf("%lu", temp_idx(ots) - s->nb_globals);
+        }
+        printf(" for label %u\n", label_id);
+#endif
+        int safe_to_skip = 0;
+        if (conditional_temp_syncs[temp_idx(ots)].ts != NULL) {
+            if (label_id == conditional_temp_syncs[temp_idx(ots)].label_id) {
+                safe_to_skip = 1;
+            } else {
+                printf("Temp is already marked for restoration by label %u\n",
+                            conditional_temp_syncs[temp_idx(ots)].label_id);
+                tcg_abort();
+            }
+        }
+        if (!safe_to_skip) {
+            conditional_temp_syncs[temp_idx(ots)].ts = ots;
+            conditional_temp_syncs[temp_idx(ots)].where = TO_MEM;
+            conditional_temp_syncs[temp_idx(ots)].label_id = label_id;
+        }
     }
 #endif
 
@@ -4446,8 +4524,33 @@ int tcg_gen_code(TCGContext *s, TranslationBlock *tb)
 #endif
                             tcg_reg_free(s, cts->ts->reg, s->reserved_regs);
                         } else if (cts->where == TO_MEM) {
+#if 0
+                            printf("Restore to memory ");
+                            if (cts->ts->temp_global) {
+                                printf("%s", cts->ts->name);
+                            } else {
+                                printf("%lu", temp_idx(cts->ts) - s->nb_globals);
+                            }
+                            printf(" for label %u\n", label_id);
+#endif
                             tcg_reg_free(s, cts->ts->reg, s->reserved_regs);
                             cts->ts = NULL;
+                        } else if (cts->where == TO_CONST) {
+                            tcg_abort();
+#if 0
+                            if (temps_to_restore[i].ts->val_type == TEMP_VAL_REG)
+                            {
+                                tcg_reg_free(s, temps_to_restore[i].ts->reg, allocated_regs);
+                                temps_to_restore[i].ts->val_type = TEMP_VAL_CONST;
+                                temps_to_restore[i].ts->val = temps_to_restore[i].const_val;
+                            }
+                            else
+                            {
+                                assert(temps_to_restore[i].ts->val_type == TEMP_VAL_MEM);
+                                temps_to_restore[i].ts->val_type = TEMP_VAL_CONST;
+                                temps_to_restore[i].ts->val = temps_to_restore[i].const_val;
+                            }
+#endif
                         }
                     }
                 }

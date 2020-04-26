@@ -580,7 +580,7 @@ static void qemu_xmm_op_internal(uintptr_t opkind, uint8_t* dst_addr,
                                  size_t n_bytes)
 {
     uintptr_t slice = packed_slice_pc & 0xFF;
-    assert(slice <= 16);
+    assert(slice <= 16 && slice > 0);
 
     size_t overflow_n_bytes = 0;
     // printf("A overflow_n_bytes: %lu\n", overflow_n_bytes);
@@ -666,9 +666,23 @@ static void qemu_xmm_op_internal(uintptr_t opkind, uint8_t* dst_addr,
 
             e->op1 = dst_slice;
             e->op2 = src_slice;
+
+#if DEBUG_EXPR_CONSISTENCY
+            add_consistency_check_addr(dst_slice, ((uintptr_t)dst_addr), slice, opkind);
+            add_consistency_check_addr(src_slice, ((uintptr_t)src_addr), slice, opkind);
+#endif
         } else {
             SET_EXPR_OP(e->op1, e->op1_is_const, dst_expr_addr[i], dst_addr[i]);
             SET_EXPR_OP(e->op2, e->op2_is_const, src_expr_addr[i], src_addr[i]);
+
+#if DEBUG_EXPR_CONSISTENCY
+            if (dst_expr_addr[i]) {
+               add_consistency_check(dst_expr_addr[i], dst_addr[i], slice, opkind);
+            }
+            if (src_expr_addr[i]) {
+               add_consistency_check(src_expr_addr[i], src_addr[i], slice, opkind);
+            }
+#endif
         }
 
         SET_EXPR_CONST_OP(e->op3, e->op3_is_const, slice);
@@ -799,12 +813,17 @@ static void qemu_xmm_pmovmskb(uintptr_t dst_idx, uint64_t* src_addr,
 #if 0
     printf("qemu_xmm_pmovmskb: symbolic xmm reg\n");
     print_expr(e);
+    printf("XMM_A: %lx\n", *src_addr);
+    printf("XMM_B: %lx\n", *(src_addr+1));
+#endif
 
-    if (GET_EXPR_IDX(e) == 24525) {
-        printf("XMM_A: %lx\n", *src_addr);
-        printf("XMM_B: %lx\n", *(src_addr+1));
-        tcg_abort();
-    }
+#if DEBUG_EXPR_CONSISTENCY
+    Expr* src_expr_a = build_concat_expr(src_expr_addr, src_addr, 8, 0);
+    // print_expr(src_expr_a);
+    add_consistency_check_addr(src_expr_a, (uintptr_t)src_addr, 8, PMOVMSKB);
+    Expr* src_expr_b = build_concat_expr(src_expr_addr + 8, (void*)(((uintptr_t)src_addr) + 8), 8, 0);
+    // print_expr(src_expr_b);
+    add_consistency_check_addr(src_expr_b, ((uintptr_t)src_addr) + 8, 8, PMOVMSKB);
 #endif
 }
 
