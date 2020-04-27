@@ -668,7 +668,9 @@ static void qemu_xmm_op_internal(uintptr_t opkind, uint8_t* dst_addr,
             e->op2 = src_slice;
 
 #if DEBUG_EXPR_CONSISTENCY
+            // printf("XMM_OP_A1:\n");
             add_consistency_check_addr(dst_slice, ((uintptr_t)dst_addr), slice, opkind);
+            // printf("XMM_OP_B1:\n");
             add_consistency_check_addr(src_slice, ((uintptr_t)src_addr), slice, opkind);
 #endif
         } else {
@@ -677,10 +679,12 @@ static void qemu_xmm_op_internal(uintptr_t opkind, uint8_t* dst_addr,
 
 #if DEBUG_EXPR_CONSISTENCY
             if (dst_expr_addr[i]) {
-               add_consistency_check(dst_expr_addr[i], dst_addr[i], slice, opkind);
+                // printf("XMM_OP_A2: addr=%p\n", dst_addr + i);
+                add_consistency_check(dst_expr_addr[i], dst_addr[i], slice, opkind);
             }
             if (src_expr_addr[i]) {
-               add_consistency_check(src_expr_addr[i], src_addr[i], slice, opkind);
+                // printf("XMM_OP_B2:\n");
+                add_consistency_check(src_expr_addr[i], src_addr[i], slice, opkind);
             }
 #endif
         }

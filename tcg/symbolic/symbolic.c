@@ -421,7 +421,7 @@ void init_symbolic_mode(void)
     printf("\nTRACER in NO SOLVER mode\n");
 #endif
 
-    printf("POOL_ADDR=%p\n", pool);
+    // printf("POOL_ADDR=%p\n", pool);
 
 #if 0
     for (size_t i = 0; i < EXPR_POOL_CAPACITY; i++)
@@ -4669,6 +4669,13 @@ static inline void qemu_memmove(uintptr_t src, uintptr_t dst, uintptr_t size)
     for (size_t i = 0; i < size; i++) {
         dst_exprs[i] = src_exprs[i];
         // print_expr(dst_exprs[i]);
+
+#if DEBUG_EXPR_CONSISTENCY
+        if (src_exprs[i]) {
+            printf("MEMMOVE: index=%lu src=%lx dst=%lx val=%p\n", i, src + i, dst + i, src_exprs[i]);
+            add_consistency_check_addr(src_exprs[i], src + i, 1, SYMBOLIC_LOAD);
+        }
+#endif
     }
 }
 
@@ -4694,6 +4701,7 @@ static inline void clear_mem(uintptr_t addr, uintptr_t size)
 
     for (size_t i = 0; i < size; i++) {
         exprs[i] = NULL;
+        // printf("Clearing memory at %lx\n", addr + i);
     }
 }
 
@@ -5661,11 +5669,21 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                                 TCGTemp* t_size =
                                     new_non_conflicting_temp(TCG_TYPE_PTR);
                                 tcg_movi(t_size, size, 0, op, NULL, tcg_ctx);
-                                MARK_TEMP_AS_ALLOCATED(t_value);
-                                add_void_call_2(clear_mem, t_value, t_size, op,
+
+                                TCGTemp* t_dst = new_non_conflicting_temp(TCG_TYPE_PTR);
+                                tcg_movi(t_dst, (uintptr_t)op->args[2], 0, op,
+                                            NULL, tcg_ctx);
+
+                                TCGTemp* t_env = arg_temp(op->args[1]);
+                                MARK_TEMP_AS_ALLOCATED(t_env);
+                                tcg_binop(t_dst, t_dst, t_env, 0, 0, 0, ADD, op, NULL,
+                                            tcg_ctx);
+                                MARK_TEMP_AS_NOT_ALLOCATED(t_env);
+
+                                add_void_call_2(clear_mem, t_dst, t_size, op,
                                                 NULL, tcg_ctx);
-                                MARK_TEMP_AS_NOT_ALLOCATED(t_value);
                                 tcg_temp_free_internal(t_size);
+                                tcg_temp_free_internal(t_dst);
                             } else {
                                 printf(
                                     "store to xmm data (offset=%lu) at %lx\n",
