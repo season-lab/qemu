@@ -359,6 +359,7 @@ void init_symbolic_mode(void)
         if (s_config.coverage_tracer_log_edges) {
             load_coverage_log(s_config.coverage_tracer_log_edges, &coverage_log_edges_ht);
         }
+        main_thread = pthread_self();
         return;
     }
 
@@ -3960,7 +3961,7 @@ void qemu_syscall_helper(uintptr_t syscall_no, uintptr_t syscall_arg0,
                          uintptr_t ret_val)
 {
     if (s_config.coverage_tracer) {
-        if (syscall_no == SYS_EXIT) {
+        if (syscall_no == SYS_EXIT && ret_val == main_thread) {
 
             // merge local bitmap e global bitmap
             for (size_t i = 0; i < BRANCH_BITMAP_SIZE; i++) {
