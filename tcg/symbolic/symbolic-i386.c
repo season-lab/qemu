@@ -831,7 +831,7 @@ static void qemu_xmm_pmovmskb(uintptr_t dst_idx, uint64_t* src_addr,
 #endif
 }
 
-static void qemu_xmm_movl_mm_T0(uint64_t* dst_addr, uintptr_t src_idx)
+static void qemu_xmm_mov_mm_T0(uint64_t* dst_addr, uintptr_t src_idx, size_t size)
 {
     Expr** dst_expr_addr =
         get_expr_addr((uintptr_t)dst_addr, XMM_BYTES, 0, NULL);
@@ -847,8 +847,7 @@ static void qemu_xmm_movl_mm_T0(uint64_t* dst_addr, uintptr_t src_idx)
 #if 0
     printf("Helper qemu_xmm_movl_mm_T0: symbolic op\n");
 #endif
-    // src is 32 bit
-    for (size_t i = 0; i < sizeof(uint32_t); i++) {
+    for (size_t i = 0; i < size; i++) {
         Expr* e_byte   = new_expr();
         e_byte->opkind = EXTRACT8;
         e_byte->op1    = s_temps[src_idx];
@@ -856,7 +855,7 @@ static void qemu_xmm_movl_mm_T0(uint64_t* dst_addr, uintptr_t src_idx)
                           i); // ToDo: check endianess!!!
         dst_expr_addr[i] = e_byte;
     }
-    for (size_t i = sizeof(uint32_t); i < XMM_BYTES; i++) {
+    for (size_t i = size; i < XMM_BYTES; i++) {
         dst_expr_addr[i] = NULL;
     }
 }
@@ -1372,7 +1371,7 @@ static void qemu_divq_EAX(uint64_t packed_idx, uintptr_t rax, uintptr_t rdx,
     uintptr_t t_rax_idx = UNPACK_0(packed_idx);
     uintptr_t t_rdx_idx = UNPACK_1(packed_idx);
     uintptr_t t_0_idx   = UNPACK_2(packed_idx);
-    uintptr_t mode      = UNPACK_3(packed_idx); // 0: div, 1: idiv
+    uintptr_t mode      = UNPACK_3(packed_idx) & 1; // 0: div, 1: idiv
     assert(mode == 0 || mode == 1);
 
     if (s_temps[t_rax_idx] == NULL && s_temps[t_rdx_idx] == NULL &&
@@ -1425,7 +1424,7 @@ static void qemu_divl_EAX(uint64_t packed_idx, uintptr_t rax, uintptr_t rdx,
     uintptr_t t_rax_idx = UNPACK_0(packed_idx);
     uintptr_t t_rdx_idx = UNPACK_1(packed_idx);
     uintptr_t t_0_idx   = UNPACK_2(packed_idx);
-    uintptr_t mode      = UNPACK_3(packed_idx); // 0: div, 1: idiv
+    uintptr_t mode      = UNPACK_3(packed_idx) & 1; // 0: div, 1: idiv
     assert(mode == 0 || mode == 1);
 
     if (s_temps[t_rax_idx] == NULL && s_temps[t_rdx_idx] == NULL &&
@@ -1483,6 +1482,80 @@ static void qemu_divl_EAX(uint64_t packed_idx, uintptr_t rax, uintptr_t rdx,
         SET_EXPR_CONST_OP(r2->op2, r2->op2_is_const, 31);
         SET_EXPR_CONST_OP(r2->op3, r2->op3_is_const, 0);
         s_temps[t_rdx_idx] = r2;
+    }
+
+    // print_expr(e);
+}
+
+static void qemu_divw_AX(uint64_t packed_idx, uintptr_t rax, uintptr_t rdx,
+                          uintptr_t t0)
+{
+    uintptr_t t_rax_idx = UNPACK_0(packed_idx);
+    uintptr_t t_rdx_idx = UNPACK_1(packed_idx);
+    uintptr_t t_0_idx   = UNPACK_2(packed_idx);
+    uintptr_t mode      = UNPACK_3(packed_idx) & 1; // 0: div, 1: idiv
+    assert(mode == 0 || mode == 1);
+
+    if (s_temps[t_rax_idx] == NULL && s_temps[t_rdx_idx] == NULL &&
+        s_temps[t_0_idx] == NULL) {
+        s_temps[t_rax_idx] = NULL;
+        s_temps[t_rdx_idx] = NULL;
+    } else {
+#if 0
+        print_expr(s_temps[t_rdx_idx]);
+        print_expr(s_temps[t_rax_idx]);
+#endif
+        Expr* edx   = new_expr();
+        edx->opkind = EXTRACT;
+        SET_EXPR_OP(edx->op1, edx->op1_is_const, s_temps[t_rdx_idx], rdx);
+        SET_EXPR_CONST_OP(edx->op2, edx->op2_is_const, 15);
+        SET_EXPR_CONST_OP(edx->op3, edx->op3_is_const, 0);
+
+        Expr* eax   = new_expr();
+        eax->opkind = EXTRACT;
+        SET_EXPR_OP(eax->op1, eax->op1_is_const, s_temps[t_rax_idx], rax);
+        SET_EXPR_CONST_OP(eax->op2, eax->op2_is_const, 15);
+        SET_EXPR_CONST_OP(eax->op3, eax->op3_is_const, 0);
+
+        Expr* t_0   = new_expr();
+        t_0->opkind = EXTRACT;
+        SET_EXPR_OP(t_0->op1, t_0->op1_is_const, s_temps[t_0_idx], t0);
+        SET_EXPR_CONST_OP(t_0->op2, t_0->op2_is_const, 15);
+        SET_EXPR_CONST_OP(t_0->op3, t_0->op3_is_const, 0);
+
+        Expr* edxeax   = new_expr();
+        edxeax->opkind = CONCAT;
+        edxeax->op1    = edx;
+        edxeax->op2    = eax;
+
+        Expr* d   = new_expr();
+        d->opkind = mode == 0 ? DIVU : DIV;
+        d->op1    = edxeax;
+        d->op2    = t_0;
+
+        Expr* d2   = new_expr();
+        d2->opkind = EXTRACT;
+        d2->op1    = d;
+        SET_EXPR_CONST_OP(d2->op2, d2->op2_is_const, 7);
+        SET_EXPR_CONST_OP(d2->op3, d2->op3_is_const, 0);
+
+        Expr* r   = new_expr();
+        r->opkind = mode == 0 ? REMU : REM;
+        r->op1    = edxeax;
+        r->op2    = t_0;
+
+        Expr* r2   = new_expr();
+        r2->opkind = EXTRACT;
+        r2->op1    = r;
+        SET_EXPR_CONST_OP(r2->op2, r2->op2_is_const, 7);
+        SET_EXPR_CONST_OP(r2->op3, r2->op3_is_const, 0);
+
+        Expr* r2d2   = new_expr();
+        r2d2->opkind = CONCAT;
+        r2d2->op1    = r2;
+        r2d2->op2    = d2;
+
+        s_temps[t_rax_idx] = r2d2;
     }
 
     // print_expr(e);
