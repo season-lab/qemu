@@ -197,6 +197,29 @@ static inline void    load_configuration(void)
         return;
     }
 
+    var = getenv("EXPR_POOL_SHM_KEY");
+    if (var) {
+        s_config.expr_pool_shm_key = (uintptr_t)strtoull(var, NULL, 16);
+        assert(s_config.expr_pool_shm_key != ULLONG_MAX);
+    }
+    assert(s_config.expr_pool_shm_key != 0 && "Missing EXPR_POOL_SHM_KEY");
+
+    var = getenv("QUERY_SHM_KEY");
+    if (var) {
+        s_config.query_shm_key = (uintptr_t)strtoull(var, NULL, 16);
+        assert(s_config.query_shm_key != ULLONG_MAX);
+    }
+    assert(s_config.query_shm_key != 0 && "Missing QUERY_SHM_KEY");
+
+#if BRANCH_COVERAGE == FUZZOLIC
+    var = getenv("BITMAP_SHM_KEY");
+    if (var) {
+        s_config.bitmap_shm_key = (uintptr_t)strtoull(var, NULL, 16);
+        assert(s_config.bitmap_shm_key != ULLONG_MAX);
+    }
+    assert(s_config.bitmap_shm_key != 0 && "Missing BITMAP_SHM_KEY");
+#endif
+
     var = getenv("SYMBOLIC_EXEC_START_ADDR");
     if (var) {
         s_config.symbolic_exec_start_addr = (uintptr_t)strtoll(var, NULL, 16);
@@ -371,7 +394,7 @@ void init_symbolic_mode(void)
 
     int expr_pool_shm_id;
     do {
-        expr_pool_shm_id = shmget(EXPR_POOL_SHM_KEY, // IPC_PRIVATE,
+        expr_pool_shm_id = shmget(s_config.expr_pool_shm_key, // IPC_PRIVATE,
                                   sizeof(Expr) * EXPR_POOL_CAPACITY, 0666);
         if (expr_pool_shm_id > 0) {
             break;
@@ -382,7 +405,7 @@ void init_symbolic_mode(void)
 
     int query_shm_id;
     do {
-        query_shm_id = shmget(QUERY_SHM_KEY, // IPC_PRIVATE,
+        query_shm_id = shmget(s_config.query_shm_key, // IPC_PRIVATE,
                               sizeof(Query) * EXPR_QUERY_CAPACITY, 0666);
         if (query_shm_id > 0) {
             break;
@@ -394,7 +417,7 @@ void init_symbolic_mode(void)
 #if BRANCH_COVERAGE == FUZZOLIC
     int bitmap_shm_id;
     do {
-        bitmap_shm_id = shmget(BITMAP_SHM_KEY, // IPC_PRIVATE,
+        bitmap_shm_id = shmget(s_config.bitmap_shm_key, // IPC_PRIVATE,
                                sizeof(uint8_t) * BRANCH_BITMAP_SIZE, 0666);
         if (bitmap_shm_id > 0) {
             break;

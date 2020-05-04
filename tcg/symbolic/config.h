@@ -10,6 +10,11 @@ typedef enum {
 } SYMBOLIC_INJECT_INPUT_MODE;
 
 typedef struct SymbolicConfig {
+    uint64_t                   expr_pool_shm_key;
+    uint64_t                   query_shm_key;
+#if BRANCH_COVERAGE == FUZZOLIC
+    uint64_t                   bitmap_shm_key;
+#endif
     uintptr_t                  symbolic_exec_start_addr;
     uintptr_t                  symbolic_exec_stop_addr;
     SYMBOLIC_INJECT_INPUT_MODE symbolic_inject_input_mode;
