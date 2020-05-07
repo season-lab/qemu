@@ -16,7 +16,8 @@
 //#define SYMBOLIC_DEBUG
 //#define DISABLE_SOLVER
 #define SYMBOLIC_COSTANT_ACCESS 1
-#define DEBUG_EXPR_CONSISTENCY 0
+#define DEBUG_EXPR_CONSISTENCY  0
+#define LINEARIZATION           0
 
 #define QUEUE_OP_MAX_SIZE 128
 size_t        op_to_add_size               = 0;
@@ -737,7 +738,7 @@ static inline Expr* new_expr(void)
     check_pool_expr_capacity();
     next_free_expr += 1;
     last_expr = next_free_expr - 1;
-    return next_free_expr - 1;
+    return last_expr;
 }
 
 static inline const char* get_reg_name(TCGContext* tcg_ctx, size_t idx)
@@ -1339,12 +1340,14 @@ static inline void move_temp_size_helper(size_t from, size_t to, size_t size)
 #endif
     Expr* from_expr = s_temps[from];
     if (from_expr && size < sizeof(uintptr_t)) {
-        Expr* e   = new_expr();
-        e->opkind = EXTRACT;
-        e->op1    = from_expr;
-        SET_EXPR_CONST_OP(e->op2, e->op2_is_const, 31);
-        SET_EXPR_CONST_OP(e->op3, e->op3_is_const, 0);
-        from_expr = e;
+        if (!(from_expr->opkind == ZEXT && CONST(from_expr->op2) == 32)) {
+            Expr* e   = new_expr();
+            e->opkind = EXTRACT;
+            e->op1    = from_expr;
+            SET_EXPR_CONST_OP(e->op2, e->op2_is_const, 31);
+            SET_EXPR_CONST_OP(e->op3, e->op3_is_const, 0);
+            from_expr = e;
+        }
     }
 
     s_temps[to] = from_expr;
@@ -2350,6 +2353,8 @@ static inline uintptr_t find_const_base(Expr* e, int depth)
     return base;
 }
 
+#define HASH_ADDR(a)   ((a >> 8) ^ (a << 8))
+
 #if SYMBOLIC_COSTANT_ACCESS
 static uintptr_t symbolic_access_id = MAX_INPUT_SIZE;
 
@@ -2360,7 +2365,6 @@ typedef struct {
     uint8_t   status;
 } MemorySlice;
 
-#define HASH_ADDR(a)   ((a >> 8) ^ (a << 8))
 #define CONST_MAP_SIZE 0x1000
 static MemorySlice const_mem_map[CONST_MAP_SIZE] = {0};
 #endif
@@ -2757,20 +2761,30 @@ static inline void qemu_load_helper(uintptr_t orig_addr,
     }
 #endif
     if (size < 8) {
-        Expr*     n_expr = new_expr();
+
         uintptr_t opkind = get_mem_op_signextend(mem_op) ? SEXT : ZEXT;
-        n_expr->opkind   = opkind;
-        n_expr->op1      = e;
-        n_expr->op2      = (Expr*)(8 * size);
-        e                = n_expr;
-        // printf("Zero extending on load. %lu\n", (8 * size));
-#if 0
-        if (GET_EXPR_IDX(e) == 1267) {
-            printf("\nEXTENDING: Loading %lu bytes from %lx\n", size, addr);
-            print_expr(n_expr);
-            tcg_abort();
+
+        if (e->opkind == ZEXT && opkind == SEXT && CONST(e->op2) == (8 * size)) {
+            e = e->op1;
         }
+
+        if (!(opkind == SEXT && e->opkind == ZEXT && CONST(e->op2) < (8 * size)) &&
+            !(opkind == e->opkind && CONST(e->op2) <= (8 * size))) {
+
+            Expr*     n_expr = new_expr();
+            n_expr->opkind   = opkind;
+            n_expr->op1      = e;
+            n_expr->op2      = (Expr*)(8 * size);
+            e                = n_expr;
+            // printf("Zero extending on load. %lu\n", (8 * size));
+#if 0
+            if (GET_EXPR_IDX(e) == 1267) {
+                printf("\nEXTENDING: Loading %lu bytes from %lx\n", size, addr);
+                print_expr(n_expr);
+                tcg_abort();
+            }
 #endif
+        }
     }
 
     s_temps[val_idx] = e;
@@ -3012,6 +3026,11 @@ static inline void qemu_multi_page_store(l3_page_t* l3_page,
     assert(new_size > 0);
 }
 
+#if LINEARIZATION
+#define MEMORY_BITMAP_SIZE 65536
+static uint16_t store_bitmap[MEMORY_BITMAP_SIZE] = { 0 };
+#endif
+
 static inline void qemu_store_helper(uintptr_t orig_addr,
                                      uintptr_t mem_op_offset,
                                      uintptr_t addr_idx, 
@@ -3092,16 +3111,79 @@ static inline void qemu_store_helper(uintptr_t orig_addr,
         }
     } else {
 
+        Expr* expr_a = s_temps[val_idx];
+
+        if (expr_a->opkind == DEPOSIT) {
+            size_t deposit_len = CONST(expr_a->op3) >> 16;
+            size_t deposit_pos = CONST(expr_a->op3) & 0xFFFF;
+
+            if (deposit_pos == 0 && deposit_len == size) {
+
+                if (expr_a->op2_is_const) {
+                    for (size_t i = 0; i < size; i++) {
+                        l3_page->entries[l3_page_idx + i] = NULL;
+                    }
+                    return;
+                } else {
+                    if (size == 1) {
+                        l3_page->entries[l3_page_idx] = expr_a->op2;
+                        return;
+                    } else {
+                        expr_a = expr_a->op2;
+                    }
+                }
+            }
+        }
+
 #if DEBUG_EXPR_CONSISTENCY
         printf("CONSISTENCY CHECK STORE for addr=%lx size=%lu\n", addr, size);
         add_consistency_check(s_temps[val_idx], concrete_val, size, SYMBOLIC_STORE);
 #endif
-
+#if LINEARIZATION
+        uint64_t hash_addr = HASH_ADDR(addr) % MEMORY_BITMAP_SIZE;
+        if (store_bitmap[hash_addr] < 10000) {
+            store_bitmap[hash_addr] += 1;
+#if 0
+            if (store_bitmap[hash_addr] % 1000 == 0) {
+                printf("Store at addr=%lx count=%u index=%lu\n", addr, store_bitmap[hash_addr], hash_addr);
+            }
+#endif
+        } else {
+            // linearization
+            // printf("Concretizing store value\n");
+            for (size_t i = 0; i < size; i++) {
+                l3_page->entries[l3_page_idx + i] = NULL;
+            }
+            return;
+        }
+#endif
         for (size_t i = 0; i < size; i++) {
+            size_t idx = (mem_op & MO_BE) ? size - i - 1 : i;
+
+            if (expr_a->opkind == CONCAT8R) {
+                Expr* e = expr_a;
+                ssize_t nesting = i;
+                while (nesting > 0) {
+                    if (e->opkind != CONCAT8R) {
+                        break;
+                    }
+                    e = e->op1;
+                    nesting -= 1;
+                }
+                if (nesting == 0) {
+                    if (e->opkind == CONCAT8R) {
+                        e = e->op2;
+                    }
+                    if(e->opkind == EXTRACT8 && CONST(e->op2) == idx) {
+                        l3_page->entries[l3_page_idx + i] = e;
+                        continue;
+                    }
+                }
+            }
+
             Expr* e    = new_expr();
             e->opkind  = EXTRACT8;
-            e->op1     = s_temps[val_idx];
-            size_t idx = (mem_op & MO_BE) ? size - i - 1 : i;
+            e->op1     = expr_a;
             e->op2     = (Expr*)idx;
             l3_page->entries[l3_page_idx + i] = e;
             // printf("Storing byte at index %lu\n", i);
@@ -3250,15 +3332,40 @@ static inline void qemu_extend_helper(uintptr_t packed_idx)
             tcg_abort();
     }
 
+    if (s_temps[a_idx]->opkind == opkind
+            && CONST(s_temps[a_idx]->op2) >= opkind_const_param) {
+        s_temps[out_idx] = s_temps[a_idx];
+        return;
+    }
+
+    if (opkind == SEXT && s_temps[a_idx]->opkind == ZEXT
+            && CONST(s_temps[a_idx]->op2) < opkind_const_param) {
+        s_temps[out_idx] = s_temps[a_idx];
+        return;
+    }
+
+    Expr* expr_a = s_temps[a_idx];
+    if (opkind == SEXT && expr_a->opkind == ZEXT
+            && CONST(expr_a->op2) == opkind_const_param) {
+        expr_a = expr_a->op1;
+    }
+
+    if (expr_a->opkind == DEPOSIT &&
+            opkind_const_param == 0x8 &&
+            CONST(expr_a->op3) == 0x80000) {
+        if (expr_a->op2_is_const) {
+            s_temps[out_idx] = NULL;
+        } else {
+            s_temps[out_idx] = expr_a->op2;
+        }
+        return;
+    }
+
     Expr* e   = new_expr();
     e->opkind = opkind;
-    e->op1    = s_temps[a_idx];
+    e->op1    = expr_a;
     SET_EXPR_CONST_OP(e->op2, e->op2_is_const, opkind_const_param);
     s_temps[out_idx] = e;
-
-    if (GET_EXPR_IDX(e) == 1028) {
-        tcg_abort();
-    }
 }
 
 static inline void extend(TCGTemp* t_op_to, TCGTemp* t_op_from,
@@ -3619,11 +3726,27 @@ static void setcond_helper(uintptr_t a, uintptr_t b, uintptr_t cond,
     s_temps[out_idx] = setcond_expr;
 }
 
+#if LINEARIZATION
+static uint16_t branch_addr_bitmap[MEMORY_BITMAP_SIZE] = { 0 };
+#endif
+
 static inline void branch_helper_internal(uintptr_t a, uintptr_t b,
                                           uintptr_t cond, Expr* expr_a,
                                           Expr* expr_b, size_t size,
                                           uintptr_t pc, uintptr_t addr_to)
 {
+#if LINEARIZATION
+    if (pc > 0) {
+        uint64_t hash_pc = HASH_ADDR(pc) % MEMORY_BITMAP_SIZE;
+        if (branch_addr_bitmap[hash_pc] < 500) {
+            branch_addr_bitmap[hash_pc] += 1;
+        } else {
+            // linearization
+            return;
+        }
+    }
+#endif
+
     Expr*   branch_expr = new_expr();
     TCGCond sat_cond    = check_branch_cond_helper(a, b, cond);
     branch_expr->opkind = get_opkind_from_cond(sat_cond);
@@ -4199,9 +4322,22 @@ static inline void qemu_deposit_helper(uintptr_t packed_idx, uintptr_t a,
         return;
     }
 
+    Expr* expr_a = s_temps[a_idx];
+
+    if (expr_a && expr_a->opkind == DEPOSIT && CONST(expr_a->op3) == poslen) {
+        expr_a = expr_a->op1;
+    }
+
+    if (expr_a && expr_a->opkind == ZEXT && poslen == 0x80000 && CONST(expr_a->op2) == 0x8) {
+        if (s_temps[b_idx] == NULL)
+            tcg_abort();
+        s_temps[out_idx] = s_temps[b_idx];
+        return;
+    }
+
     Expr* e   = new_expr();
     e->opkind = DEPOSIT;
-    SET_EXPR_OP(e->op1, e->op1_is_const, s_temps[a_idx], a);
+    SET_EXPR_OP(e->op1, e->op1_is_const, expr_a, a);
     SET_EXPR_OP(e->op2, e->op2_is_const, s_temps[b_idx], b);
     SET_EXPR_CONST_OP(e->op3, e->op3_is_const, poslen);
     s_temps[out_idx] = e;

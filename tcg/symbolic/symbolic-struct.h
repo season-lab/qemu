@@ -14,7 +14,7 @@
 #endif
 
 #define EXPR_POOL_CAPACITY  (1024 * 1024 * 8)
-#define EXPR_QUERY_CAPACITY (512 * 1024)
+#define EXPR_QUERY_CAPACITY (1024 * 1024)
 #define EXPR_POOL_ADDR      ((const void*)0x7f05c8cc7000)
 #define FINAL_QUERY         ((void*)0xDEAD)
 #define SHM_READY           (0xDEADBEEF)
