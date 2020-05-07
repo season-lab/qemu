@@ -3839,6 +3839,15 @@ if (0x40dd9f == pc) {
     // print_temp(b_idx);
 #endif
 
+#if DEBUG_EXPR_CONSISTENCY
+    if (expr_a) {
+        add_consistency_check(expr_a, a, size == 0 ? 8 : size, CMP_EQ);
+    }
+    if (expr_b) {
+        add_consistency_check(expr_b, b, size == 0 ? 8 : size, CMP_EQ);
+    }
+#endif
+
     branch_helper_internal(a, b, cond, expr_a, expr_b, size, pc, addr_to);
 
 #if 0
