@@ -3167,14 +3167,23 @@ static inline void qemu_store_helper(uintptr_t orig_addr,
                     if (e->opkind != CONCAT8R) {
                         break;
                     }
-                    e = e->op1;
                     nesting -= 1;
+                    if (e->op1_is_const) {
+                        e = NULL;
+                        break;
+                    } else {
+                        e = e->op1;
+                    }
                 }
                 if (nesting == 0) {
-                    if (e->opkind == CONCAT8R) {
-                        e = e->op2;
+                    if (e && e->opkind == CONCAT8R) {
+                        if (e->op2_is_const) {
+                            e = NULL;
+                        } else {
+                            e = e->op2;
+                        }
                     }
-                    if(e->opkind == EXTRACT8 && CONST(e->op2) == idx) {
+                    if(e == NULL || (e->opkind == EXTRACT8 && CONST(e->op2) == idx)) {
                         l3_page->entries[l3_page_idx + i] = e;
                         continue;
                     }
@@ -4310,7 +4319,7 @@ static inline void qemu_movcond(TCGTemp* t_op_out, TCGTemp* t_op_a,
 }
 
 static inline void qemu_deposit_helper(uintptr_t packed_idx, uintptr_t a,
-                                       uintptr_t b, 
+                                       uintptr_t b,
                                        uintptr_t poslen)
 {
     uintptr_t out_idx = UNPACK_0(packed_idx);
@@ -4325,12 +4334,14 @@ static inline void qemu_deposit_helper(uintptr_t packed_idx, uintptr_t a,
     Expr* expr_a = s_temps[a_idx];
 
     if (expr_a && expr_a->opkind == DEPOSIT && CONST(expr_a->op3) == poslen) {
-        expr_a = expr_a->op1;
+        if (expr_a->op1_is_const) {
+            expr_a = NULL;
+        } else {
+            expr_a = expr_a->op1;
+        }
     }
 
     if (expr_a && expr_a->opkind == ZEXT && poslen == 0x80000 && CONST(expr_a->op2) == 0x8) {
-        if (s_temps[b_idx] == NULL)
-            tcg_abort();
         s_temps[out_idx] = s_temps[b_idx];
         return;
     }
