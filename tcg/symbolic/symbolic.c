@@ -6230,6 +6230,44 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                         MARK_TEMP_AS_NOT_ALLOCATED(t_0);
                         tcg_temp_free_internal(t_packed_idx);
 
+                    } else if (strcmp(helper_name, "divb_AL") == 0 ||
+                               strcmp(helper_name, "idivb_AL") == 0) {
+
+                        TCGTemp* t_rax = tcg_find_temp_arch_reg(tcg_ctx, "rax");
+                        TCGTemp* t_0   = arg_temp(op->args[1]);
+
+                        uint64_t mode; // 0: div, 1: idiv
+                        switch (helper_name[0]) {
+                            case 'd':
+                                mode = 0;
+                                break;
+                            case 'i':
+                                mode = 1;
+                                break;
+                            default:
+                                tcg_abort();
+                        }
+
+                        uint64_t v = 0;
+                        v          = PACK_0(v, temp_idx(t_rax));
+                        v          = PACK_1(v, temp_idx(t_0));
+                        v          = PACK_2(v, mode);
+
+                        TCGTemp* t_packed_idx =
+                            new_non_conflicting_temp(TCG_TYPE_PTR);
+                        tcg_movi(t_packed_idx, (uintptr_t)v, 0, op, NULL,
+                                 tcg_ctx);
+
+                        MARK_TEMP_AS_ALLOCATED(t_rax);
+                        MARK_TEMP_AS_ALLOCATED(t_0);
+
+                        add_void_call_3(qemu_divb_AL, t_packed_idx, t_rax,
+                                    t_0, op, NULL, tcg_ctx);
+
+                        MARK_TEMP_AS_NOT_ALLOCATED(t_rax);
+                        MARK_TEMP_AS_NOT_ALLOCATED(t_0);
+                        tcg_temp_free_internal(t_packed_idx);
+
                     } else if (strcmp(helper_name, "pand_xmm") == 0 ||
                                strcmp(helper_name, "pandn_xmm") == 0 ||
                                strcmp(helper_name, "pxor_xmm") == 0 ||
@@ -6691,7 +6729,9 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                         //  Should we do the same?
 
                     } else if (strcmp(helper_name, "cvtsq2sd") == 0 ||
-                               strcmp(helper_name, "cvtsq2ss") == 0) {
+                               strcmp(helper_name, "cvtsq2ss") == 0 ||
+                               strcmp(helper_name, "cvtsi2sd") == 0 ||
+                               strcmp(helper_name, "cvtsi2ss") == 0) {
 
                         // we do not yet support floating point
 
@@ -6714,9 +6754,11 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                     } else if (strcmp(helper_name, "divsd") == 0 ||
                                strcmp(helper_name, "divss") == 0 ||
                                strcmp(helper_name, "addsd") == 0 ||
+                               strcmp(helper_name, "addss") == 0 ||
                                strcmp(helper_name, "subss") == 0 ||
                                strcmp(helper_name, "subsd") == 0 ||
                                strcmp(helper_name, "mulsd") == 0 ||
+                               strcmp(helper_name, "mulss") == 0 ||
                                strcmp(helper_name, "cvtss2sd") == 0 ||
                                strcmp(helper_name, "comisd") == 0 ||
                                strcmp(helper_name, "ucomiss") == 0 ||

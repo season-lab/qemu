@@ -1536,12 +1536,68 @@ static void qemu_divw_AX(uint64_t packed_idx, uintptr_t rax, uintptr_t rdx,
         Expr* d2   = new_expr();
         d2->opkind = EXTRACT;
         d2->op1    = d;
+        SET_EXPR_CONST_OP(d2->op2, d2->op2_is_const, 15);
+        SET_EXPR_CONST_OP(d2->op3, d2->op3_is_const, 0);
+        s_temps[t_rax_idx] = d2;
+
+        Expr* r   = new_expr();
+        r->opkind = mode == 0 ? REMU : REM;
+        r->op1    = edxeax;
+        r->op2    = t_0;
+
+        Expr* r2   = new_expr();
+        r2->opkind = EXTRACT;
+        r2->op1    = r;
+        SET_EXPR_CONST_OP(r2->op2, r2->op2_is_const, 15);
+        SET_EXPR_CONST_OP(r2->op3, r2->op3_is_const, 0);
+
+        s_temps[t_rdx_idx] = r2;
+    }
+
+    // print_expr(e);
+}
+
+static void qemu_divb_AL(uint64_t packed_idx, uintptr_t rax, uintptr_t rdx,
+                          uintptr_t t0)
+{
+    uintptr_t t_rax_idx = UNPACK_0(packed_idx);
+    uintptr_t t_0_idx   = UNPACK_1(packed_idx);
+    uintptr_t mode      = UNPACK_2(packed_idx); // 0: div, 1: idiv
+    assert(mode == 0 || mode == 1);
+
+    if (s_temps[t_rax_idx] == NULL && s_temps[t_0_idx] == NULL) {
+        s_temps[t_rax_idx] = NULL;
+    } else {
+#if 0
+        print_expr(s_temps[t_rax_idx]);
+#endif
+
+        Expr* eax   = new_expr();
+        eax->opkind = EXTRACT;
+        SET_EXPR_OP(eax->op1, eax->op1_is_const, s_temps[t_rax_idx], rax);
+        SET_EXPR_CONST_OP(eax->op2, eax->op2_is_const, 15);
+        SET_EXPR_CONST_OP(eax->op3, eax->op3_is_const, 0);
+
+        Expr* t_0   = new_expr();
+        t_0->opkind = EXTRACT;
+        SET_EXPR_OP(t_0->op1, t_0->op1_is_const, s_temps[t_0_idx], t0);
+        SET_EXPR_CONST_OP(t_0->op2, t_0->op2_is_const, 7);
+        SET_EXPR_CONST_OP(t_0->op3, t_0->op3_is_const, 0);
+
+        Expr* d   = new_expr();
+        d->opkind = mode == 0 ? DIVU : DIV;
+        d->op1    = eax;
+        d->op2    = t_0;
+
+        Expr* d2   = new_expr();
+        d2->opkind = EXTRACT;
+        d2->op1    = d;
         SET_EXPR_CONST_OP(d2->op2, d2->op2_is_const, 7);
         SET_EXPR_CONST_OP(d2->op3, d2->op3_is_const, 0);
 
         Expr* r   = new_expr();
         r->opkind = mode == 0 ? REMU : REM;
-        r->op1    = edxeax;
+        r->op1    = eax;
         r->op2    = t_0;
 
         Expr* r2   = new_expr();

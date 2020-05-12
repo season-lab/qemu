@@ -554,7 +554,7 @@ static inline void print_expr(Expr* expr)
 
 #define CONST(op) ((uintptr_t)op)
 
-#define MAX_INPUT_SIZE (4096 * 32)
+#define MAX_INPUT_SIZE (4096 * 64)
 #define MAX_NUM_SLICES 8
 #define SLICE_SIZE     0x100
 
