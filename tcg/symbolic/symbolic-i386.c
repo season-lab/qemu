@@ -626,7 +626,11 @@ static void qemu_xmm_op_internal(uintptr_t opkind, uint8_t* dst_addr,
         for (size_t k = 0; k < slice && !src_is_not_null && !dst_is_not_null;
              k++) {
             if (src_expr_addr) {
-                src_is_not_null |= src_expr_addr[i + k] != NULL;
+                if (opkind == SHL || opkind == SHR) {
+                    src_is_not_null |= src_expr_addr[0] != NULL;
+                } else {
+                    src_is_not_null |= src_expr_addr[i + k] != NULL;
+                }
             }
             if (dst_expr_addr) {
                 dst_is_not_null |= dst_expr_addr[i + k] != NULL;
@@ -659,8 +663,14 @@ static void qemu_xmm_op_internal(uintptr_t opkind, uint8_t* dst_addr,
         Expr* dst_slice;
         if (slice > 1) {
             // ToDo: optimize when one of the two is fully concrete
-            src_slice =
-                build_concat_expr(&src_expr_addr[i], &src_addr[i], slice, 0);
+            if (opkind == SHL || opkind == SHR) {
+                src_slice =
+                    build_concat_expr(&src_expr_addr[i], &src_addr[i], 1, 0);
+            } else {
+                src_slice =
+                    build_concat_expr(&src_expr_addr[i], &src_addr[i], slice, 0);
+            }
+
             dst_slice =
                 build_concat_expr(&dst_expr_addr[i], &dst_addr[i], slice, 0);
 
@@ -669,13 +679,22 @@ static void qemu_xmm_op_internal(uintptr_t opkind, uint8_t* dst_addr,
 
 #if DEBUG_EXPR_CONSISTENCY
             // printf("XMM_OP_A1:\n");
-            add_consistency_check_addr(dst_slice, ((uintptr_t)dst_addr), slice, opkind);
+            add_consistency_check_addr(dst_slice + i, ((uintptr_t)dst_addr) + i, slice, opkind);
             // printf("XMM_OP_B1:\n");
-            add_consistency_check_addr(src_slice, ((uintptr_t)src_addr), slice, opkind);
+            if (opkind == SHL || opkind == SHR) {
+                add_consistency_check_addr(src_slice, ((uintptr_t)src_addr), 1, opkind);
+            } else {
+                add_consistency_check_addr(src_slice + i, ((uintptr_t)src_addr) + i, slice, opkind);
+            }
 #endif
         } else {
             SET_EXPR_OP(e->op1, e->op1_is_const, dst_expr_addr[i], dst_addr[i]);
-            SET_EXPR_OP(e->op2, e->op2_is_const, src_expr_addr[i], src_addr[i]);
+
+            if (opkind == SHL || opkind == SHR) {
+                SET_EXPR_OP(e->op2, e->op2_is_const, src_expr_addr[0], src_addr[0]);
+            } else {
+                SET_EXPR_OP(e->op2, e->op2_is_const, src_expr_addr[i], src_addr[i]);
+            }
 
 #if DEBUG_EXPR_CONSISTENCY
             if (dst_expr_addr[i]) {
@@ -684,7 +703,11 @@ static void qemu_xmm_op_internal(uintptr_t opkind, uint8_t* dst_addr,
             }
             if (src_expr_addr[i]) {
                 // printf("XMM_OP_B2:\n");
-                add_consistency_check(src_expr_addr[i], src_addr[i], slice, opkind);
+                if (opkind == SHL || opkind == SHR) {
+                    add_consistency_check(src_expr_addr[0], src_addr[0], 1, opkind);
+                } else {
+                    add_consistency_check(src_expr_addr[i], src_addr[i], slice, opkind);
+                }
             }
 #endif
         }
@@ -1180,6 +1203,15 @@ static void cmpxchg_handler(uint64_t packed_info, uintptr_t a_ptr,
         branch_helper_internal(a_val, b_val, TCG_COND_EQ, expr_a, expr_b, 
                                 size == 8 ? 0 : size, pc, addr_to);
     }
+
+#if DEBUG_EXPR_CONSISTENCY
+    if (expr_a) {
+        add_consistency_check(expr_a, a_val, size, CMP_EQ);
+    }
+    if (expr_b) {
+        add_consistency_check(expr_b, b_val, size, CMP_EQ);
+    }
+#endif
 
     if (a_val == b_val) {
         if (expr_c == NULL) {
