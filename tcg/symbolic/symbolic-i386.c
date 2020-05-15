@@ -1066,6 +1066,14 @@ static inline void atomic_fetch_op(uint64_t packed_info, uintptr_t a_ptr,
     uintptr_t order  = (size_order_opkind >> 8) & 0xF;
     uintptr_t size   = size_order_opkind >> 12;
 
+#if 0
+    for (size_t i = 0; i < size; i++) {
+        if (a_ptr + i >= 0x4004000028 && a_ptr + i <= 0x4004000028 + 8) {
+            tcg_abort();
+        }
+    }
+#endif
+
     if (s_temps[t_a_idx]) {
         // ToDo: memory slice
         load_concretization(s_temps[t_a_idx], a_ptr);
@@ -1136,6 +1144,11 @@ static inline void atomic_fetch_op(uint64_t packed_info, uintptr_t a_ptr,
         e_byte->op1    = e;
         SET_EXPR_CONST_OP(e_byte->op2, e_byte->op2_is_const, i);
         a_exprs[i] = e_byte;
+#if 0
+        if (a_ptr + i >= 0x4004000028 && a_ptr + i <= 0x4004000028 + 8) {
+            tcg_abort();
+        }
+#endif
     }
 }
 
@@ -1206,9 +1219,13 @@ static void cmpxchg_handler(uint64_t packed_info, uintptr_t a_ptr,
 
 #if DEBUG_EXPR_CONSISTENCY
     if (expr_a) {
+        // printf("CHECK EXPR_A:\n");
+        // print_expr(expr_a);
         add_consistency_check(expr_a, a_val, size, CMP_EQ);
     }
     if (expr_b) {
+        // printf("CHECK EXPR_B:\n");
+        // print_expr(expr_b);
         add_consistency_check(expr_b, b_val, size, CMP_EQ);
     }
 #endif
@@ -1233,6 +1250,13 @@ static void cmpxchg_handler(uint64_t packed_info, uintptr_t a_ptr,
                 SET_EXPR_CONST_OP(e_byte->op2, e_byte->op2_is_const, i);
                 a_exprs[i] = e_byte;
             }
+
+#if 0
+            if (a_ptr == 0x4004000028) {
+                printf("\nWriting at %lx pc=%lx:\n", a_ptr, pc);
+                print_expr(expr_c);
+            }
+#endif
         }
     } else {
         s_temps[t_b_idx] = expr_a;

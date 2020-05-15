@@ -167,6 +167,8 @@ typedef enum OPKIND {
     SYMBOLIC_STORE,
     MEMORY_CONCRETIZATION,
     CONSISTENCY_CHECK,
+    //
+    MOV,
 } OPKIND;
 
 typedef enum EXTENDKIND {
@@ -415,6 +417,9 @@ static inline const char* opkind_to_str(uint8_t opkind)
             return "SYMBOLIC_STORE";
         case MEMORY_CONCRETIZATION:
             return "MEMORY_CONCRETIZATION";
+
+        case MOV:
+            return "MOV";
 
         default:
             printf("\nstr(opkind=%u) is unknown\n", opkind);

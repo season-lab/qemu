@@ -1327,46 +1327,6 @@ static inline void allocate_new_expr(TCGTemp* t_out, TCGOp* op_in,
     allocate_new_expr_conditional(t_out, op_in, tcg_ctx, NULL);
 }
 
-static inline void move_temp_size_helper(size_t from, size_t to, size_t size)
-{
-#if 0
-    if (s_temps[to] || s_temps[from]) {
-        printf("Move: t[%ld] = t[%ld]\n", to, s_temps[from] ? from : -1);
-        if (s_temps[from])
-            print_temp(from);
-        if (s_temps[to])
-            print_temp(to);
-    }
-#endif
-    Expr* from_expr = s_temps[from];
-    if (from_expr && size < sizeof(uintptr_t)) {
-        if (!(from_expr->opkind == ZEXT && CONST(from_expr->op2) == 32)) {
-            Expr* e   = new_expr();
-            e->opkind = EXTRACT;
-            e->op1    = from_expr;
-            SET_EXPR_CONST_OP(e->op2, e->op2_is_const, 31);
-            SET_EXPR_CONST_OP(e->op3, e->op3_is_const, 0);
-            from_expr = e;
-        }
-    }
-
-    s_temps[to] = from_expr;
-}
-
-static inline void move_temp_helper(size_t from, size_t to)
-{
-#if 0
-    if (s_temps[to] || s_temps[from]) {
-        printf("Move: t[%ld] = t[%ld]\n", to, s_temps[from] ? from : -1);
-        if (s_temps[from])
-            print_temp(from);
-        if (s_temps[to])
-            print_temp(to);
-    }
-#endif
-    s_temps[to] = s_temps[from];
-}
-
 #if DEBUG_EXPR_CONSISTENCY
 static void add_consistency_check(Expr* e, uintptr_t value, size_t size, OPKIND opkind)
 {
@@ -1400,6 +1360,55 @@ static void add_consistency_check_addr(Expr* e, uintptr_t addr, size_t size, OPK
     add_consistency_check(e, concrete_value, size, opkind);
 }
 #endif
+
+static inline void move_temp_size_helper(size_t from, size_t to, size_t size)
+{
+#if 0
+    if (s_temps[to] || s_temps[from]) {
+        printf("Move: t[%ld] = t[%ld]\n", to, s_temps[from] ? from : -1);
+        if (s_temps[from])
+            print_temp(from);
+        if (s_temps[to])
+            print_temp(to);
+    }
+#endif
+    Expr* from_expr = s_temps[from];
+    if (from_expr && size < sizeof(uintptr_t)) {
+        if (!(from_expr->opkind == ZEXT && CONST(from_expr->op2) == 32)) {
+            Expr* e   = new_expr();
+            e->opkind = EXTRACT;
+            e->op1    = from_expr;
+            SET_EXPR_CONST_OP(e->op2, e->op2_is_const, 31);
+            SET_EXPR_CONST_OP(e->op3, e->op3_is_const, 0);
+            from_expr = e;
+        }
+    }
+
+    s_temps[to] = from_expr;
+}
+
+#if DEBUG_EXPR_CONSISTENCY
+static inline void move_temp_helper(size_t from, size_t to, uintptr_t val)
+#else
+static inline void move_temp_helper(size_t from, size_t to)
+#endif
+{
+#if DEBUG_EXPR_CONSISTENCY
+    if (s_temps[from]) {
+        add_consistency_check(s_temps[from], val, sizeof(uintptr_t), MOV);
+    }
+#endif
+#if 0
+    if (s_temps[to] || s_temps[from]) {
+        printf("Move: t[%ld] = t[%ld]\n", to, s_temps[from] ? from : -1);
+        if (s_temps[from])
+            print_temp(from);
+        if (s_temps[to])
+            print_temp(to);
+    }
+#endif
+    s_temps[to] = s_temps[from];
+}
 
 static inline void move_temp(size_t from, size_t to, size_t size, TCGOp* op_in,
                              TCGContext* tcg_ctx)
@@ -2791,9 +2800,6 @@ static inline void qemu_load_helper(uintptr_t orig_addr,
 
 #if DEBUG_EXPR_CONSISTENCY
     add_consistency_check_load(e, addr, size);
-    if (addr == 0x40007fd628) {
-        print_expr(e);
-    }
 #endif
 }
 
@@ -3050,6 +3056,15 @@ static inline void qemu_store_helper(uintptr_t orig_addr,
     printf("Store %lu bytes at %lx\n", size, addr);
 #endif
 
+#if 0
+    for (size_t i = 0; i < size; i++) {
+        if (addr + i >= 0x4004000028 && addr + i <= 0x4004000028 + 8) {
+            printf("\nStoring concrete (size=%lu, val=%lx) at %lx\n", size, concrete_val, addr + i);
+            tcg_abort();
+        }
+    }
+#endif
+
 #if SYMBOLIC_COSTANT_ACCESS
     uintptr_t norm_addr = (orig_addr / SLICE_SIZE) * SLICE_SIZE;
     uintptr_t hash_addr = HASH_ADDR(norm_addr);
@@ -3103,7 +3118,7 @@ static inline void qemu_store_helper(uintptr_t orig_addr,
         for (size_t i = 0; i < size; i++) {
             l3_page->entries[l3_page_idx + i] = NULL;
 #if 0
-            if (addr + i >= 0x8d28b0 && addr + i <= 0x8d28b0 + 8) {
+            if (addr + i >= 0x4004000028 && addr + i <= 0x4004000028 + 8) {
                 printf("Storing concrete (size=%lu, val=%lx) at %lx\n", size, concrete_val, addr + i);
                 printf("Index: %lu page=%p\n", l3_page_idx + i, l3_page);
             }
@@ -3202,7 +3217,7 @@ static inline void qemu_store_helper(uintptr_t orig_addr,
             }
 #endif
 #if 0
-            if (addr + i >= 0x8d28b0 && addr + i <= 0x8d28b0 + 8) {
+            if (addr + i >= 0x4004000028 && addr + i <= 0x4004000028 + 8) {
                 printf("\nStoring at %lx (size=%lu) expression:\n", addr + i, size);
                 printf("Index: %lu page=%p\n", l3_page_idx + i, l3_page);
                 print_expr(e);
@@ -5359,8 +5374,15 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                              tcg_ctx);
 
                     if (size == sizeof(uintptr_t) || size == 0) {
+#if DEBUG_EXPR_CONSISTENCY
+                        MARK_TEMP_AS_ALLOCATED(from);
+                        add_void_call_3(move_temp_helper, t_from_idx, t_to_idx, from,
+                                        op, NULL, tcg_ctx);
+                        MARK_TEMP_AS_NOT_ALLOCATED(from);
+#else
                         add_void_call_2(move_temp_helper, t_from_idx, t_to_idx,
                                         op, NULL, tcg_ctx);
+#endif
                     } else {
                         TCGTemp* t_size =
                             new_non_conflicting_temp(TCG_TYPE_PTR);
@@ -6929,7 +6951,7 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                         TCGTemp* t_out   = arg_temp(op->args[0]);
                         TCGTemp* t_ptr_a = arg_temp(op->args[2]);
                         TCGTemp* t_val_b = arg_temp(op->args[3]);
-                        TCGTemp* t_val_c = arg_temp(op->args[3]);
+                        TCGTemp* t_val_c = arg_temp(op->args[4]);
 
                         uint64_t size;
                         if (helper_name[14] == 'l') {
