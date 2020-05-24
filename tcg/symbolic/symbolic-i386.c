@@ -556,6 +556,96 @@ static inline Expr* build_concat_expr(Expr** exprs, void* addr, size_t size,
     return dst_expr;
 }
 
+static inline void clear_mem(uintptr_t addr, uintptr_t size)
+{
+    size_t overflow_n_bytes = 0;
+    // printf("A overflow_n_bytes: %lu\n", overflow_n_bytes);
+    Expr** exprs = get_expr_addr((uintptr_t)addr, size, 0, &overflow_n_bytes);
+    if (overflow_n_bytes > 0) {
+        if (overflow_n_bytes >= size) {
+            printf("B overflow_n_bytes: %lu size=%lu\n", overflow_n_bytes,
+                   size);
+        }
+        assert(overflow_n_bytes < size);
+        size -= overflow_n_bytes;
+        assert(size);
+        clear_mem(addr + size, overflow_n_bytes);
+    }
+
+    if (exprs == NULL) {
+        return;
+    }
+
+    for (size_t i = 0; i < size; i++) {
+        exprs[i] = NULL;
+        // printf("Clearing memory at %lx\n", addr + i);
+    }
+}
+
+static inline void qemu_memmove(uintptr_t src, uintptr_t dst, uintptr_t size)
+{
+    size_t overflow_n_bytes = 0;
+    // printf("A overflow_n_bytes: %lu\n", overflow_n_bytes);
+    Expr** src_exprs =
+        get_expr_addr((uintptr_t)src, size, 0, &overflow_n_bytes);
+    if (overflow_n_bytes > 0) {
+        if (overflow_n_bytes >= size) {
+            printf("B overflow_n_bytes: %lu size=%lu\n", overflow_n_bytes,
+                   size);
+        }
+        assert(overflow_n_bytes < size);
+        size -= overflow_n_bytes;
+        assert(size);
+        qemu_memmove(src + size, dst + size, overflow_n_bytes);
+    }
+    overflow_n_bytes = 0;
+    Expr** dst_exprs =
+        get_expr_addr((uintptr_t)dst, size, 0, &overflow_n_bytes);
+    if (overflow_n_bytes > 0) {
+        if (overflow_n_bytes >= size) {
+            printf("B overflow_n_bytes: %lu size=%lu\n", overflow_n_bytes,
+                   size);
+        }
+        assert(overflow_n_bytes < size);
+        size -= overflow_n_bytes;
+        assert(size);
+        qemu_memmove(src + size, dst + size, overflow_n_bytes);
+    }
+
+    // printf("Memmove from=%lx to=%lx size=%lu\n", src, dst, size);
+
+    if (src_exprs == NULL && dst_exprs == NULL) {
+        return;
+    }
+
+    if (src_exprs == NULL) {
+        for (size_t i = 0; i < size; i++) {
+            dst_exprs[i] = NULL;
+        }
+        return;
+    }
+
+    if (dst_exprs == NULL) {
+        size_t overflow_n_bytes;
+        dst_exprs = get_expr_addr((uintptr_t)dst, size, 1, &overflow_n_bytes);
+    }
+
+#if 0
+    printf("[+] Memmove from=%lx to=%lx size=%lu\n", src, dst, size);
+#endif
+    for (size_t i = 0; i < size; i++) {
+        dst_exprs[i] = src_exprs[i];
+        // print_expr(dst_exprs[i]);
+
+#if DEBUG_EXPR_CONSISTENCY
+        if (src_exprs[i]) {
+            // printf("MEMMOVE: index=%lu src=%lx dst=%lx val=%p\n", i, src + i, dst + i, src_exprs[i]);
+            add_consistency_check_addr(src_exprs[i], src + i, 1, SYMBOLIC_LOAD);
+        }
+#endif
+    }
+}
+
 static inline size_t suffix_to_slice(char suffix, char suffix2)
 {
     if (suffix == 'b') {
@@ -1318,8 +1408,6 @@ static void xchg_handler(uint64_t packed_info, uintptr_t a_ptr)
 
 #define XO(X) offsetof(X86XSaveArea, X)
 
-static Expr* xmm_save_state[XMM_BYTES * 16];
-
 static void qemu_fxsave(CPUX86State* env, uintptr_t ptr)
 {
     int          i, nb_xmm_regs;
@@ -1331,25 +1419,14 @@ static void qemu_fxsave(CPUX86State* env, uintptr_t ptr)
         nb_xmm_regs = 8;
     }
 
-    // addr = ptr + XO(legacy.xmm_regs);
-    addr = 0;
+    // printf("FXSAVE at [%lx, %lx] %lu\n", ptr, ptr+512, 16 * XMM_BYTES + XO(legacy.xmm_regs) - XO(legacy.fcw));
 
+    // clear_mem(ptr, 512);
+    clear_mem(ptr + XO(legacy.fcw), XO(legacy.xmm_regs) - XO(legacy.fcw));
+
+    addr = ptr + XO(legacy.xmm_regs);
     for (i = 0; i < nb_xmm_regs; i++) {
-        Expr** src_expr_addr =
-            get_expr_addr((uintptr_t) & (env->xmm_regs[i]), XMM_BYTES, 0, NULL);
-
-#if 0
-        printf("FXSAVE: xmm at %p\n", & (env->xmm_regs[i]));
-#endif
-        for (size_t k = 0; k < XMM_BYTES; k++) {
-            if (src_expr_addr == NULL) {
-                xmm_save_state[addr + k] = NULL;
-            } else {
-                xmm_save_state[addr + k] = src_expr_addr[k];
-                // print_expr(src_expr_addr[k]);
-            }
-        }
-
+        qemu_memmove((uintptr_t)&(env->xmm_regs[i]), addr, XMM_BYTES);
         addr += XMM_BYTES;
     }
 }
@@ -1365,25 +1442,9 @@ static void qemu_fxrstor(CPUX86State* env, uintptr_t ptr)
         nb_xmm_regs = 8;
     }
 
-    // addr = ptr + XO(legacy.xmm_regs);
-    addr = 0;
-
+    addr = ptr + XO(legacy.xmm_regs);
     for (i = 0; i < nb_xmm_regs; i++) {
-
-        Expr** dst_expr_addr =
-            get_expr_addr((uintptr_t) & (env->xmm_regs[i]), XMM_BYTES, 0, NULL);
-#if 0
-        printf("FXRSTOR: xmm at %p\n", & (env->xmm_regs[i]));
-#endif
-        for (size_t k = 0; k < XMM_BYTES; k++) {
-            if (dst_expr_addr) {
-                dst_expr_addr[k] = xmm_save_state[addr + k];
-                // print_expr(dst_expr_addr[k]);
-            } else {
-                assert(xmm_save_state[addr + k] == NULL);
-            }
-        }
-
+        qemu_memmove(addr, (uintptr_t)&(env->xmm_regs[i]), XMM_BYTES);
         addr += XMM_BYTES;
     }
 }

@@ -33,6 +33,10 @@ typedef struct SymbolicConfig {
     const char* coverage_tracer_log_bb;
     const char* coverage_tracer_log_edges;
     int8_t      coverage_tracer_filter_lib;
+    //
+    int8_t      debug_fuzz_expr;
+    uint64_t    debug_fuzz_expr_idx;
+    uint64_t    debug_fuzz_expr_value;
 } SymbolicConfig;
 
 #endif // SYMBOLIC_CONFIG_H
