@@ -330,10 +330,18 @@ static inline const char* opkind_to_str(uint8_t opkind)
         case XOR_3:
             return "XOR_3";
 
-        case CMP_EQ:
-            return "CMPB";
         case PMOVMSKB:
             return "PMOVMSKB";
+        case CMP_EQ:
+            return "CMP_EQ";
+        case CMP_GT:
+            return "CMP_GT";
+        case CMP_GE:
+            return "CMP_GE";
+        case CMP_LE:
+            return "CMP_LE";
+        case CMP_LT:
+            return "CMP_LT";
 
         case MIN:
             return "MIN";
