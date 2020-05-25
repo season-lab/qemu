@@ -1197,17 +1197,6 @@ static inline void visitTB(uintptr_t cur_loc)
         virgin_bitmap[index]++;
     }
 
-#if 0
-    // update global bitmap
-    if (bitmap[index] < virgin_bitmap[index]) {
-        bitmap[index] = virgin_bitmap[index];
-
-        if (s_config.coverage_tracer_filter_lib < 0) {
-            g_hash_table_add(coverage_log_ht, (gpointer) index);
-        }
-    }
-#endif
-
     prev_loc = cur_loc >> 1;
 }
 
@@ -4195,7 +4184,7 @@ void qemu_syscall_helper(uintptr_t syscall_no, uintptr_t syscall_arg0,
                 virgin_bitmap[i] = count_class_binary[virgin_bitmap[i]];
                 // new edge?
                 if (!bitmap[i] && virgin_bitmap[i]) {
-#if 0
+#if 1
                     if (s_config.coverage_tracer_filter_lib < 0) {
                         g_hash_table_add(coverage_log_bb_ht, (gpointer)i);
                     }
@@ -4564,12 +4553,21 @@ static inline void qemu_extract2_helper(uintptr_t packed_idx, uintptr_t a,
     uintptr_t out_idx = UNPACK_0(packed_idx);
     uintptr_t a_idx   = UNPACK_1(packed_idx);
     uintptr_t b_idx   = UNPACK_2(packed_idx);
-    uintptr_t pos     = UNPACK_2(packed_idx);
+    uintptr_t pos     = UNPACK_3(packed_idx);
 
     if (s_temps[a_idx] == NULL && s_temps[b_idx] == NULL) {
         s_temps[out_idx] = NULL;
         return;
     }
+
+#if DEBUG_EXPR_CONSISTENCY
+    if (s_temps[a_idx]) {
+        add_consistency_check(s_temps[a_idx], a, 8, QZEXTRACT2);
+    }
+    if (s_temps[b_idx]) {
+        add_consistency_check(s_temps[b_idx], b, 8, QZEXTRACT2);
+    }
+#endif
 
     Expr* e   = new_expr();
     e->opkind = QZEXTRACT2;
