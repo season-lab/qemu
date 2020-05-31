@@ -16,6 +16,7 @@
 //#define SYMBOLIC_DEBUG
 //#define DISABLE_SOLVER
 #define SYMBOLIC_COSTANT_ACCESS 1
+#define SYMBOLIC_INPUT_ACCESS   0
 #define DEBUG_EXPR_CONSISTENCY  0
 #define LINEARIZATION           0
 
@@ -102,6 +103,13 @@ typedef struct {
 static Expr* input_exprs[MAX_INPUT_SIZE] = {0};
 #define MAX_FP 128
 static FileDescriptorStatus* input_fp[MAX_FP] = {0};
+
+#ifdef SYMBOLIC_INPUT_ACCESS
+static uintptr_t input_start_addr = 0;
+static uintptr_t input_end_addr = 0;
+static uintptr_t input_offset = 0;
+static uintptr_t input_is_constant = 0;
+#endif
 
 // from tcg.c
 typedef struct TCGHelperInfo {
@@ -411,25 +419,27 @@ void init_symbolic_mode(void)
 
     int expr_pool_shm_id;
     do {
+        // printf("[TRACER] Waiting for shared memory #1 (key=%lu)...\n", s_config.expr_pool_shm_key);
         expr_pool_shm_id = shmget(s_config.expr_pool_shm_key, // IPC_PRIVATE,
-                                  sizeof(Expr) * EXPR_POOL_CAPACITY, 0666);
-        if (expr_pool_shm_id > 0) {
+                                  sizeof(Expr) * EXPR_POOL_CAPACITY, 0666 | IPC_CREAT);
+        if (expr_pool_shm_id >= 0) {
             break;
         }
         nanosleep(&polling_time, NULL);
     } while (1);
-    assert(expr_pool_shm_id > 0);
+    assert(expr_pool_shm_id >= 0);
 
     int query_shm_id;
     do {
+        // printf("[TRACER] Waiting for shared memory #2...\n");
         query_shm_id = shmget(s_config.query_shm_key, // IPC_PRIVATE,
-                              sizeof(Query) * EXPR_QUERY_CAPACITY, 0666);
-        if (query_shm_id > 0) {
+                              sizeof(Query) * EXPR_QUERY_CAPACITY, 0666 | IPC_CREAT);
+        if (query_shm_id >= 0) {
             break;
         }
         nanosleep(&polling_time, NULL);
     } while (1);
-    assert(query_shm_id > 0);
+    assert(query_shm_id >= 0);
 
 #if BRANCH_COVERAGE == FUZZOLIC
     int bitmap_shm_id;
@@ -2515,7 +2525,7 @@ static inline void qemu_load_helper(uintptr_t orig_addr,
     printf("Loading %lu bytes from %p at offset %lu\n", size, (void*)orig_addr, offset);
 #endif
 
-#if SYMBOLIC_COSTANT_ACCESS
+
     if (addr_idx < TCG_MAX_TEMPS && s_temps[addr_idx]) {
 #if 0
         if (CONST(s_temps[addr_idx]) < 0x500000) {
@@ -2523,6 +2533,7 @@ static inline void qemu_load_helper(uintptr_t orig_addr,
            tcg_abort();
         }
 #endif
+#if SYMBOLIC_COSTANT_ACCESS
         uintptr_t base = find_const_base(s_temps[addr_idx], 0);
         if (IS_LIKELY_CONST_BASE(base)) {
 #if 0
@@ -2597,9 +2608,17 @@ static inline void qemu_load_helper(uintptr_t orig_addr,
 
             if (read_from_slice && slices_count > 0) {
 
+                Expr* offset_addr = s_temps[addr_idx];
+                if (offset > 0) {
+                    offset_addr = new_expr();
+                    offset_addr->opkind = ADD;
+                    offset_addr->op1 = s_temps[addr_idx];
+                    SET_EXPR_CONST_OP(offset_addr->op2, offset_addr->op2_is_const, offset);
+                }
+
                 Expr* q   = new_expr();
                 q->opkind = MEMORY_SLICE_ACCESS;
-                q->op1    = s_temps[addr_idx];
+                q->op1    = offset_addr;
                 q->op2    = EXPR_CONST_OP(addr);
                 q->op3    = EXPR_CONST_OP(symbolic_access_id);
 
@@ -2667,15 +2686,70 @@ static inline void qemu_load_helper(uintptr_t orig_addr,
                        ((char*)next_free_expr) - ((char*)initial_free_expr));
                 next_free_expr = initial_free_expr;
 
-                // printf("Load concretization: expr=%p", s_temps[addr_idx]);
-                load_concretization(s_temps[addr_idx], orig_addr);
+#ifdef SYMBOLIC_INPUT_ACCESS
+                // address is within input bytes and input bytes are constant
+                if (input_is_constant && addr >= input_start_addr && addr <= input_end_addr) {
+
+                    Expr* offset_addr = s_temps[addr_idx];
+                    if (offset > 0) {
+                        offset_addr = new_expr();
+                        offset_addr->opkind = ADD;
+                        offset_addr->op1 = s_temps[addr_idx];
+                        SET_EXPR_CONST_OP(offset_addr->op2, offset_addr->op2_is_const, offset);
+                    }
+
+                    Expr* q   = new_expr();
+                    q->opkind = MEMORY_INPUT_SLICE_ACCESS;
+                    q->op1    = offset_addr;
+                    q->op2    = EXPR_CONST_OP(addr);
+                    q->op3    = EXPR_CONST_OP(symbolic_access_id);
+
+                    Expr* e   = new_expr();
+                    e->opkind = IS_SYMBOLIC;
+                    e->op1    = EXPR_CONST_OP(symbolic_access_id);
+                    e->op2    = EXPR_CONST_OP(size);
+                    e->op3    = EXPR_CONST_OP(addr - input_start_addr);
+
+                    Expr* s   = new_expr();
+                    s->opkind = INPUT_SLICE;
+                    s->op1    = EXPR_CONST_OP(input_start_addr);
+                    s->op2    = EXPR_CONST_OP(input_end_addr);
+                    s->op3    = EXPR_CONST_OP(input_offset);
+
+                    if (size < 8) {
+                        Expr*     n_expr = new_expr();
+                        uintptr_t opkind = get_mem_op_signextend(mem_op) ? SEXT : ZEXT;
+                        n_expr->opkind   = opkind;
+                        n_expr->op1      = e;
+                        n_expr->op2      = (Expr*)(8 * size);
+                        e                = n_expr;
+                    }
+
+                    symbolic_access_id += 1;
+                    s_temps[val_idx] = e;
+
+                    next_query[0].query   = q;
+                    next_query[0].address = 0;
+                    next_query++;
+
+                    return;
+
+                } else {
+#endif
+                    // printf("Load concretization: expr=%p", s_temps[addr_idx]);
+                    load_concretization(s_temps[addr_idx], orig_addr);
+#ifdef SYMBOLIC_INPUT_ACCESS
+                }
+#endif
             }
         } else {
             // printf("Load concretization: expr=%p", s_temps[addr_idx]);
             load_concretization(s_temps[addr_idx], orig_addr);
         }
-    }
+#else
+        load_concretization(s_temps[addr_idx], orig_addr);
 #endif
+    }
 
     uintptr_t  l1_page_idx = addr >> (L1_PAGE_BITS + L2_PAGE_BITS);
     l2_page_t* l2_page     = s_memory.table.entries[l1_page_idx];
@@ -3120,6 +3194,12 @@ static inline void qemu_store_helper(uintptr_t orig_addr,
         printf("Invalidating memory slice #%lu at 0x%lu used %u times\n", idx, norm_addr, const_mem_map[idx].used);
 #endif
         const_mem_map[idx].status = 2;
+    }
+#endif
+
+#ifdef SYMBOLIC_INPUT_ACCESS
+    if (addr >= input_start_addr && addr <= input_end_addr) {
+        input_is_constant = 0;
     }
 #endif
 
@@ -3880,7 +3960,7 @@ static void branch_helper(uintptr_t a, uintptr_t b, uintptr_t cond,
         return; // early exit
 
 #if 0
-if (0x40dd9f == pc) {
+if (0x400c90 == pc) {
     printf("Branch at 0x%lx %lu %s %lu\n", pc, a_idx, opkind_to_str(get_opkind_from_cond(cond)), b_idx);
     print_expr(expr_a);
     print_expr(expr_b);
@@ -4087,6 +4167,13 @@ static inline void read_from_input(intptr_t offset, uintptr_t addr, size_t size)
         "Reading %lu bytes from input at 0x%lx. Storing them at addr 0x%lx\n",
         size, offset, addr);
 
+#ifdef SYMBOLIC_INPUT_ACCESS
+    input_start_addr = addr;
+    input_end_addr = addr + size - 1;
+    input_offset = offset;
+    input_is_constant = 1;
+#endif
+
     uintptr_t  l1_page_idx = addr >> (L1_PAGE_BITS + L2_PAGE_BITS);
     l2_page_t* l2_page     = s_memory.table.entries[l1_page_idx];
     if (l2_page == NULL) {
@@ -4124,6 +4211,20 @@ static inline void read_from_input(intptr_t offset, uintptr_t addr, size_t size)
                 // printf("Input byte %lu: %x\n", offset, *((uint8_t*)addr));
             }
             l3_page->entries[l3_page_idx + i] = e_byte;
+
+#if SYMBOLIC_COSTANT_ACCESS
+            uintptr_t norm_addr = (addr / SLICE_SIZE) * SLICE_SIZE;
+            uintptr_t hash_addr = HASH_ADDR(norm_addr);
+            uintptr_t idx       = hash_addr % CONST_MAP_SIZE;
+            uint8_t   status    = const_mem_map[idx].status;
+            if (status == 0) {
+                const_mem_map[idx].status = 2;
+                const_mem_map[idx].base   = norm_addr;
+            } else if (status == 1) {
+                const_mem_map[idx].status = 2;
+            }
+#endif
+
             addr += 1;
             offset += 1;
         }
@@ -4132,19 +4233,6 @@ static inline void read_from_input(intptr_t offset, uintptr_t addr, size_t size)
             l2_page_idx++;
         }
     }
-
-#if SYMBOLIC_COSTANT_ACCESS
-    uintptr_t norm_addr = (addr / SLICE_SIZE) * SLICE_SIZE;
-    uintptr_t hash_addr = HASH_ADDR(norm_addr);
-    uintptr_t idx       = hash_addr % CONST_MAP_SIZE;
-    uint8_t   status    = const_mem_map[idx].status;
-    if (status == 0) {
-        const_mem_map[idx].status = 2;
-        const_mem_map[idx].base   = norm_addr;
-    } else if (status == 1) {
-        const_mem_map[idx].status = 2;
-    }
-#endif
 }
 
 static int         finalization_done = 0;

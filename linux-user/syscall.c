@@ -11948,7 +11948,9 @@ static abi_long do_syscall1(void *cpu_env, int num, abi_long arg1,
 
 #include "../tcg/symbolic/symbolic-instrumentation.h"
 #include <pthread.h>
-
+#if 0
+static int last_openat_fd = -1;
+#endif
 abi_long do_syscall(void *cpu_env, int num, abi_long arg1,
                     abi_long arg2, abi_long arg3, abi_long arg4,
                     abi_long arg5, abi_long arg6, abi_long arg7,
@@ -12040,6 +12042,19 @@ abi_long do_syscall(void *cpu_env, int num, abi_long arg1,
 #ifdef SYMBOLIC_INSTRUMENTATION
     if (syscall_no != SYS_NOT_INTERESTING) {
         qemu_syscall_helper(syscall_no, arg1, arg2, arg3, arg4, arg5, arg6, arg7, ret);
+    }
+#endif
+
+#if 0
+    if (num == TARGET_NR_openat && ret > 0 && strstr((char*)((uintptr_t)arg2), ".so") != NULL) {
+        fprintf(stderr, "openat: %s %d\n", (char*)((uintptr_t)arg2), (int)ret);
+        last_openat_fd = ret;
+    }
+    if (num == TARGET_NR_mmap && arg1 == 0 && arg5 != -1 && arg5 == last_openat_fd) {
+        fprintf(stderr, "mmap addr: %lx %d\n", (uint64_t)ret, (int)arg5);
+    }
+    if (num == TARGET_NR_close && arg1 == last_openat_fd) {
+        last_openat_fd = -1;
     }
 #endif
 

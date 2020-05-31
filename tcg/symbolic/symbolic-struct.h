@@ -163,10 +163,12 @@ typedef enum OPKIND {
     SYMBOLIC_JUMP_TABLE_ACCESS,
     MEMORY_SLICE,
     MEMORY_SLICE_ACCESS,
+    MEMORY_INPUT_SLICE_ACCESS,
     SYMBOLIC_LOAD,
     SYMBOLIC_STORE,
     MEMORY_CONCRETIZATION,
     CONSISTENCY_CHECK,
+    INPUT_SLICE,
     //
     MOV,
 } OPKIND;
@@ -425,6 +427,8 @@ static inline const char* opkind_to_str(uint8_t opkind)
             return "SYMBOLIC_STORE";
         case MEMORY_CONCRETIZATION:
             return "MEMORY_CONCRETIZATION";
+        case MEMORY_INPUT_SLICE_ACCESS:
+            return "MEMORY_INPUT_SLICE_ACCESS";
 
         case MOV:
             return "MOV";
@@ -548,7 +552,7 @@ static inline void print_expr(Expr* expr)
     print_expr_internal(expr, 1);
 }
 
-#define EXPR_CONST_OP(c_arg) ((Expr*)(uintptr_t)c_arg)
+#define EXPR_CONST_OP(c_arg) ((Expr*)(uintptr_t)(c_arg))
 
 #define SET_EXPR_CONST_OP(op, op_is_const, c_arg)                              \
     do {                                                                       \
