@@ -3199,6 +3199,15 @@ static void temp_sync(TCGContext *s, TCGTemp *ts, TCGRegSet allocated_regs,
                     // label then we are fine otherwise we are screwed
                     // and we should add a list for each temp.
                     if (conditional_temp_syncs[temp_idx(ts)].label_id != label_id) {
+#if 0
+                        printf("Trying to save temp ");
+                        if (ts->temp_global) {
+                            printf("%s", ts->name);
+                        } else {
+                            printf("%lu", temp_idx(ts) - s->nb_globals);
+                        }
+                        printf(" in reg %u for label %u but it is already saved by label %u\n", ts->reg, label_id, conditional_temp_syncs[temp_idx(ts)].label_id);
+#endif
                         tcg_abort();
                     }
                 }

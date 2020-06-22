@@ -439,6 +439,28 @@ static inline const char* opkind_to_str(uint8_t opkind)
     }
 }
 
+static inline size_t get_opkind_width(OPKIND opkind)
+{
+    switch (opkind) {
+        case EFLAGS_ALL_ADCB:
+        case EFLAGS_ALL_SBBB:
+            return 1;
+        case EFLAGS_ALL_ADCW:
+        case EFLAGS_ALL_SBBW:
+            return 2;
+        case EFLAGS_ALL_ADCL:
+        case EFLAGS_ALL_SBBL:
+            return 4;
+        case EFLAGS_ALL_ADCQ:
+        case EFLAGS_ALL_SBBQ:
+            return 8;
+
+        default:
+            printf("Unknown width opkind=%u\n", opkind);
+            return 0;
+    }
+}
+
 #define MAX_PRINT_CHECK (1024 * 1024)
 uint8_t            printed[MAX_PRINT_CHECK];
 static inline void print_expr_internal(Expr* expr, uint8_t reset)

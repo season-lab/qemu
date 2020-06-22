@@ -48,7 +48,7 @@ static inline size_t get_op_width(CCOp op)
 
         default:
             printf("Unknown width cc_op=%u\n", op);
-            return 0;
+            tcg_abort();
     }
 }
 
@@ -65,12 +65,22 @@ static inline OPKIND get_eflags_opkind(uintptr_t cc_op, uint8_t flag)
             return flag == 0 ? EFLAGS_ALL_ADCL : EFLAGS_C_ADCL;
         case CC_OP_ADCQ:
             return flag == 0 ? EFLAGS_ALL_ADCQ : EFLAGS_C_ADCQ;
+        //
         case CC_OP_ADCX:
             return EFLAGS_ALL_ADCX;
         case CC_OP_ADOX:
             return EFLAGS_ALL_ADOX;
         case CC_OP_ADCOX:
             return EFLAGS_ALL_ADCOX;
+        //
+        case CC_OP_SBBB:
+            return flag == 0 ? EFLAGS_ALL_SBBB : EFLAGS_C_SBBB;
+        case CC_OP_SBBW:
+            return flag == 0 ? EFLAGS_ALL_SBBW : EFLAGS_C_SBBW;
+        case CC_OP_SBBL:
+            return flag == 0 ? EFLAGS_ALL_SBBL : EFLAGS_C_SBBL;
+        case CC_OP_SBBQ:
+            return flag == 0 ? EFLAGS_ALL_SBBQ : EFLAGS_C_SBBQ;
 
         default:
             printf("No OPKIND for cc_op=%lu\n", cc_op);
@@ -1491,6 +1501,18 @@ static void qemu_divq_EAX(uint64_t packed_idx, uintptr_t rax, uintptr_t rdx,
     uintptr_t mode      = UNPACK_3(packed_idx) & 1; // 0: div, 1: idiv
     assert(mode == 0 || mode == 1);
 
+#if DEBUG_EXPR_CONSISTENCY
+    if (s_temps[t_rax_idx]) {
+        add_consistency_check(s_temps[t_rax_idx], rax, 8, mode == 0 ? DIVU : DIV);
+    }
+    if (s_temps[t_rdx_idx]) {
+        add_consistency_check(s_temps[t_rdx_idx], rdx, 8, mode == 0 ? DIVU : DIV);
+    }
+    if (s_temps[t_0_idx]) {
+        add_consistency_check(s_temps[t_0_idx], t0, 8, mode == 0 ? DIVU : DIV);
+    }
+#endif
+
     if (s_temps[t_rax_idx] == NULL && s_temps[t_rdx_idx] == NULL &&
         s_temps[t_0_idx] == NULL) {
         s_temps[t_rax_idx] = NULL;
@@ -1543,6 +1565,18 @@ static void qemu_divl_EAX(uint64_t packed_idx, uintptr_t rax, uintptr_t rdx,
     uintptr_t t_0_idx   = UNPACK_2(packed_idx);
     uintptr_t mode      = UNPACK_3(packed_idx) & 1; // 0: div, 1: idiv
     assert(mode == 0 || mode == 1);
+
+#if DEBUG_EXPR_CONSISTENCY
+    if (s_temps[t_rax_idx]) {
+        add_consistency_check(s_temps[t_rax_idx], rax, 8, mode == 0 ? DIVU : DIV);
+    }
+    if (s_temps[t_rdx_idx]) {
+        add_consistency_check(s_temps[t_rdx_idx], rdx, 8, mode == 0 ? DIVU : DIV);
+    }
+    if (s_temps[t_0_idx]) {
+        add_consistency_check(s_temps[t_0_idx], t0, 8, mode == 0 ? DIVU : DIV);
+    }
+#endif
 
     if (s_temps[t_rax_idx] == NULL && s_temps[t_rdx_idx] == NULL &&
         s_temps[t_0_idx] == NULL) {

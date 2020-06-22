@@ -15,10 +15,12 @@
 
 //#define SYMBOLIC_DEBUG
 //#define DISABLE_SOLVER
-#define SYMBOLIC_COSTANT_ACCESS 1
+#define SYMBOLIC_COSTANT_ACCESS 0
 #define SYMBOLIC_INPUT_ACCESS   0
 #define DEBUG_EXPR_CONSISTENCY  0
 #define LINEARIZATION           0
+#define VISIT_LINEARIZATION     0
+#define VISIT_LINEARIZATION_TR  (4096 * 2)
 
 #define QUEUE_OP_MAX_SIZE 128
 size_t        op_to_add_size               = 0;
@@ -65,6 +67,11 @@ static uint8_t  virgin_bitmap[BRANCH_BITMAP_SIZE] = {0};
 static uint8_t* bitmap                            = NULL;
 static uint16_t prev_loc                          = 0;
 
+#if VISIT_LINEARIZATION
+static uint16_t visit_map[BRANCH_BITMAP_SIZE]     = {0};
+static uint8_t tb_is_symbolic                     = 0;
+#endif
+
 #if DEBUG_EXPR_CONSISTENCY
 static uintptr_t current_tb_pc = 0;
 #endif
@@ -104,7 +111,7 @@ static Expr* input_exprs[MAX_INPUT_SIZE] = {0};
 #define MAX_FP 128
 static FileDescriptorStatus* input_fp[MAX_FP] = {0};
 
-#ifdef SYMBOLIC_INPUT_ACCESS
+#if SYMBOLIC_INPUT_ACCESS
 static uintptr_t input_start_addr = 0;
 static uintptr_t input_end_addr = 0;
 static uintptr_t input_offset = 0;
@@ -444,9 +451,10 @@ void init_symbolic_mode(void)
 #if BRANCH_COVERAGE == FUZZOLIC
     int bitmap_shm_id;
     do {
+        // printf("[TRACER] Waiting for shared memory #3...\n");
         bitmap_shm_id = shmget(s_config.bitmap_shm_key, // IPC_PRIVATE,
-                               sizeof(uint8_t) * BRANCH_BITMAP_SIZE, 0666);
-        if (bitmap_shm_id > 0) {
+                               sizeof(uint8_t) * BRANCH_BITMAP_SIZE, 0666 | IPC_CREAT);
+        if (bitmap_shm_id >= 0) {
             break;
         }
         nanosleep(&polling_time, NULL);
@@ -1161,6 +1169,13 @@ void helper_instrument_ret(target_ulong pc)
 
 #endif
 
+#if DEBUG_EXPR_CONSISTENCY
+static inline void updatePC(uintptr_t cur_loc)
+{
+    current_tb_pc = cur_loc;
+}
+#endif
+
 static inline void visitTB(uintptr_t cur_loc)
 {
     // printf("visiting TB 0x%lx\n", cur_loc);
@@ -1207,6 +1222,9 @@ static inline void visitTB(uintptr_t cur_loc)
         virgin_bitmap[index]++;
     }
 
+#if VISIT_LINEARIZATION
+    tb_is_symbolic = 0;
+#endif
     prev_loc = cur_loc >> 1;
 }
 
@@ -1366,7 +1384,11 @@ static void add_consistency_check(Expr* e, uintptr_t value, size_t size, OPKIND 
         next_query++;
         return;
     }
-
+#if 0
+    if (GET_QUERY_IDX(next_query) > 300) {
+        return;
+    }
+#endif
     Expr*     consistency_expr = new_expr();
     consistency_expr->opkind   = CONSISTENCY_CHECK;
     consistency_expr->op1      = e;
@@ -1400,8 +1422,17 @@ static void add_consistency_check_addr(Expr* e, uintptr_t addr, size_t size, OPK
 }
 #endif
 
+#if DEBUG_EXPR_CONSISTENCY
+static inline void move_temp_size_helper(size_t from, size_t to, uintptr_t val, size_t size)
+#else
 static inline void move_temp_size_helper(size_t from, size_t to, size_t size)
+#endif
 {
+#if DEBUG_EXPR_CONSISTENCY
+    if (s_temps[from]) {
+        add_consistency_check(s_temps[from], val, size, MOV);
+    }
+#endif
 #if 0
     if (s_temps[to] || s_temps[from]) {
         printf("Move: t[%ld] = t[%ld]\n", to, s_temps[from] ? from : -1);
@@ -1590,10 +1621,22 @@ static inline void qemu_binop_helper(uintptr_t opkind, uintptr_t packed_idx,
 #endif
     Expr* expr_a = s_temps[a_idx];
     Expr* expr_b = s_temps[b_idx];
-    if (expr_a == NULL && expr_b == NULL) {
+    if ((expr_a == NULL && expr_b == NULL)) {
         s_temps[out_idx] = NULL;
         return; // early exit
     }
+#if VISIT_LINEARIZATION
+    if (prev_loc) {
+        if (!tb_is_symbolic) {
+            visit_map[prev_loc] += 1;
+        }
+        if (visit_map[prev_loc] > VISIT_LINEARIZATION_TR) {
+            // printf("Concretizing...\n");
+            s_temps[out_idx] = NULL;
+            return; // early exit
+        }
+    }
+#endif
 
 #if 0
     printf("Binary operation:  %lu = %lu %s %lu\n", t_out_idx, t_op_a_idx,
@@ -2686,7 +2729,7 @@ static inline void qemu_load_helper(uintptr_t orig_addr,
                        ((char*)next_free_expr) - ((char*)initial_free_expr));
                 next_free_expr = initial_free_expr;
 
-#ifdef SYMBOLIC_INPUT_ACCESS
+#if SYMBOLIC_INPUT_ACCESS
                 // address is within input bytes and input bytes are constant
                 if (input_is_constant && addr >= input_start_addr && addr <= input_end_addr) {
 
@@ -2738,7 +2781,7 @@ static inline void qemu_load_helper(uintptr_t orig_addr,
 #endif
                     // printf("Load concretization: expr=%p", s_temps[addr_idx]);
                     load_concretization(s_temps[addr_idx], orig_addr);
-#ifdef SYMBOLIC_INPUT_ACCESS
+#if SYMBOLIC_INPUT_ACCESS
                 }
 #endif
             }
@@ -2812,6 +2855,19 @@ static inline void qemu_load_helper(uintptr_t orig_addr,
             // the object e is larger than what we are
             // reading!
             e = NULL;
+        }
+    }
+#endif
+
+#if VISIT_LINEARIZATION
+    if (prev_loc) {
+        if (!tb_is_symbolic) {
+            visit_map[prev_loc] += 1;
+        }
+        if (visit_map[prev_loc] > VISIT_LINEARIZATION_TR) {
+            // printf("Concretizing...\n");
+            s_temps[val_idx] = NULL;
+            return; // early exit
         }
     }
 #endif
@@ -3197,7 +3253,7 @@ static inline void qemu_store_helper(uintptr_t orig_addr,
     }
 #endif
 
-#ifdef SYMBOLIC_INPUT_ACCESS
+#if SYMBOLIC_INPUT_ACCESS
     if (addr >= input_start_addr && addr <= input_end_addr) {
         input_is_constant = 0;
     }
@@ -3273,6 +3329,20 @@ static inline void qemu_store_helper(uintptr_t orig_addr,
             printf("CONSISTENCY CHECK STORE for addr=%lx size=%lu\n", addr, size);
         }
         add_consistency_check(s_temps[val_idx], concrete_val, size, SYMBOLIC_STORE);
+#endif
+#if VISIT_LINEARIZATION
+    if (prev_loc) {
+        if (!tb_is_symbolic) {
+            visit_map[prev_loc] += 1;
+        }
+        if (visit_map[prev_loc] > VISIT_LINEARIZATION_TR) {
+            for (size_t i = 0; i < size; i++) {
+                l3_page->entries[l3_page_idx + i] = NULL;
+            }
+            // printf("Concretizing...\n");
+            return; // early exit
+        }
+    }
 #endif
 #if LINEARIZATION
         uint64_t hash_addr = HASH_ADDR(addr) % MEMORY_BITMAP_SIZE;
@@ -3472,7 +3542,7 @@ static inline void qemu_extend_helper(uintptr_t packed_idx)
     }
 
     if (s_temps[a_idx]->opkind == opkind
-            && CONST(s_temps[a_idx]->op2) >= opkind_const_param) {
+            && CONST(s_temps[a_idx]->op2) <= opkind_const_param) {
         s_temps[out_idx] = s_temps[a_idx];
         return;
     }
@@ -3662,6 +3732,7 @@ static inline OPKIND get_opkind(TCGOpcode opc)
         case INDEX_op_rotl_i32:
         case INDEX_op_rotl_i64:
             return ROTL;
+        case INDEX_op_rotr_i32:
         case INDEX_op_rotr_i64:
             return ROTR;
         case INDEX_op_ctz_i64:
@@ -3960,7 +4031,7 @@ static void branch_helper(uintptr_t a, uintptr_t b, uintptr_t cond,
         return; // early exit
 
 #if 0
-if (0x400c90 == pc) {
+if (0x400127c2b1 == current_tb_pc) {
     printf("Branch at 0x%lx %lu %s %lu\n", pc, a_idx, opkind_to_str(get_opkind_from_cond(cond)), b_idx);
     print_expr(expr_a);
     print_expr(expr_b);
@@ -4167,7 +4238,7 @@ static inline void read_from_input(intptr_t offset, uintptr_t addr, size_t size)
         "Reading %lu bytes from input at 0x%lx. Storing them at addr 0x%lx\n",
         size, offset, addr);
 
-#ifdef SYMBOLIC_INPUT_ACCESS
+#if SYMBOLIC_INPUT_ACCESS
     input_start_addr = addr;
     input_end_addr = addr + size - 1;
     input_offset = offset;
@@ -4478,6 +4549,15 @@ static inline void qemu_deposit_helper(uintptr_t packed_idx, uintptr_t a,
         s_temps[out_idx] = NULL;
         return;
     }
+
+#if DEBUG_EXPR_CONSISTENCY
+    if (s_temps[a_idx]) {
+        add_consistency_check(s_temps[a_idx], a, 8, DEPOSIT);
+    }
+    if (s_temps[b_idx]) {
+        add_consistency_check(s_temps[b_idx], b, 8, DEPOSIT);
+    }
+#endif
 
     Expr* expr_a = s_temps[a_idx];
 
@@ -5304,12 +5384,19 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
 
             case INDEX_op_insn_start:
 
-#if BRANCH_COVERAGE == FUZZOLIC || DEBUG_EXPR_CONSISTENCY
+#if BRANCH_COVERAGE == FUZZOLIC || DEBUG_EXPR_CONSISTENCY || VISIT_LINEARIZATION
                 if (hit_first_instr == 0) {
                     TCGTemp* t_pc = new_non_conflicting_temp(TCG_TYPE_PTR);
                     tcg_movi(t_pc, (uintptr_t)op->args[0], 0, op, NULL, tcg_ctx);
                     add_void_call_1(visitTB, t_pc, op, NULL, tcg_ctx);
                     tcg_temp_free_internal(t_pc);
+                } else {
+#if DEBUG_EXPR_CONSISTENCY
+                    TCGTemp* t_pc = new_non_conflicting_temp(TCG_TYPE_PTR);
+                    tcg_movi(t_pc, (uintptr_t)op->args[0], 0, op, NULL, tcg_ctx);
+                    add_void_call_1(updatePC, t_pc, op, NULL, tcg_ctx);
+                    tcg_temp_free_internal(t_pc);
+#endif
                 }
 #endif
 
@@ -5430,8 +5517,15 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                         TCGTemp* t_size =
                             new_non_conflicting_temp(TCG_TYPE_PTR);
                         tcg_movi(t_size, (uintptr_t)size, 0, op, NULL, tcg_ctx);
+#if DEBUG_EXPR_CONSISTENCY
+                        MARK_TEMP_AS_ALLOCATED(from);
+                        add_void_call_4(move_temp_size_helper, t_from_idx,
+                                        t_to_idx, from, t_size, op, NULL, tcg_ctx);
+                        MARK_TEMP_AS_NOT_ALLOCATED(from);
+#else
                         add_void_call_3(move_temp_size_helper, t_from_idx,
                                         t_to_idx, t_size, op, NULL, tcg_ctx);
+#endif
                         tcg_temp_free_internal(t_size);
                     }
                     tcg_temp_free_internal(t_to_idx);
@@ -5471,6 +5565,7 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
             case INDEX_op_sar_i64:
             case INDEX_op_rotl_i32:
             case INDEX_op_rotl_i64:
+            case INDEX_op_rotr_i32:
             case INDEX_op_rotr_i64:
             case INDEX_op_ctz_i64:
             case INDEX_op_clz_i64:
@@ -5490,7 +5585,7 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                         size = 0;
                         assert(t_a->type == TCG_TYPE_I64);
                     }
-#if 1
+#if !VISIT_LINEARIZATION
                     qemu_binop(bin_opkind, t_out, t_a, t_b, size, op, tcg_ctx);
 #else
                     TCGTemp* t_opkind = new_non_conflicting_temp(TCG_TYPE_PTR);
@@ -6118,6 +6213,10 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
 
                         // we directly instrment the syscall handler for x86
                         // see syscall.c in linux-user
+
+                        TCGTemp* t_retval =
+                            tcg_find_temp_arch_reg(tcg_ctx, "rax");
+                        clear_temp(temp_idx(t_retval), op, tcg_ctx);
 
                     } else if (strcmp(helper_name, "cc_compute_all") == 0) {
 
@@ -6796,7 +6895,9 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                     } else if (strcmp(helper_name, "cvtsq2sd") == 0 ||
                                strcmp(helper_name, "cvtsq2ss") == 0 ||
                                strcmp(helper_name, "cvtsi2sd") == 0 ||
-                               strcmp(helper_name, "cvtsi2ss") == 0) {
+                               strcmp(helper_name, "cvtsi2ss") == 0 ||
+                               strcmp(helper_name, "cvtsi2ssq") == 0 ||
+                               strcmp(helper_name, "cvttss2sq") == 0) {
 
                         // we do not yet support floating point
 
@@ -6824,13 +6925,20 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                                strcmp(helper_name, "subsd") == 0 ||
                                strcmp(helper_name, "mulsd") == 0 ||
                                strcmp(helper_name, "mulss") == 0 ||
+                               strcmp(helper_name, "minsd") == 0 ||
+                               strcmp(helper_name, "minss") == 0 ||
+                               strcmp(helper_name, "maxsd") == 0 ||
+                               strcmp(helper_name, "maxss") == 0 ||
+                               strcmp(helper_name, "sqrtsd") == 0 ||
+                               strcmp(helper_name, "sqrtss") == 0 ||
                                strcmp(helper_name, "cvtss2sd") == 0 ||
                                strcmp(helper_name, "comisd") == 0 ||
                                strcmp(helper_name, "ucomiss") == 0 ||
                                strcmp(helper_name, "comiss") == 0 ||
                                strcmp(helper_name, "ucomisd") == 0 ||
                                strcmp(helper_name, "cvtsd2ss") == 0 ||
-                               strcmp(helper_name, "cmpnlesd") == 0) {
+                               strcmp(helper_name, "cmpnlesd") == 0 ||
+                               strcmp(helper_name, "cmplesd") == 0) {
 
                         // we do not yet support floating point
                         // concretize src and dst
@@ -6875,7 +6983,9 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
 
                     } else if (strcmp(helper_name, "fnstcw") == 0 ||
                                strcmp(helper_name, "fstl_ST0") == 0 ||
-                               strcmp(helper_name, "cvttsd2sq") == 0) {
+                               strcmp(helper_name, "cvttsd2sq") == 0 ||
+                               strcmp(helper_name, "cvttsd2si") == 0 ||
+                               strcmp(helper_name, "cvttss2si") == 0) {
 
                         // we do not yet support floating point
 
@@ -6912,7 +7022,11 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
 
                     } else if (strcmp(helper_name, "atomic_fetch_addl_le") ==
                                    0 ||
+                                strcmp(helper_name, "atomic_fetch_addq_le") ==
+                                   0 ||
                                strcmp(helper_name, "atomic_add_fetchl_le") ==
+                                   0 ||
+                                strcmp(helper_name, "atomic_add_fetchq_le") ==
                                    0 ||
                                strcmp(helper_name, "atomic_or_fetchl_le") ==
                                    0 ||
@@ -6927,6 +7041,8 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                         TCGTemp* t_ptr_a = arg_temp(op->args[2]);
                         TCGTemp* t_val_b = arg_temp(op->args[3]);
 
+                        uint64_t size = 4;
+
                         OPKIND opkind;
                         // order:
                         //  - 0: return the fetched value before op
@@ -6938,6 +7054,9 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                         } else if (helper_name[7] == 'a') {
                             if (helper_name[8] == 'd') {
                                 opkind = ADD;
+                                if (helper_name[16] == 'q') {
+                                    size = 8;
+                                }
                             } else if (helper_name[8] == 'n') {
                                 opkind = AND;
                             } else {
@@ -6948,6 +7067,9 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                             if (helper_name[13] == 'a') {
                                 if (helper_name[14] == 'd') {
                                     opkind = ADD;
+                                    if (helper_name[16] == 'q') {
+                                        size = 8;
+                                    }
                                 } else if (helper_name[14] == 'n') {
                                     opkind = AND;
                                 } else {
@@ -6963,8 +7085,6 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                         } else {
                             tcg_abort();
                         }
-
-                        uint64_t size = 4;
 
                         uint64_t v = 0;
                         v          = PACK_0(v, temp_idx(t_out));
