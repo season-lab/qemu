@@ -4059,6 +4059,39 @@ if (0x400127c2b1 == current_tb_pc) {
 #endif
 }
 
+static void cmov_helper(uintptr_t a, uintptr_t b, uintptr_t cond,
+                          uintptr_t packed_idx, uintptr_t pc, uintptr_t addr_to)
+{
+    size_t a_idx = UNPACK_0(packed_idx);
+    size_t b_idx = UNPACK_1(packed_idx);
+    size_t size  = UNPACK_2(packed_idx);
+
+    Expr* expr_a = s_temps[a_idx];
+    Expr* expr_b = s_temps[b_idx];
+    if (expr_a == NULL && expr_b == NULL)
+        return; // early exit
+
+    branch_helper_internal(a, b, cond, expr_a, expr_b, size, pc, addr_to);
+
+#if BRANCH_COVERAGE == FUZZOLIC
+    TCGCond sat_cond = check_branch_cond_helper(a, b, cond);
+    uintptr_t addr_to_jump = cond == sat_cond ? addr_to : pc;
+    uint16_t next_loc     = (addr_to_jump >> 4) ^ (addr_to_jump << 8);
+    next_loc &= BRANCH_BITMAP_SIZE - 1;
+
+    uintptr_t index = (next_loc ^ prev_loc
+#if SYMBOLIC_CALLSTACK_INSTRUMENTATION
+             ^ callstack.hash
+#endif
+    );
+    index &= BRANCH_BITMAP_SIZE - 1;
+    if (virgin_bitmap[index] < 255) {
+        virgin_bitmap[index]++;
+    }
+    prev_loc = next_loc >> 1;
+#endif
+}
+
 static inline void branch(TCGTemp* t_op_a, TCGTemp* t_op_b, TCGCond cond,
                           TCGOp* op_in, TCGContext* tcg_ctx)
 {
@@ -4343,11 +4376,9 @@ void qemu_syscall_helper(uintptr_t syscall_no, uintptr_t syscall_arg0,
                 virgin_bitmap[i] = count_class_binary[virgin_bitmap[i]];
                 // new edge?
                 if (!bitmap[i] && virgin_bitmap[i]) {
-#if 1
                     if (s_config.coverage_tracer_filter_lib < 0) {
                         g_hash_table_add(coverage_log_bb_ht, (gpointer)i);
                     }
-#endif
                 }
                 // merge
                 bitmap[i] |= virgin_bitmap[i];
@@ -4475,6 +4506,15 @@ void qemu_syscall_helper(uintptr_t syscall_no, uintptr_t syscall_arg0,
         //
         case SYS_EXIT: {
             if (ret_val == main_thread) {
+#if BRANCH_COVERAGE == FUZZOLIC
+                // merge local bitmap e global bitmap
+                for (size_t i = 0; i < BRANCH_BITMAP_SIZE; i++) {
+                    // normalize the hit count
+                    virgin_bitmap[i] = count_class_binary[virgin_bitmap[i]];
+                    // merge
+                    bitmap[i] |= virgin_bitmap[i];
+                }
+#endif
                 end_symbolic_mode();
             }
             break;
@@ -7257,7 +7297,7 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
 
                     MARK_TEMP_AS_ALLOCATED(t_a);
                     MARK_TEMP_AS_ALLOCATED(t_b);
-                    add_void_call_6(branch_helper, t_a, t_b, t_cond,
+                    add_void_call_6(cmov_helper, t_a, t_b, t_cond,
                                     t_packed_idx, t_pc, t_addr_to, op, NULL,
                                     tcg_ctx);
                     MARK_TEMP_AS_NOT_ALLOCATED(t_a);
