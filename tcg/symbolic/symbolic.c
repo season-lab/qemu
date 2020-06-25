@@ -22,6 +22,8 @@
 #define VISIT_LINEARIZATION     0
 #define VISIT_LINEARIZATION_TR  (4096 * 2)
 
+#define printf(...) fprintf(stderr, __VA_ARGS__)
+
 #define QUEUE_OP_MAX_SIZE 128
 size_t        op_to_add_size               = 0;
 TCGOp*        op_to_add[QUEUE_OP_MAX_SIZE] = {0};
