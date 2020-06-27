@@ -78,7 +78,6 @@ static uint8_t tb_is_symbolic                     = 0;
 static uintptr_t current_tb_pc = 0;
 #endif
 
-
 GHashTable* coverage_log_bb_ht = NULL;
 GHashTable* coverage_log_edges_ht = NULL;
 
@@ -1363,6 +1362,7 @@ static inline void allocate_new_expr(TCGTemp* t_out, TCGOp* op_in,
 }
 
 #if DEBUG_EXPR_CONSISTENCY
+int count = 0;
 static void add_consistency_check(Expr* e, uintptr_t value, size_t size, OPKIND opkind)
 {
     if (s_config.debug_fuzz_expr) {
@@ -1391,6 +1391,12 @@ static void add_consistency_check(Expr* e, uintptr_t value, size_t size, OPKIND 
         return;
     }
 #endif
+#if 0
+    count++;
+    if (count < 40000) {
+        return;
+    }
+#endif
     Expr*     consistency_expr = new_expr();
     consistency_expr->opkind   = CONSISTENCY_CHECK;
     consistency_expr->op1      = e;
@@ -1405,6 +1411,11 @@ static void add_consistency_check(Expr* e, uintptr_t value, size_t size, OPKIND 
     }
     printf("CONSISTENCY_CHECK id=%lu size=%lu type=%s pc=%lx value=%lu\n",
         GET_QUERY_IDX(next_query - 1), size, opkind_to_str(opkind), current_tb_pc, value);
+#if 0
+    if (GET_QUERY_IDX(next_query - 1) == 63495) {
+        tcg_abort();
+    }
+#endif
 }
 
 static void add_consistency_check_addr(Expr* e, uintptr_t addr, size_t size, OPKIND opkind) 
@@ -2544,7 +2555,7 @@ static void add_consistency_check_load(Expr* e, uintptr_t addr, size_t size)
     }
     //
     if (!s_config.debug_fuzz_expr) {
-        printf("CONSISTENCY CHECK LOAD for addr=%lx size=%lu\n", addr, size);
+        printf("CONSISTENCY CHECK LOAD for addr=%lx size=%lu value=%lx\n", addr, size, concrete_value);
     }
     add_consistency_check(e, concrete_value, size, SYMBOLIC_LOAD);
 }
@@ -3227,12 +3238,10 @@ static inline void qemu_store_helper(uintptr_t orig_addr,
 #endif
 
 #if 0
-    if (GET_QUERY_IDX(next_query) >= 116750) {
     for (size_t i = 0; i < size; i++) {
-        if (addr + i >= 0x40007ff378 && addr + i < 0x40007ff378 + 8) {
+        if (addr + i >= 0x40007fee78 && addr + i < 0x40007fee78 + 8) {
             printf("\nStoring (size=%lu, val=%lx) at %lx\n", size, concrete_val, addr + i);
         }
-    }
     }
 #endif
 
@@ -3295,7 +3304,7 @@ static inline void qemu_store_helper(uintptr_t orig_addr,
         for (size_t i = 0; i < size; i++) {
             l3_page->entries[l3_page_idx + i] = NULL;
 #if 0
-            if (addr + i >= 0x40007ff378 && addr + i <= 0x40007ff378 + 7) {
+            if (addr + i >= 0x40007fee78 && addr + i <= 0x40007fee78 + 7) {
                 printf("\nStoring concrete (size=%lu, val=%lx) at %lx+%lu\n", size, concrete_val, addr, i);
             }
 #endif
@@ -3404,7 +3413,7 @@ static inline void qemu_store_helper(uintptr_t orig_addr,
             l3_page->entries[l3_page_idx + i] = e;
             // printf("Storing byte at index %lu\n", i);
 #if 0
-            if (addr + i >= 0x40007ff378 && addr + i <= 0x40007ff378 + 8) {
+            if (addr + i >= 0x40007fee78 && addr + i < 0x40007fee78 + 8) {
                 printf("\nStoring at %lx (size=%lu) expression:\n", addr + i, size);
                 printf("Index: %lu page=%p\n", l3_page_idx + i, l3_page);
                 print_expr(e);
@@ -3971,6 +3980,7 @@ static inline void branch_helper_internal(uintptr_t a, uintptr_t b,
     next_query[0].address = pc;
 #if BRANCH_COVERAGE == QSYM
     next_query[0].args8.arg0 = cond == sat_cond; // taken?
+    next_query[0].args8.arg1 = (pc > symbolic_end_code || pc < symbolic_start_code); // library?
 #elif BRANCH_COVERAGE == AFL
     next_query[0].args64 = addr_to;
 #elif BRANCH_COVERAGE == FUZZOLIC
@@ -4265,6 +4275,8 @@ static inline TCGTemp* tcg_find_temp_arch_reg(TCGContext* tcg_ctx,
 
 static inline void read_from_input(intptr_t offset, uintptr_t addr, size_t size)
 {
+    if (size == 0) return;
+
     assert(offset >= 0 && "Invalid offset");
     // printf("Offset=%ld size=%ld\n", offset, size);
     assert((offset + size) < MAX_INPUT_SIZE && "Offset is too large");
@@ -4508,6 +4520,7 @@ void qemu_syscall_helper(uintptr_t syscall_no, uintptr_t syscall_arg0,
         //
         case SYS_EXIT: {
             if (ret_val == main_thread) {
+#if 0
 #if BRANCH_COVERAGE == FUZZOLIC
                 // merge local bitmap e global bitmap
                 for (size_t i = 0; i < BRANCH_BITMAP_SIZE; i++) {
@@ -4516,6 +4529,7 @@ void qemu_syscall_helper(uintptr_t syscall_no, uintptr_t syscall_arg0,
                     // merge
                     bitmap[i] |= virgin_bitmap[i];
                 }
+#endif
 #endif
                 end_symbolic_mode();
             }

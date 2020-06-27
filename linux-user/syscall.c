@@ -11947,10 +11947,13 @@ static abi_long do_syscall1(void *cpu_env, int num, abi_long arg1,
 }
 
 #include "../tcg/symbolic/symbolic-instrumentation.h"
-#include <pthread.h>
-#if 0
-static int last_openat_fd = -1;
+
+#ifdef SYMBOLIC_INSTRUMENTATION
+#include "../tcg/symbolic/syscall.c"
 #endif
+
+#include <pthread.h>
+
 abi_long do_syscall(void *cpu_env, int num, abi_long arg1,
                     abi_long arg2, abi_long arg3, abi_long arg4,
                     abi_long arg5, abi_long arg6, abi_long arg7,
@@ -11981,6 +11984,10 @@ abi_long do_syscall(void *cpu_env, int num, abi_long arg1,
 #endif
 
 #ifdef SYMBOLIC_INSTRUMENTATION
+    if (!symbolic_syscall_init) {
+        init_syscall_handler();
+    }
+
     SyscallNo syscall_no;
     switch (num) {
         case TARGET_NR_open:
@@ -12023,6 +12030,36 @@ abi_long do_syscall(void *cpu_env, int num, abi_long arg1,
     }
     if (syscall_no == SYS_EXIT) {
         qemu_syscall_helper(syscall_no, arg1, arg2, arg3, arg4, arg5, arg6, arg7, pthread_self());
+    }
+    if (kSyscallDesc[num].nargs) {
+        for (size_t i = 0; i < kSyscallDesc[num].nargs; i++) {
+            if (kSyscallDesc[num].map_args[i] == 0) continue;
+            uintptr_t addr = 0;
+            switch (i) {
+                case 0:
+                    addr = arg1;
+                    break;
+                case 1:
+                    addr = arg2;
+                    break;
+                case 2:
+                    addr = arg3;
+                    break;
+                case 3:
+                    addr = arg4;
+                    break;
+                case 4:
+                    addr = arg5;
+                    break;
+                case 5:
+                    addr = arg6;
+                    break;
+                case 6:
+                    addr = arg7;
+                    break;
+            }
+            symbolic_clear_mem(addr, kSyscallDesc[num].map_args[i]);
+        }
     }
 #endif
 

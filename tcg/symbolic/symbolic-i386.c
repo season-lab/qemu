@@ -566,6 +566,24 @@ static inline Expr* build_concat_expr(Expr** exprs, void* addr, size_t size,
     return dst_expr;
 }
 
+void symbolic_clear_mem(uintptr_t addr, uintptr_t size)
+{
+    size_t overflow_n_bytes = 0;
+    Expr** exprs = get_expr_addr((uintptr_t)addr, size, 0, &overflow_n_bytes);
+    if (overflow_n_bytes > 0) {
+        size -= overflow_n_bytes;
+        symbolic_clear_mem(addr + size, overflow_n_bytes);
+    }
+
+    if (exprs == NULL) {
+        return;
+    }
+
+    for (size_t i = 0; i < size; i++) {
+        exprs[i] = NULL;
+    }
+}
+
 static inline void clear_mem(uintptr_t addr, uintptr_t size)
 {
     size_t overflow_n_bytes = 0;
