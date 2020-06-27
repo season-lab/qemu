@@ -19,7 +19,7 @@
 #define SYMBOLIC_INPUT_ACCESS   0
 #define DEBUG_EXPR_CONSISTENCY  0
 #define LINEARIZATION           0
-#define VISIT_LINEARIZATION     0
+#define VISIT_LINEARIZATION     1
 #define VISIT_LINEARIZATION_TR  (4096 * 2)
 
 #define printf(...) fprintf(stderr, __VA_ARGS__)
