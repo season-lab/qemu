@@ -100,14 +100,15 @@ typedef enum OPKIND {
     CLZ,   // count leading zeros (x86: BSR)
     BSWAP, // 45
     RCL,
+    ANDC,
     //
-    ITE, // 47
+    ITE, // 48
     ITE_EQ_ZERO,
     ITE_NE_ZERO,
     OR_3,
     XOR_3,
     // XMM
-    PMOVMSKB, // 52
+    PMOVMSKB, // 53
     CMP_EQ,
     CMP_GT,
     CMP_GE,
@@ -119,10 +120,10 @@ typedef enum OPKIND {
     UNSIGNED_SATURATION,
     NAND,
     // double binop
-    MUL_HIGH, // 63
+    MUL_HIGH, // 64
     MULU_HIGH,
     //
-    EFLAGS_ALL_ADD, // 65
+    EFLAGS_ALL_ADD, // 66
     EFLAGS_ALL_ADCB,
     EFLAGS_ALL_ADCW,
     EFLAGS_ALL_ADCL,
@@ -132,7 +133,7 @@ typedef enum OPKIND {
     EFLAGS_ALL_SBBB,
     EFLAGS_ALL_SBBW,
     EFLAGS_ALL_SBBL,
-    EFLAGS_ALL_SBBQ, // 75
+    EFLAGS_ALL_SBBQ, // 76
     EFLAGS_ALL_LOGIC,
     EFLAGS_ALL_INC,
     EFLAGS_ALL_DEC,
@@ -144,7 +145,7 @@ typedef enum OPKIND {
     EFLAGS_ALL_ADCOX,
     EFLAGS_ALL_RCL,
     //
-    EFLAGS_C_ADD, // 86
+    EFLAGS_C_ADD, // 87
     EFLAGS_C_ADCB,
     EFLAGS_C_ADCW,
     EFLAGS_C_ADCL,
@@ -154,12 +155,12 @@ typedef enum OPKIND {
     EFLAGS_C_SBBB,
     EFLAGS_C_SBBW,
     EFLAGS_C_SBBL,
-    EFLAGS_C_SBBQ, // 96
+    EFLAGS_C_SBBQ, // 97
     EFLAGS_C_LOGIC,
     EFLAGS_C_SHL,
     EFLAGS_C_BMILG,
     //
-    SYMBOLIC_PC, // 100
+    SYMBOLIC_PC, // 101
     SYMBOLIC_JUMP_TABLE_ACCESS,
     MEMORY_SLICE,
     MEMORY_SLICE_ACCESS,

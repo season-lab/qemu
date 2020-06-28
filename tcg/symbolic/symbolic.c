@@ -3763,6 +3763,8 @@ static inline OPKIND get_opkind(TCGOpcode opc)
         case INDEX_op_bswap32_i64:
         case INDEX_op_bswap64_i64:
             return BSWAP;
+        case INDEX_op_andc_i64:
+            return ANDC;
         default:
             tcg_abort();
     }
@@ -5625,6 +5627,7 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
             case INDEX_op_rotr_i64:
             case INDEX_op_ctz_i64:
             case INDEX_op_clz_i64:
+            case INDEX_op_andc_i64:
                 mark_temp_as_in_use(arg_temp(op->args[0]));
                 mark_temp_as_in_use(arg_temp(op->args[1]));
                 mark_temp_as_in_use(arg_temp(op->args[2]));
