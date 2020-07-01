@@ -1362,14 +1362,70 @@ static inline void allocate_new_expr(TCGTemp* t_out, TCGOp* op_in,
 }
 
 #if DEBUG_EXPR_CONSISTENCY
+static inline Expr** debug_expr_addr(uintptr_t addr, size_t size, uint8_t allocate,
+                            size_t* n_overflow_bytes)
+{
+    uintptr_t  l1_page_idx = addr >> (L1_PAGE_BITS + L2_PAGE_BITS);
+    l2_page_t* l2_page     = s_memory.table.entries[l1_page_idx];
+    if (l2_page == NULL) {
+        if (!allocate) {
+            return NULL;
+        }
+        l2_page                             = g_malloc0(sizeof(l2_page_t));
+        s_memory.table.entries[l1_page_idx] = l2_page;
+    }
+
+    uintptr_t l2_page_idx = (addr >> L2_PAGE_BITS) & 0xFFFF;
+    uintptr_t l3_page_idx = addr & 0xFFFF;
+
+    if ((l3_page_idx + size) > (1 << L3_PAGE_BITS)) {
+        // printf("n_overflow_bytes=%p\n", n_overflow_bytes);
+        if (n_overflow_bytes) {
+            // printf("size=%lu l3_page_idx=%lu\n", size, l3_page_idx);
+            *n_overflow_bytes = size - ((1 << L3_PAGE_BITS) - l3_page_idx);
+        } else {
+            assert(0 && "Cross page access");
+        }
+    } else {
+        if (n_overflow_bytes) {
+            *n_overflow_bytes = 0;
+        }
+    }
+
+    l3_page_t* l3_page = l2_page->entries[l2_page_idx];
+    if (l3_page == NULL) {
+        if (!allocate) {
+            return NULL;
+        }
+        l3_page                       = g_malloc0(sizeof(l3_page_t));
+        l2_page->entries[l2_page_idx] = l3_page;
+    }
+
+    return &l3_page->entries[l3_page_idx];
+}
+
 int count = 0;
 static void add_consistency_check(Expr* e, uintptr_t value, size_t size, OPKIND opkind)
 {
+#if 0
+    Expr** exprs = debug_expr_addr(0x40007ff200, 8, 0, NULL);
+    if (GET_QUERY_IDX(next_query - 1) >= 2600) {
+        for (size_t i = 0; i < 8; i++) {
+            printf("Expr at 0x%lx\n", 0x40007ff200 + i);
+            print_expr(exprs[i]);
+        }
+    }
+    if (*((uint64_t*)0x40007ff0a8) == 0x4000e60700) {
+        printf("HERE 3\n");
+        // tcg_abort();
+    }
+#endif
+
     if (s_config.debug_fuzz_expr) {
         // printf("CONSISTENCY_CHECK id=%lu size=%lu type=%s pc=%lx value=%lu\n",
         //            GET_QUERY_IDX(next_query), size, opkind_to_str(opkind), current_tb_pc, value);
         if (s_config.debug_fuzz_expr_idx == GET_QUERY_IDX(next_query)) {
-            printf("CONSISTENCY_CHECK id=%lu size=%lu type=%s pc=%lx value=%lu\n",
+            printf("CONSISTENCY_CHECK id=%lu size=%lu type=%s pc=%lx value=%lx\n",
                     GET_QUERY_IDX(next_query), size, opkind_to_str(opkind), current_tb_pc, value);
             uint64_t expected = s_config.debug_fuzz_expr_value;
             if (value != expected) {
@@ -1409,10 +1465,10 @@ static void add_consistency_check(Expr* e, uintptr_t value, size_t size, OPKIND 
     if (size == 0) {
         size = 8;
     }
-    printf("CONSISTENCY_CHECK id=%lu size=%lu type=%s pc=%lx value=%lu\n",
+    printf("CONSISTENCY_CHECK id=%lu size=%lu type=%s pc=%lx value=%lx\n",
         GET_QUERY_IDX(next_query - 1), size, opkind_to_str(opkind), current_tb_pc, value);
 #if 0
-    if (GET_QUERY_IDX(next_query - 1) == 63495) {
+    if (GET_QUERY_IDX(next_query - 1) >= 121405) {
         tcg_abort();
     }
 #endif
@@ -1476,6 +1532,11 @@ static inline void move_temp_helper(size_t from, size_t to, uintptr_t val)
 static inline void move_temp_helper(size_t from, size_t to)
 #endif
 {
+#if 0
+    if (*((uint64_t*)0x40007ff0b8) == 0x4000e60700) {
+        printf("HERE\n");
+    }
+#endif
 #if DEBUG_EXPR_CONSISTENCY
     if (s_temps[from]) {
         add_consistency_check(s_temps[from], val, sizeof(uintptr_t), MOV);
@@ -2558,6 +2619,12 @@ static void add_consistency_check_load(Expr* e, uintptr_t addr, size_t size)
         printf("CONSISTENCY CHECK LOAD for addr=%lx size=%lu value=%lx\n", addr, size, concrete_value);
     }
     add_consistency_check(e, concrete_value, size, SYMBOLIC_LOAD);
+#if 0
+    if (GET_QUERY_IDX(next_query -1) > 436197) {
+        printf("HERE2\n");
+        tcg_abort();
+    }
+#endif
 }
 #endif
 
@@ -2842,32 +2909,34 @@ static inline void qemu_load_helper(uintptr_t orig_addr,
 
     Expr* e = NULL;
 #if 1
-    for (size_t i = 0; i < size; i++) {
-        if (exprs[i] != NULL && exprs[i]->opkind == EXTRACT8 &&
-            CONST(exprs[i]->op2) == i) {
-            // ToDo: we are assuming that size(op1) == size
-            //       which my be not true.
-            if (e && e != exprs[i]->op1) {
+    if (size == 8) {
+        for (size_t i = 0; i < size; i++) {
+            if (exprs[i] != NULL && exprs[i]->opkind == EXTRACT8 &&
+                CONST(exprs[i]->op2) == i) {
+                // ToDo: we are assuming that size(op1) == size
+                //       which my be not true.
+                if (e && e != exprs[i]->op1) {
+                    e = NULL;
+                    break;
+                } else {
+                    e = exprs[i]->op1;
+                }
+            } else {
                 e = NULL;
                 break;
-            } else {
-                e = exprs[i]->op1;
             }
-        } else {
-            e = NULL;
-            break;
         }
-    }
 
-    if (e) {
-        // safety check
-        if (l3_page->entries[l3_page_idx + size] != NULL &&
-            l3_page->entries[l3_page_idx + size]->opkind == EXTRACT8 &&
-            l3_page->entries[l3_page_idx + size]->op1 == e) {
+        if (e) {
+            // safety check
+            if (l3_page->entries[l3_page_idx + size] != NULL &&
+                l3_page->entries[l3_page_idx + size]->opkind == EXTRACT8 &&
+                l3_page->entries[l3_page_idx + size]->op1 == e) {
 
-            // the object e is larger than what we are
-            // reading!
-            e = NULL;
+                // the object e is larger than what we are
+                // reading!
+                e = NULL;
+            }
         }
     }
 #endif
@@ -2922,14 +2991,14 @@ static inline void qemu_load_helper(uintptr_t orig_addr,
                     n_expr->op2          = (Expr*)((uintptr_t)byte);
                     n_expr->op2_is_const = 1;
 #if 0
-                    if (addr + i >= 0x40007ff378 && addr + i <= 0x40007ff378 + 8) {
+                    if (addr + i >= 0x40007ff200 && addr + i <= 0x40007ff200 + 8) {
                         printf("\nLoading concrete %lu-byte (%x) from %lx\n", i, *(((uint8_t*)addr) + i), addr + i);
                     }
 #endif
                 } else {
                     n_expr->op2 = exprs[i];
 #if 0
-                    if (addr + i >= 0x40007ff378 && addr + i <= 0x40007ff378 + 8) {
+                    if (addr + i >= 0x40007ff200 && addr + i <= 0x40007ff200 + 8) {
                         printf("\nLoading %lu-byte (%x) from %lx\n", i, *(((uint8_t*)addr) + i), addr + i);
                         print_expr(n_expr->op2);
                     }
@@ -2950,6 +3019,11 @@ static inline void qemu_load_helper(uintptr_t orig_addr,
         }
     }
 #endif
+
+#if DEBUG_EXPR_CONSISTENCY
+    add_consistency_check_load(e, addr, size);
+#endif
+
     if (size < 8) {
 
         uintptr_t opkind = get_mem_op_signextend(mem_op) ? SEXT : ZEXT;
@@ -2978,10 +3052,6 @@ static inline void qemu_load_helper(uintptr_t orig_addr,
     }
 
     s_temps[val_idx] = e;
-
-#if DEBUG_EXPR_CONSISTENCY
-    add_consistency_check_load(e, addr, size);
-#endif
 }
 
 static inline void qemu_load(TCGTemp* t_addr, TCGTemp* t_val, uintptr_t offset,
@@ -3304,7 +3374,7 @@ static inline void qemu_store_helper(uintptr_t orig_addr,
         for (size_t i = 0; i < size; i++) {
             l3_page->entries[l3_page_idx + i] = NULL;
 #if 0
-            if (addr + i >= 0x40007fee78 && addr + i <= 0x40007fee78 + 7) {
+            if (addr + i >= 0x40007ff200 && addr + i <= 0x40007ff200 + 7) {
                 printf("\nStoring concrete (size=%lu, val=%lx) at %lx+%lu\n", size, concrete_val, addr, i);
             }
 #endif
@@ -3317,7 +3387,7 @@ static inline void qemu_store_helper(uintptr_t orig_addr,
             size_t deposit_len = CONST(expr_a->op3) >> 16;
             size_t deposit_pos = CONST(expr_a->op3) & 0xFFFF;
 
-            if (deposit_pos == 0 && deposit_len == size) {
+            if (deposit_pos == 0 && (deposit_len / 8) == size) {
 
                 if (expr_a->op2_is_const) {
                     for (size_t i = 0; i < size; i++) {
@@ -3325,8 +3395,9 @@ static inline void qemu_store_helper(uintptr_t orig_addr,
                     }
                     return;
                 } else {
-                    if (size == 1) {
-                        l3_page->entries[l3_page_idx] = expr_a->op2;
+                    if (size == 1 && expr_a->op2->opkind == ZEXT
+                            && CONST(expr_a->op2->op2) == 8) {
+                        l3_page->entries[l3_page_idx] = expr_a->op2->op1;
                         return;
                     } else {
                         expr_a = expr_a->op2;
@@ -3413,7 +3484,7 @@ static inline void qemu_store_helper(uintptr_t orig_addr,
             l3_page->entries[l3_page_idx + i] = e;
             // printf("Storing byte at index %lu\n", i);
 #if 0
-            if (addr + i >= 0x40007fee78 && addr + i < 0x40007fee78 + 8) {
+            if (addr + i >= 0x40007ff200 && addr + i < 0x40007ff200 + 8) {
                 printf("\nStoring at %lx (size=%lu) expression:\n", addr + i, size);
                 printf("Index: %lu page=%p\n", l3_page_idx + i, l3_page);
                 print_expr(e);
