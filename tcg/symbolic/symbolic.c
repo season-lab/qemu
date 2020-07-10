@@ -74,9 +74,7 @@ static uint16_t visit_map[BRANCH_BITMAP_SIZE]     = {0};
 static uint8_t tb_is_symbolic                     = 0;
 #endif
 
-#if DEBUG_EXPR_CONSISTENCY
 static uintptr_t current_tb_pc = 0;
-#endif
 
 GHashTable* coverage_log_bb_ht = NULL;
 GHashTable* coverage_log_edges_ht = NULL;
@@ -106,6 +104,8 @@ typedef struct {
     uint8_t shared_counter;
     off_t  offset;
 } FileDescriptorStatus;
+
+static int symbolic_mode = 0;
 
 #define FD_STDIN 0
 static Expr* input_exprs[MAX_INPUT_SIZE] = {0};
@@ -188,6 +188,159 @@ TCGOp * op_macro;
     do {                                                                       \
     } while (0);
 #endif
+
+static inline TCGTemp* tcg_find_temp_arch_reg(TCGContext* tcg_ctx,
+                                              const char* reg_name)
+{
+    for (int i = 0; i < TCG_TARGET_NB_REGS; i++) {
+        TCGTemp* t = &tcg_ctx->temps[i];
+        if (t->fixed_reg)
+            continue; // not a register
+        if (strcmp(t->name, reg_name) == 0)
+            return t;
+    }
+    tcg_abort();
+}
+
+typedef enum {
+    UNKNOWN,
+    MALLOC,
+    REALLOC,
+    CALLOC,
+    FREE,
+    STRCMP,
+    STRNCMP,
+    PRINTF,
+    STRLEN,
+    STRNLEN,
+    MEMCHR,
+    MEMCMP,
+    MEMMOVE,
+    MEMSET,
+    MEMCPY,
+    STRCPY,
+    STRNCPY,
+} LIB_MODEL;
+
+typedef struct {
+    char* image;
+    LIB_MODEL model;
+    uintptr_t offset;
+} PltInfo;
+
+static GSList* plt_info = NULL;
+static GHashTable* plt_addrs = NULL;
+inline static void parse_plt_info(char* path) 
+{
+    FILE* fp = fopen(path, "r");
+    if (fp == NULL)
+        return;
+
+    size_t len = 128;
+    char* buffer = g_malloc0(len);
+    ssize_t read;
+    while ((read = getline(&buffer, &len, fp)) != -1) {
+        // printf("line: %s\n", buffer);
+        PltInfo* plt = g_malloc0(sizeof(PltInfo));
+        char* token = strtok(buffer, ",");
+        if (!token) continue;
+        char* s = g_malloc0(strlen(token) + 1);
+        plt->image = strcpy(s, token);
+        token = strtok(NULL, ",");
+        if (!token) continue;
+        if (strcmp(token, "malloc") == 0) {
+            plt->model = MALLOC;
+        } else if (strcmp(token, "calloc") == 0) {
+            plt->model = CALLOC;
+        } else if (strcmp(token, "realloc") == 0) {
+            plt->model = REALLOC;
+        } else if (strcmp(token, "free") == 0) {
+            plt->model = FREE;
+        } else if (strcmp(token, "strcmp") == 0) {
+            plt->model = STRCMP;
+        } else if (strcmp(token, "strncmp") == 0) {
+            plt->model = STRNCMP;
+        } else if (strcmp(token, "strcpy") == 0) {
+            plt->model = STRCPY;
+        } else if (strcmp(token, "strncpy") == 0) {
+            plt->model = STRNCPY;
+        } else if (strcmp(token, "strlen") == 0) {
+            plt->model = STRLEN;
+        } else if (strcmp(token, "strnlen") == 0) {
+            plt->model = STRNLEN;
+        }  else if (strcmp(token, "memchr") == 0) {
+            plt->model = MEMCHR;
+        } else if (strcmp(token, "memcmp") == 0) {
+            plt->model = MEMCMP;
+        } else if (strcmp(token, "memmove") == 0 ||
+                    strcmp(token, "__memmove_chk") == 0) {
+            plt->model = MEMMOVE;
+        } else if (strcmp(token, "memcpy") == 0 ||
+                    strcmp(token, "__memcpy_chk") == 0) {
+            plt->model = MEMCPY;
+        } else if (strcmp(token, "memset") == 0 ||
+                    strcmp(token, "__memset_chk") == 0) {
+            plt->model = MEMSET;
+        } else if (strcmp(token, "printf") == 0 ||
+                    strcmp(token, "fprintf") == 0 ||
+                    strcmp(token, "vfprintf") == 0 ||
+                    strcmp(token, "__printf_chk") == 0) {
+            plt->model = PRINTF;
+        }
+        token = strtok(NULL, ",");
+        if (!token) continue;
+        plt->offset = strtoull(token, NULL, 16);
+        plt_info = g_slist_append(plt_info, plt);
+    }
+    free(buffer);
+
+#if 0
+    GSList* el = plt_info;
+    while (el) {
+        PltInfo* plt = el->data;
+        printf("PLT: image=%s model=%u offset=%lx\n",
+            plt->image, plt->model, plt->offset);
+        el = g_slist_next(el);
+    }
+#endif
+
+    fclose(fp);
+}
+
+void load_image(char* name, uintptr_t addr)
+{
+    if (plt_info) {
+        if (plt_addrs == NULL) {
+            plt_addrs = g_hash_table_new(NULL, NULL);
+        }
+    } else {
+        return;
+    }
+
+    // printf("Loading image %s at %lx\n", name, addr);
+    GSList* el = plt_info;
+    while (el) {
+        PltInfo* plt = el->data;
+        if (strcmp(plt->image, name) == 0) {
+#if 0
+            printf("PLT: image=%s model=%u addr=%lx\n",
+                        plt->image, plt->model, (addr + plt->offset));
+#endif
+            g_hash_table_insert(plt_addrs, (gpointer)(addr + plt->offset), (gpointer) plt->model);
+        }
+        el = g_slist_next(el);
+    }
+#if 0
+    GHashTableIter iter;
+    gpointer       key, value;
+    g_hash_table_iter_init(&iter, plt_addrs);
+    while (g_hash_table_iter_next(&iter, &key, &value)) {
+        printf("PLT: model=%p addr=%p\n", value, key);
+    }
+#endif
+}
+
+static int mode = 0;
 
 static SymbolicConfig s_config = {0};
 static inline void    load_configuration(void)
@@ -323,6 +476,11 @@ static inline void    load_configuration(void)
     var = getenv("DEBUG_FUZZ_EXPR_VALUE");
     if (var) {
         s_config.debug_fuzz_expr_value = strtoull(var, NULL, 10);
+    }
+
+    var = getenv("PLT_INFO_FILE");
+    if (var) {
+        parse_plt_info(var);
     }
 }
 
@@ -1180,6 +1338,7 @@ static inline void updatePC(uintptr_t cur_loc)
 static inline void visitTB(uintptr_t cur_loc)
 {
     // printf("visiting TB 0x%lx\n", cur_loc);
+    current_tb_pc = cur_loc;
 
 #if DEBUG_EXPR_CONSISTENCY
     current_tb_pc = cur_loc;
@@ -1408,6 +1567,7 @@ int count = 0;
 static void add_consistency_check(Expr* e, uintptr_t value, size_t size, OPKIND opkind)
 {
 #if 0
+#if 0
     Expr** exprs = debug_expr_addr(0x40007ff200, 8, 0, NULL);
     if (GET_QUERY_IDX(next_query - 1) >= 2600) {
         for (size_t i = 0; i < 8; i++) {
@@ -1415,9 +1575,10 @@ static void add_consistency_check(Expr* e, uintptr_t value, size_t size, OPKIND 
             print_expr(exprs[i]);
         }
     }
-    if (*((uint64_t*)0x40007ff0a8) == 0x4000e60700) {
-        printf("HERE 3\n");
-        // tcg_abort();
+#endif
+    if (GET_QUERY_IDX(next_query - 1) >= 29896) { // && *((uint8_t*)0x8b1ba0) == 0x20) {
+        printf("PC: %lx\n", current_tb_pc);
+        tcg_abort();
     }
 #endif
 
@@ -1468,7 +1629,7 @@ static void add_consistency_check(Expr* e, uintptr_t value, size_t size, OPKIND 
     printf("CONSISTENCY_CHECK id=%lu size=%lu type=%s pc=%lx value=%lx\n",
         GET_QUERY_IDX(next_query - 1), size, opkind_to_str(opkind), current_tb_pc, value);
 #if 0
-    if (GET_QUERY_IDX(next_query - 1) >= 121405) {
+    if (GET_QUERY_IDX(next_query - 1) >= 4000) {
         tcg_abort();
     }
 #endif
@@ -1640,7 +1801,7 @@ static inline void clear_temp_helper(uintptr_t temp_idx)
 {
 #if 0
     if (s_temps[temp_idx]) {
-        printf("Clearing temp %lu\n", temp_idx);
+        printf("Clearing temp %lu at %lx\n", temp_idx, current_tb_pc);
     }
 #endif
     assert(temp_idx < TCG_MAX_TEMPS);
@@ -3309,7 +3470,7 @@ static inline void qemu_store_helper(uintptr_t orig_addr,
 
 #if 0
     for (size_t i = 0; i < size; i++) {
-        if (addr + i >= 0x40007fee78 && addr + i < 0x40007fee78 + 8) {
+        if (addr + i >= 0x8b1ba0 && addr + i < 0x8b1ba0 + 1) {
             printf("\nStoring (size=%lu, val=%lx) at %lx\n", size, concrete_val, addr + i);
         }
     }
@@ -3374,7 +3535,7 @@ static inline void qemu_store_helper(uintptr_t orig_addr,
         for (size_t i = 0; i < size; i++) {
             l3_page->entries[l3_page_idx + i] = NULL;
 #if 0
-            if (addr + i >= 0x40007ff200 && addr + i <= 0x40007ff200 + 7) {
+            if (addr + i >= 0x8b1ba0 && addr + i <= 0x8b1ba0 + 1) {
                 printf("\nStoring concrete (size=%lu, val=%lx) at %lx+%lu\n", size, concrete_val, addr, i);
             }
 #endif
@@ -3484,7 +3645,7 @@ static inline void qemu_store_helper(uintptr_t orig_addr,
             l3_page->entries[l3_page_idx + i] = e;
             // printf("Storing byte at index %lu\n", i);
 #if 0
-            if (addr + i >= 0x40007ff200 && addr + i < 0x40007ff200 + 8) {
+            if (addr + i >= 0x8b1ba0 && addr + i < 0x8b1ba0 + 1) {
                 printf("\nStoring at %lx (size=%lu) expression:\n", addr + i, size);
                 printf("Index: %lu page=%p\n", l3_page_idx + i, l3_page);
                 print_expr(e);
@@ -4029,6 +4190,12 @@ static inline void branch_helper_internal(uintptr_t a, uintptr_t b,
                                           Expr* expr_b, size_t size,
                                           uintptr_t pc, uintptr_t addr_to)
 {
+#if 1
+    if (mode > 0) {
+        return;
+    }
+#endif
+
 #if LINEARIZATION
     if (pc > 0) {
         uint64_t hash_pc = HASH_ADDR(pc) % MEMORY_BITMAP_SIZE;
@@ -4098,8 +4265,11 @@ static inline void branch_helper_internal(uintptr_t a, uintptr_t b,
     // if (query_id > 0 && query_id % 1000 == 0)
     //    printf("Submitted %ld queries\n", query_id);
 #if 0
-    printf("Branch at %lx\n", pc);
+    printf("Branch at %lx [%lu]\n", pc, GET_QUERY_IDX(next_query - 1));
     print_expr(branch_expr);
+    if (0 && GET_QUERY_IDX(next_query) > 100) {
+        tcg_abort();
+    }
 #endif
 }
 
@@ -4138,7 +4308,7 @@ if (0x400127c2b1 == current_tb_pc) {
 
 #if 0
     // if (pc == 0x44B557) {
-    if (GET_QUERY_IDX(next_query) > 90) {
+    if (GET_QUERY_IDX(next_query) > 0) {
         tcg_abort();
     }
 #endif
@@ -4333,22 +4503,12 @@ static inline void branch(TCGTemp* t_op_a, TCGTemp* t_op_b, TCGCond cond,
     CHECK_TEMPS_COUNT(tcg_ctx);
 }
 
-static inline TCGTemp* tcg_find_temp_arch_reg(TCGContext* tcg_ctx,
-                                              const char* reg_name)
-{
-    for (int i = 0; i < TCG_TARGET_NB_REGS; i++) {
-        TCGTemp* t = &tcg_ctx->temps[i];
-        if (t->fixed_reg)
-            continue; // not a register
-        if (strcmp(t->name, reg_name) == 0)
-            return t;
-    }
-    tcg_abort();
-}
-
 static inline void read_from_input(intptr_t offset, uintptr_t addr, size_t size)
 {
     if (size == 0) return;
+    if (symbolic_mode == 0) {
+        symbolic_mode = 1;
+    }
 
     assert(offset >= 0 && "Invalid offset");
     // printf("Offset=%ld size=%ld\n", offset, size);
@@ -4442,11 +4602,82 @@ static inline void end_symbolic_mode(void)
     printf("Number of memory slices: %lu\n", slices_count);
 }
 
+static Expr** get_expr_addr(uintptr_t addr, size_t size, uint8_t allocate,
+                            size_t* n_overflow_bytes)
+{
+    uintptr_t  l1_page_idx = addr >> (L1_PAGE_BITS + L2_PAGE_BITS);
+    l2_page_t* l2_page     = s_memory.table.entries[l1_page_idx];
+    if (l2_page == NULL) {
+        if (!allocate) {
+            return NULL;
+        }
+        l2_page                             = g_malloc0(sizeof(l2_page_t));
+        s_memory.table.entries[l1_page_idx] = l2_page;
+    }
+
+    uintptr_t l2_page_idx = (addr >> L2_PAGE_BITS) & 0xFFFF;
+    uintptr_t l3_page_idx = addr & 0xFFFF;
+
+    if ((l3_page_idx + size) > (1 << L3_PAGE_BITS)) {
+        // printf("n_overflow_bytes=%p\n", n_overflow_bytes);
+        if (n_overflow_bytes) {
+            // printf("size=%lu l3_page_idx=%lu\n", size, l3_page_idx);
+            *n_overflow_bytes = size - ((1 << L3_PAGE_BITS) - l3_page_idx);
+        } else {
+            assert(0 && "Cross page access");
+        }
+    } else {
+        if (n_overflow_bytes) {
+            *n_overflow_bytes = 0;
+        }
+    }
+
+    l3_page_t* l3_page = l2_page->entries[l2_page_idx];
+    if (l3_page == NULL) {
+        if (!allocate) {
+            return NULL;
+        }
+        l3_page                       = g_malloc0(sizeof(l3_page_t));
+        l2_page->entries[l2_page_idx] = l3_page;
+    }
+
+    return &l3_page->entries[l3_page_idx];
+}
+
+static inline void clear_mem(uintptr_t addr, uintptr_t size)
+{
+    size_t overflow_n_bytes = 0;
+    // printf("A overflow_n_bytes: %lu\n", overflow_n_bytes);
+    Expr** exprs = get_expr_addr((uintptr_t)addr, size, 0, &overflow_n_bytes);
+    if (overflow_n_bytes > 0) {
+        if (overflow_n_bytes >= size) {
+            printf("B overflow_n_bytes: %lu size=%lu\n", overflow_n_bytes,
+                   size);
+        }
+        assert(overflow_n_bytes < size);
+        size -= overflow_n_bytes;
+        assert(size);
+        clear_mem(addr + size, overflow_n_bytes);
+    }
+
+    if (exprs == NULL) {
+        return;
+    }
+
+    for (size_t i = 0; i < size; i++) {
+        exprs[i] = NULL;
+        // printf("Clearing memory at %lx\n", addr + i);
+    }
+}
+
 // from AFL
 static const uint8_t count_class_binary[256] = {
     [0] = 0,          [1] = 1,           [2] = 2,
     [3] = 4,          [4 ... 7] = 8,     [8 ... 15] = 16,
     [16 ... 31] = 32, [32 ... 127] = 64, [128 ... 255] = 128};
+
+static int last_open_fp = -1;
+static char* last_open_file = NULL;
 
 void qemu_syscall_helper(uintptr_t syscall_no, uintptr_t syscall_arg0,
                          uintptr_t syscall_arg1, uintptr_t syscall_arg2,
@@ -4494,7 +4725,9 @@ void qemu_syscall_helper(uintptr_t syscall_no, uintptr_t syscall_arg0,
             if (s_config.symbolic_inject_input_mode == FROM_FILE && fp >= 0) {
                 const char* fname = nr == SYS_OPEN ? (const char*)syscall_arg0
                                                    : (const char*)syscall_arg1;
-                // printf("Opening file: %s vs %s\n", fname, s_config.inputfile);
+                last_open_file = basename(fname);
+                last_open_fp = fp;
+                // printf("Opening file [%d]: %s\n", fp, basename(fname));
                 if (strcmp(fname, s_config.inputfile) == 0) {
 
                     if (input_fp[fp]) {
@@ -4516,6 +4749,10 @@ void qemu_syscall_helper(uintptr_t syscall_no, uintptr_t syscall_arg0,
         //
         case SYS_CLOSE:
             fp = syscall_arg0;
+            if (last_open_fp == fp) {
+                last_open_fp = -1;
+                last_open_file = NULL;
+            }
             if (fp >= 0 && ((int)ret_val) >= 0 && input_fp[fp]) {
                 if (input_fp[fp]->shared_counter == 1) {
                     free(input_fp[fp]);
@@ -4538,6 +4775,9 @@ void qemu_syscall_helper(uintptr_t syscall_no, uintptr_t syscall_arg0,
                     case SEEK_SET:
                         input_fp[fp]->offset = offset;
                         break;
+                    case SEEK_END:
+                        input_fp[fp]->offset = offset;
+                        break;
                     default:
                         tcg_abort();
                 }
@@ -4546,6 +4786,7 @@ void qemu_syscall_helper(uintptr_t syscall_no, uintptr_t syscall_arg0,
         //
         case SYS_READ:
             fp = syscall_arg0;
+            // printf("read from %d %s %lu bytes\n", fp, last_open_file, ret_val);
             if (fp >= 0 && !input_fp[fp]) {
                 // debug: check if we are reading from stdin
                 if (s_config.symbolic_inject_input_mode == READ_FD_0 &&
@@ -4554,6 +4795,7 @@ void qemu_syscall_helper(uintptr_t syscall_no, uintptr_t syscall_arg0,
                            "closed. What do we need to do?");
                     tcg_abort();
                 }
+                clear_mem(syscall_arg1, ret_val);
             } else if (((int)ret_val) >= 0) {
                 read_from_input(input_fp[fp]->offset, syscall_arg1, ret_val);
                 input_fp[fp]->offset += ret_val;
@@ -4573,6 +4815,9 @@ void qemu_syscall_helper(uintptr_t syscall_no, uintptr_t syscall_arg0,
         case SYS_MMAP: {
             if (ret_val != CONST(MAP_FAILED)) {
                 fp = syscall_arg4;
+                if (fp >= 0 && last_open_fp == fp && syscall_arg2 & PROT_EXEC) {
+                    load_image(last_open_file, ret_val);
+                }
                 if (fp >= 0 && input_fp[fp]) {
                     size_t length = syscall_arg1;
                     int    flags  = (int)syscall_arg3;
@@ -5435,6 +5680,20 @@ static int instrument = 0;
 int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                                    uint8_t* tb_code, TCGContext* tcg_ctx)
 {
+    if (symbolic_mode == 0)
+        return 0;
+#if 1
+    if (mode == 2) {
+        return 0;
+    }
+#endif
+    int force_flush_cache = 0;
+    if (symbolic_mode == 1) {
+        instrument = 1;
+        force_flush_cache = 1;
+        symbolic_mode = 2;
+    }
+
     if (s_config.coverage_tracer) {
         TCGOp* op;
         QTAILQ_FOREACH(op, &tcg_ctx->ops, link)
@@ -5455,7 +5714,6 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
     }
 
     internal_tcg_context  = tcg_ctx;
-    int force_flush_cache = 0;
 
     register_helpers();
 
@@ -5514,7 +5772,11 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
             case INDEX_op_insn_start:
 
 #if BRANCH_COVERAGE == FUZZOLIC || DEBUG_EXPR_CONSISTENCY || VISIT_LINEARIZATION
-                if (hit_first_instr == 0) {
+                if (hit_first_instr == 0
+#if DEBUG_EXPR_CONSISTENCY
+                    || 1
+#endif
+                        ) {
                     TCGTemp* t_pc = new_non_conflicting_temp(TCG_TYPE_PTR);
                     tcg_movi(t_pc, (uintptr_t)op->args[0], 0, op, NULL, tcg_ctx);
                     add_void_call_1(visitTB, t_pc, op, NULL, tcg_ctx);
@@ -5542,7 +5804,7 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                     // ToDo: we could start instrumenting when we inject
                     //       for the first time a symbolic data?
                     instrument        = 1;
-                    force_flush_cache = 1;
+                    // force_flush_cache = 1;
                 } else if (instrument == 1 &&
                            pc == s_config.symbolic_exec_stop_addr) {
                     instrument = 0;
@@ -5560,16 +5822,24 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
 
                 if (instrument) {
                     debug_printf("Instrumenting %lx\n", op->args[0]);
-                    if (pc == s_config.symbolic_exec_reg_instr_addr)
+                    if (pc == s_config.symbolic_exec_reg_instr_addr) {
                         make_reg_symbolic(s_config.symbolic_exec_reg_name, op,
                                           tcg_ctx);
+                    }
                 }
 
+                LIB_MODEL model = 0;
+                if (plt_addrs) {
+                    model = (LIB_MODEL) g_hash_table_lookup(plt_addrs, (gpointer) pc);
+                }
+                if (model == REALLOC && 0) {
+                    printf("Found model stub %d at %lx\n", model, pc);
+#if 0
                 if (pc == s_config.plt_stub_malloc ||
                     pc == s_config.plt_stub_realloc ||
                     pc == s_config.plt_stub_free ||
                     pc == s_config.plt_stub_printf) {
-
+#endif
                     TCGTemp* t_rdi = tcg_find_temp_arch_reg(tcg_ctx, "rdi");
                     clear_temp(temp_idx(t_rdi), op, tcg_ctx);
                     TCGTemp* t_rsi = tcg_find_temp_arch_reg(tcg_ctx, "rsi");
@@ -5621,7 +5891,7 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                     TCGTemp* from = arg_temp(op->args[1]);
                     TCGTemp* to   = arg_temp(op->args[0]);
                     size_t   size = op->opc == INDEX_op_mov_i64 ? 0 : 4;
-#if 1
+#if 0
                     move_temp(temp_idx(from), temp_idx(to), size, op, tcg_ctx);
 #else
                     TCGTemp* t_to_idx = new_non_conflicting_temp(TCG_TYPE_PTR);
@@ -5715,6 +5985,7 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                         size = 0;
                         assert(t_a->type == TCG_TYPE_I64);
                     }
+
 #if !VISIT_LINEARIZATION
                     qemu_binop(bin_opkind, t_out, t_a, t_b, size, op, tcg_ctx);
 #else
@@ -6073,11 +6344,11 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                             jump_table_finder_prev_instr.index &&
                             jump_table_finder_prev_instr.has_done_load &&
                             jump_table_finder_prev_instr.mov == t_value) {
-
-                            printf("\nJump Table at %lx?\n", pc);
+#if 0
+                            // printf("\nJump Table at %lx?\n", pc);
                             qemu_jump_table(jump_table_finder_prev_instr.addr,
                                             op, tcg_ctx);
-
+#endif
                             if (jump_table_finder_prev_instr
                                     .need_to_free_addr) {
                                 tcg_temp_free_internal(
@@ -6688,7 +6959,8 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                                strcmp(helper_name, "psrlw_xmm") == 0 ||
                                strcmp(helper_name, "psrld_xmm") == 0 ||
                                strcmp(helper_name, "psrlq_xmm") == 0 ||
-                               strcmp(helper_name, "psrldq_xmm") == 0) {
+                               strcmp(helper_name, "psrldq_xmm") == 0 ||
+                               strcmp(helper_name, "psrad_xmm") == 0) {
 
                         OPKIND    opkind;
                         uintptr_t slice;
@@ -6699,7 +6971,11 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                                                         helper_name[5]);
                                 break;
                             case 'r':
-                                opkind = SHR;
+                                if (helper_name[3] == 'l') {
+                                    opkind = SHR;
+                                } else {
+                                    opkind = SAR;
+                                }
                                 slice  = suffix_to_slice(helper_name[4],
                                                         helper_name[5]);
                                 break;
@@ -7661,4 +7937,109 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
     }
 
     return force_flush_cache;
+}
+
+#include "models.c"
+
+static uintptr_t model_caller_addr = 0;
+int is_symbolic_model(uintptr_t pc, CPUArchState *cpu) {
+    if (symbolic_mode == 0 || plt_addrs == NULL) {
+        return 0;
+    }
+
+    CPUX86State* env = (CPUX86State*) cpu;
+    LIB_MODEL model = (LIB_MODEL) g_hash_table_lookup(plt_addrs, (gpointer) pc);
+    if (mode == 0 && model > 0) {
+        uintptr_t rsp = env->regs[R_ESP];
+        model_caller_addr = *((uintptr_t*)rsp);
+        // printf("Executing LIB MODEL %d at %lx\n", model, pc);
+        if (model == STRCMP) {
+            // printf("[0x%lx] strcmp(%s, %s)\n", model_caller_addr, (char *)(uintptr_t)env->regs[R_EDI], (char *)(uintptr_t)env->regs[R_ESI]);
+            mode = model_strcmp(env, model_caller_addr, 0);
+            clear_call_args_temps();
+        } else if (model == STRNCMP) {
+            // printf("[0x%lx] strncmp(%s, %s, %lu)\n", model_caller_addr, (char *)(uintptr_t)env->regs[R_EDI], (char *)(uintptr_t)env->regs[R_ESI], (uintptr_t)env->regs[R_EDX]);
+            mode = model_strcmp(env, model_caller_addr, env->regs[R_EDX]);
+            clear_call_args_temps();
+        } else if (model == STRLEN) {
+            // printf("[0x%lx] strlen(%s)\n", model_caller_addr, (char *)(uintptr_t)env->regs[R_EDI]);
+            mode = model_strlen(env, model_caller_addr, 0);
+            clear_call_args_temps();
+        } else if (model == STRNLEN) {
+            // printf("[0x%lx] strnlen(%s, %lu)\n", model_caller_addr, (char *)(uintptr_t)env->regs[R_EDI], (uintptr_t)env->regs[R_ESI]);
+            mode = model_strlen(env, model_caller_addr, env->regs[R_ESI]);
+            clear_call_args_temps();
+        } else if (model == MALLOC) {
+            // printf("[0x%lx] malloc(%lu)\n", model_caller_addr, (uintptr_t)env->regs[R_EDI]);
+            clear_call_args_temps();
+            mode = 1;
+        } else if (model == REALLOC) {
+            // printf("[0x%lx] realloc(0x%lx, %lu)\n", model_caller_addr, (uintptr_t)env->regs[R_EDI], (uintptr_t)env->regs[R_ESI]);
+            clear_call_args_temps();
+            mode = 1;
+        } else if (model == FREE) {
+            // printf("[0x%lx] free(0x%lx)\n", model_caller_addr, (uintptr_t)env->regs[R_EDI]);
+            clear_call_args_temps();
+            mode = 1;
+        }  else if (model == CALLOC) {
+            // printf("[0x%lx] calloc(%lu)\n", model_caller_addr, (uintptr_t)env->regs[R_EDI]);
+            clear_call_args_temps();
+            mode = 1;
+        } else if (model == PRINTF) {
+            // printf("[0x%lx] printf(%p, ...)\n", model_caller_addr, (char *)(uintptr_t)env->regs[R_EDI]);
+            clear_call_args_temps();
+            mode = 2;
+        } else if (model == MEMCHR) {
+            // printf("[0x%lx] memchr(%p, %c, %lu)\n", model_caller_addr, (char *)(uintptr_t)env->regs[R_EDI], (int)(uintptr_t)env->regs[R_ESI], (uintptr_t)env->regs[R_EDX]);
+            mode = model_memchr(env, model_caller_addr);
+            clear_call_args_temps();
+        } else if (model == MEMCMP) {
+            // printf("[0x%lx] memcmp(%p, %p, %lu)\n", model_caller_addr, (char *)(uintptr_t)env->regs[R_EDI], (char*)(uintptr_t)env->regs[R_ESI], (uintptr_t)env->regs[R_EDX]);
+            mode = model_memcmp(env, model_caller_addr);
+            clear_call_args_temps();
+        } else if (model == MEMMOVE || model == MEMCPY) {
+            // printf("[0x%lx] %s(%p, %p, %lu)\n", model_caller_addr, model == MEMMOVE ? "memmove" : "memcpy", (char *)(uintptr_t)env->regs[R_EDI], (char*)(uintptr_t)env->regs[R_ESI], (uintptr_t)env->regs[R_EDX]);
+            // FixMe: memmove may overlap!
+            qemu_memmove((uintptr_t)env->regs[R_ESI], (uintptr_t)env->regs[R_EDI], (uintptr_t)env->regs[R_EDX]);
+            mode = 2;
+            clear_call_args_temps();
+        } else if (model == MEMSET) {
+            // printf("[0x%lx] memset(%p, %lx, %lu)\n", model_caller_addr, (char *)(uintptr_t)env->regs[R_EDI], (uintptr_t)env->regs[R_ESI], (uintptr_t)env->regs[R_EDX]);
+            Expr* value = s_temps[temp_idx(tcg_find_temp_arch_reg(internal_tcg_context, "rsi"))];
+            qemu_memset(value, (uintptr_t)env->regs[R_EDI], (uintptr_t)env->regs[R_EDX]);
+            mode = 2;
+            clear_call_args_temps();
+        } else if (model == STRCPY) {
+            // printf("[0x%lx] strcpy(%p, %p)\n", model_caller_addr, (char *)(uintptr_t)env->regs[R_EDI], (char*)(uintptr_t)env->regs[R_ESI]);
+            uintptr_t len = strlen((char*)(uintptr_t)env->regs[R_ESI]);
+            mode = model_strlen(env, model_caller_addr, 0);
+            qemu_memmove((uintptr_t)env->regs[R_ESI], (uintptr_t)env->regs[R_EDI], len + 1);
+            clear_call_args_temps();
+        } else if (model == STRNCPY) {
+            // printf("[0x%lx] strncpy(%p, %p, %lu)\n", model_caller_addr, (char *)(uintptr_t)env->regs[R_EDI], (char*)(uintptr_t)env->regs[R_ESI], (uintptr_t)env->regs[R_EDX]);
+            uintptr_t n = (uintptr_t)env->regs[R_EDX];
+            mode = model_strlen(env, model_caller_addr, n);
+            uintptr_t len = strnlen((char*)(uintptr_t)env->regs[R_ESI], n);
+            if (len < n) len += 1;
+            qemu_memmove((uintptr_t)env->regs[R_ESI], (uintptr_t)env->regs[R_EDI], len);
+            clear_call_args_temps();
+        }
+        // printf("Return address is %lx [%lx]\n", model_caller_addr, rsp);
+        if (mode == 2) {
+            return 1; // switch code cache
+        } else {
+            return 0;
+        }
+    }
+    if (mode > 0 && pc == model_caller_addr) {
+        // printf("Switch mode back\n");
+        model_caller_addr = 0;
+        int r = 0;
+        if (mode == 2) {
+            r = 1; // switch code cache
+        }
+        mode = 0;
+        return r;
+    }
+    return 0;
 }

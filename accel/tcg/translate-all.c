@@ -1139,6 +1139,7 @@ static void tb_htable_init(void)
     unsigned int mode = QHT_MODE_AUTO_RESIZE;
 
     qht_init(&tb_ctx.htable, tb_cmp, CODE_GEN_HTABLE_SIZE, mode);
+    qht_init(&tb_ctx.htable_concrete, tb_cmp, CODE_GEN_HTABLE_SIZE, mode);
 }
 
 /* Must be called before using the QEMU cpus. 'tb_size' is the size
@@ -1230,6 +1231,17 @@ static gboolean tb_host_size_iter(gpointer key, gpointer value, gpointer data)
     return false;
 }
 
+static void do_symbolic_mode_flush(CPUState *cpu, run_on_cpu_data tb_flush_count)
+{
+    // printf("Switch code cache\n");
+    mmap_lock();
+    CPU_FOREACH(cpu) {
+        cpu_tb_jmp_cache_clear(cpu);
+    }
+    tb_ctx.htable_id = tb_ctx.htable_id == 0 ? 1 : 0;
+    mmap_unlock();
+}
+
 /* flush all the translation blocks */
 static void do_tb_flush(CPUState *cpu, run_on_cpu_data tb_flush_count)
 {
@@ -1271,6 +1283,16 @@ void tb_flush(CPUState *cpu)
     if (tcg_enabled()) {
         unsigned tb_flush_count = atomic_mb_read(&tb_ctx.tb_flush_count);
         async_safe_run_on_cpu(cpu, do_tb_flush,
+                              RUN_ON_CPU_HOST_INT(tb_flush_count));
+    }
+}
+
+void symbolic_mode_flush(CPUState *cpu);
+void symbolic_mode_flush(CPUState *cpu)
+{
+    if (tcg_enabled()) {
+        unsigned tb_flush_count = atomic_mb_read(&tb_ctx.tb_flush_count);
+        async_safe_run_on_cpu(cpu, do_symbolic_mode_flush,
                               RUN_ON_CPU_HOST_INT(tb_flush_count));
     }
 }

@@ -32,6 +32,11 @@ typedef struct TBContext TBContext;
 struct TBContext {
 
     struct qht htable;
+#if 1
+    struct qht htable_concrete;
+    unsigned htable_id;
+    unsigned last_has_switched;
+#endif
 
     /* statistics */
     unsigned tb_flush_count;

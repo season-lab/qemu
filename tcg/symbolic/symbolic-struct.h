@@ -172,6 +172,12 @@ typedef enum OPKIND {
     INPUT_SLICE,
     //
     MOV,
+    //
+    MODEL,
+    MODEL_STRCMP,
+    MODEL_STRLEN,
+    MODEL_MEMCHR,
+    MODEL_MEMCMP
 } OPKIND;
 
 typedef enum EXTENDKIND {
@@ -433,6 +439,17 @@ static inline const char* opkind_to_str(uint8_t opkind)
 
         case MOV:
             return "MOV";
+
+        case MODEL:
+            return "MODEL";
+        case MODEL_STRCMP:
+            return "MODEL_STRCMP";
+        case MODEL_STRLEN:
+            return "MODEL_STRLEN";
+        case MODEL_MEMCHR:
+            return "MODEL_MEMCHR";
+        case MODEL_MEMCMP:
+            return "MODEL_MEMCMP";
 
         default:
             printf("\nstr(opkind=%u) is unknown\n", opkind);

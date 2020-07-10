@@ -487,48 +487,6 @@ static void qemu_cc_compute_c(uint64_t packed_idx, uintptr_t dst,
     }
 }
 
-static Expr** get_expr_addr(uintptr_t addr, size_t size, uint8_t allocate,
-                            size_t* n_overflow_bytes)
-{
-    uintptr_t  l1_page_idx = addr >> (L1_PAGE_BITS + L2_PAGE_BITS);
-    l2_page_t* l2_page     = s_memory.table.entries[l1_page_idx];
-    if (l2_page == NULL) {
-        if (!allocate) {
-            return NULL;
-        }
-        l2_page                             = g_malloc0(sizeof(l2_page_t));
-        s_memory.table.entries[l1_page_idx] = l2_page;
-    }
-
-    uintptr_t l2_page_idx = (addr >> L2_PAGE_BITS) & 0xFFFF;
-    uintptr_t l3_page_idx = addr & 0xFFFF;
-
-    if ((l3_page_idx + size) > (1 << L3_PAGE_BITS)) {
-        // printf("n_overflow_bytes=%p\n", n_overflow_bytes);
-        if (n_overflow_bytes) {
-            // printf("size=%lu l3_page_idx=%lu\n", size, l3_page_idx);
-            *n_overflow_bytes = size - ((1 << L3_PAGE_BITS) - l3_page_idx);
-        } else {
-            assert(0 && "Cross page access");
-        }
-    } else {
-        if (n_overflow_bytes) {
-            *n_overflow_bytes = 0;
-        }
-    }
-
-    l3_page_t* l3_page = l2_page->entries[l2_page_idx];
-    if (l3_page == NULL) {
-        if (!allocate) {
-            return NULL;
-        }
-        l3_page                       = g_malloc0(sizeof(l3_page_t));
-        l2_page->entries[l2_page_idx] = l3_page;
-    }
-
-    return &l3_page->entries[l3_page_idx];
-}
-
 static inline Expr* build_concat_expr(Expr** exprs, void* addr, size_t size,
                                       int reversed)
 {
@@ -581,32 +539,6 @@ void symbolic_clear_mem(uintptr_t addr, uintptr_t size)
 
     for (size_t i = 0; i < size; i++) {
         exprs[i] = NULL;
-    }
-}
-
-static inline void clear_mem(uintptr_t addr, uintptr_t size)
-{
-    size_t overflow_n_bytes = 0;
-    // printf("A overflow_n_bytes: %lu\n", overflow_n_bytes);
-    Expr** exprs = get_expr_addr((uintptr_t)addr, size, 0, &overflow_n_bytes);
-    if (overflow_n_bytes > 0) {
-        if (overflow_n_bytes >= size) {
-            printf("B overflow_n_bytes: %lu size=%lu\n", overflow_n_bytes,
-                   size);
-        }
-        assert(overflow_n_bytes < size);
-        size -= overflow_n_bytes;
-        assert(size);
-        clear_mem(addr + size, overflow_n_bytes);
-    }
-
-    if (exprs == NULL) {
-        return;
-    }
-
-    for (size_t i = 0; i < size; i++) {
-        exprs[i] = NULL;
-        // printf("Clearing memory at %lx\n", addr + i);
     }
 }
 
@@ -671,6 +603,49 @@ static inline void qemu_memmove(uintptr_t src, uintptr_t dst, uintptr_t size)
             add_consistency_check_addr(src_exprs[i], src + i, 1, SYMBOLIC_LOAD);
         }
 #endif
+    }
+}
+
+static inline void qemu_memset(Expr* value, uintptr_t dst, uintptr_t size)
+{
+    size_t overflow_n_bytes = 0;
+    Expr** dst_exprs =
+        get_expr_addr((uintptr_t)dst, size, 0, &overflow_n_bytes);
+    if (overflow_n_bytes > 0) {
+        if (overflow_n_bytes >= size) {
+            printf("B overflow_n_bytes: %lu size=%lu\n", overflow_n_bytes,
+                   size);
+        }
+        assert(overflow_n_bytes < size);
+        size -= overflow_n_bytes;
+        assert(size);
+        qemu_memset(value, dst + size, overflow_n_bytes);
+    }
+
+    if (value == NULL && dst_exprs == NULL) {
+        // printf("memset concrete\n");
+        return;
+    }
+
+    // print_expr(value);
+    if (value == NULL) {
+        for (size_t i = 0; i < size; i++) {
+            // print_expr(dst_exprs[i]);
+            dst_exprs[i] = NULL;
+        }
+        return;
+    }
+
+    if (dst_exprs == NULL) {
+        size_t overflow_n_bytes;
+        dst_exprs = get_expr_addr((uintptr_t)dst, size, 1, &overflow_n_bytes);
+    }
+
+#if 0
+    printf("[+] Memset to=%lx size=%lu\n", dst, size);
+#endif
+    for (size_t i = 0; i < size; i++) {
+        dst_exprs[i] = value;
     }
 }
 
@@ -744,7 +719,7 @@ static void qemu_xmm_op_internal(uintptr_t opkind, uint8_t* dst_addr,
         for (size_t k = 0; k < slice && !src_is_not_null && !dst_is_not_null;
              k++) {
             if (src_expr_addr) {
-                if (opkind == SHL || opkind == SHR) {
+                if (opkind == SHL || opkind == SHR || opkind == SAR) {
                     src_is_not_null |= src_expr_addr[0] != NULL;
                 } else {
                     src_is_not_null |= src_expr_addr[i + k] != NULL;
@@ -781,7 +756,7 @@ static void qemu_xmm_op_internal(uintptr_t opkind, uint8_t* dst_addr,
         Expr* dst_slice;
         if (slice > 1) {
             // ToDo: optimize when one of the two is fully concrete
-            if (opkind == SHL || opkind == SHR) {
+            if (opkind == SHL || opkind == SHR || opkind == SAR) {
                 src_slice =
                     build_concat_expr(&src_expr_addr[i], &src_addr[i], 1, 0);
 
@@ -803,16 +778,16 @@ static void qemu_xmm_op_internal(uintptr_t opkind, uint8_t* dst_addr,
 
 #if DEBUG_EXPR_CONSISTENCY
             // printf("XMM_OP_A1:\n");
-            add_consistency_check_addr(dst_slice + i, ((uintptr_t)dst_addr) + i, slice, opkind);
+            add_consistency_check_addr(dst_slice, ((uintptr_t)dst_addr) + i, slice, opkind);
             // printf("XMM_OP_B1:\n");
-            if (opkind == SHL || opkind == SHR) {
+            if (opkind == SHL || opkind == SHR || opkind == SAR) {
                 if (slice == 16) {
                     add_consistency_check_addr(src_slice->op1, ((uintptr_t)src_addr), 1, opkind);
                 } else {
                     add_consistency_check_addr(src_slice, ((uintptr_t)src_addr), 1, opkind);
                 }
             } else {
-                add_consistency_check_addr(src_slice + i, ((uintptr_t)src_addr) + i, slice, opkind);
+                add_consistency_check_addr(src_slice, ((uintptr_t)src_addr) + i, slice, opkind);
             }
 #endif
 
@@ -822,7 +797,7 @@ static void qemu_xmm_op_internal(uintptr_t opkind, uint8_t* dst_addr,
         } else {
             SET_EXPR_OP(e->op1, e->op1_is_const, dst_expr_addr[i], dst_addr[i]);
 
-            if (opkind == SHL || opkind == SHR) {
+            if (opkind == SHL || opkind == SHR || opkind == SAR) {
                 SET_EXPR_OP(e->op2, e->op2_is_const, src_expr_addr[0], src_addr[0]);
             } else {
                 SET_EXPR_OP(e->op2, e->op2_is_const, src_expr_addr[i], src_addr[i]);
@@ -835,7 +810,7 @@ static void qemu_xmm_op_internal(uintptr_t opkind, uint8_t* dst_addr,
             }
             if (src_expr_addr[i]) {
                 // printf("XMM_OP_B2:\n");
-                if (opkind == SHL || opkind == SHR) {
+                if (opkind == SHL || opkind == SHR || opkind == SAR) {
                     add_consistency_check(src_expr_addr[0], src_addr[0], 1, opkind);
                 } else {
                     add_consistency_check(src_expr_addr[i], src_addr[i], slice, opkind);

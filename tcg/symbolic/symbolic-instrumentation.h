@@ -13,6 +13,8 @@ extern void qemu_syscall_helper(uintptr_t syscall_no, uintptr_t syscall_arg0,
                                 uintptr_t syscall_arg5, uintptr_t syscall_arg6,
                                 uintptr_t ret_val);
 void symbolic_clear_mem(uintptr_t addr, uintptr_t size);
+void load_image(char* name, uintptr_t addr);
+extern int is_symbolic_model(uintptr_t pc, CPUArchState *cpu);
 
 #include "syscall_nr.h"
 

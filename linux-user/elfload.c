@@ -2435,6 +2435,7 @@ static void load_elf_image(const char *image_name, int image_fd,
 #ifdef SYMBOLIC_INSTRUMENTATION
                     if (!symbolic_start_code) {
                         symbolic_start_code = vaddr;
+                        load_image(basename(image_name), symbolic_start_code);
                     }
 #endif
                 }

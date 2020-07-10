@@ -38,6 +38,8 @@
 #include "sysemu/cpus.h"
 #include "sysemu/replay.h"
 
+#include "../../tcg/symbolic/symbolic-instrumentation.h"
+
 /* -icount align implementation. */
 
 typedef struct SyncClocks {
@@ -342,7 +344,15 @@ TranslationBlock *tb_htable_lookup(CPUState *cpu, target_ulong pc,
     }
     desc.phys_page1 = phys_pc & TARGET_PAGE_MASK;
     h = tb_hash_func(phys_pc, pc, flags, cf_mask, *cpu->trace_dstate);
+#ifdef SYMBOLIC_INSTRUMENTATION
+    if (tb_ctx.htable_id == 0) {
+        return qht_lookup_custom(&tb_ctx.htable, &desc, h, tb_lookup_cmp);
+    } else {
+        return qht_lookup_custom(&tb_ctx.htable_concrete, &desc, h, tb_lookup_cmp);
+    }
+#else
     return qht_lookup_custom(&tb_ctx.htable, &desc, h, tb_lookup_cmp);
+#endif
 }
 
 void tb_set_jmp_target(TranslationBlock *tb, int n, uintptr_t addr)
@@ -405,10 +415,6 @@ static inline TranslationBlock *tb_find(CPUState *cpu,
 
     tb = tb_lookup__cpu_state(cpu, &pc, &cs_base, &flags, cf_mask);
 
-#if 0 // SYMBOLIC_INSTRUMENTATION
-    tb = NULL;
-#endif
-
     if (tb == NULL) {
         mmap_lock();
         tb = tb_gen_code(cpu, pc, cs_base, flags, cf_mask);
@@ -426,9 +432,17 @@ static inline TranslationBlock *tb_find(CPUState *cpu,
     }
 #endif
     /* See if we can patch the calling TB. */
+#ifdef SYMBOLIC_INSTRUMENTATION
+    if (tb_ctx.last_has_switched != 0) {
+        tb_ctx.last_has_switched = 0;
+    } else if (last_tb) {
+        tb_add_jump(last_tb, tb_exit, tb);
+    }
+#else
     if (last_tb) {
         tb_add_jump(last_tb, tb_exit, tb);
     }
+#endif
     return tb;
 }
 
