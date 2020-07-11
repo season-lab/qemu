@@ -5891,7 +5891,7 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                     TCGTemp* from = arg_temp(op->args[1]);
                     TCGTemp* to   = arg_temp(op->args[0]);
                     size_t   size = op->opc == INDEX_op_mov_i64 ? 0 : 4;
-#if 0
+#if 1
                     move_temp(temp_idx(from), temp_idx(to), size, op, tcg_ctx);
 #else
                     TCGTemp* t_to_idx = new_non_conflicting_temp(TCG_TYPE_PTR);
