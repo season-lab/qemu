@@ -1663,8 +1663,15 @@ tb_link_page(TranslationBlock *tb, tb_page_addr_t phys_pc,
         /* add in the hash table */
         h = tb_hash_func(phys_pc, tb->pc, tb->flags, tb->cflags & CF_HASH_MASK,
                          tb->trace_vcpu_dstate);
+#ifdef SYMBOLIC_INSTRUMENTATION
+        if (tb_ctx.htable_id == 0) {
+            qht_insert(&tb_ctx.htable, tb, h, &existing_tb);
+        } else {
+            qht_insert(&tb_ctx.htable_concrete, tb, h, &existing_tb);
+        }
+#else
         qht_insert(&tb_ctx.htable, tb, h, &existing_tb);
-
+#endif
         /* remove TB from the page(s) if we couldn't insert it */
         if (unlikely(existing_tb)) {
             tb_page_remove(p, tb);

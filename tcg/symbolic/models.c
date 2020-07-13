@@ -1,12 +1,28 @@
 static inline void clear_call_args_temps(void)
 {
-    s_temps[temp_idx(tcg_find_temp_arch_reg(internal_tcg_context, "rax"))] = 0;
-    s_temps[temp_idx(tcg_find_temp_arch_reg(internal_tcg_context, "rdi"))] = 0;
-    s_temps[temp_idx(tcg_find_temp_arch_reg(internal_tcg_context, "rsi"))] = 0;
-    s_temps[temp_idx(tcg_find_temp_arch_reg(internal_tcg_context, "rdx"))] = 0;
-    s_temps[temp_idx(tcg_find_temp_arch_reg(internal_tcg_context, "rcx"))] = 0;
-    s_temps[temp_idx(tcg_find_temp_arch_reg(internal_tcg_context, "r8"))] = 0;
-    s_temps[temp_idx(tcg_find_temp_arch_reg(internal_tcg_context, "r9"))] = 0;
+    s_temps[temp_idx(tcg_find_temp_arch_reg(tcg_ctx, "rax"))] = 0;
+    s_temps[temp_idx(tcg_find_temp_arch_reg(tcg_ctx, "rdi"))] = 0;
+    s_temps[temp_idx(tcg_find_temp_arch_reg(tcg_ctx, "rsi"))] = 0;
+    s_temps[temp_idx(tcg_find_temp_arch_reg(tcg_ctx, "rdx"))] = 0;
+    s_temps[temp_idx(tcg_find_temp_arch_reg(tcg_ctx, "rcx"))] = 0;
+    s_temps[temp_idx(tcg_find_temp_arch_reg(tcg_ctx, "r8"))] = 0;
+    s_temps[temp_idx(tcg_find_temp_arch_reg(tcg_ctx, "r9"))] = 0;
+}
+
+// clear xmm registers
+static inline void clear_xmm_regs(CPUX86State* env)
+{
+    int          i, nb_xmm_regs;
+
+    if (env->hflags & HF_CS64_MASK) {
+        nb_xmm_regs = 16;
+    } else {
+        nb_xmm_regs = 8;
+    }
+
+    for (i = 0; i < nb_xmm_regs; i++) {
+        clear_mem((uintptr_t)&(env->xmm_regs[i]), XMM_BYTES);
+    }
 }
 
 static inline Expr* build_expr(Expr** exprs, void* addr, size_t size)
@@ -115,6 +131,8 @@ static inline int model_strlen(CPUX86State* env, uintptr_t pc, uintptr_t n)
     if (s1 == NULL) {
         return mode;
     }
+
+    // printf("n: %lu\n", n);
 
     size_t s1_len = n == 0 ? strlen(s1) : strnlen(s1, n);
     size_t len = n == 0 || s1_len < n ? s1_len + 1 : s1_len;

@@ -96,7 +96,6 @@ Expr* last_expr      = NULL; // ToDo: unsafe
 Query* query_queue = NULL;
 Query* next_query  = NULL;
 
-TCGContext*   internal_tcg_context = NULL;
 static size_t page_size            = 0;
 pthread_t     main_thread          = 0;
 
@@ -247,7 +246,10 @@ inline static void parse_plt_info(char* path)
         char* s = g_malloc0(strlen(token) + 1);
         plt->image = strcpy(s, token);
         token = strtok(NULL, ",");
-        if (!token) continue;
+        if (!token) {
+            free(plt);
+            continue;
+        }
         if (strcmp(token, "malloc") == 0) {
             plt->model = MALLOC;
         } else if (strcmp(token, "calloc") == 0) {
@@ -288,7 +290,10 @@ inline static void parse_plt_info(char* path)
             plt->model = PRINTF;
         }
         token = strtok(NULL, ",");
-        if (!token) continue;
+        if (!token || plt->model == 0) {
+            free(plt);
+            continue;
+        }
         plt->offset = strtoull(token, NULL, 16);
         plt_info = g_slist_append(plt_info, plt);
     }
@@ -340,7 +345,7 @@ void load_image(char* name, uintptr_t addr)
 #endif
 }
 
-static int mode = 0;
+int mode = 0;
 
 static SymbolicConfig s_config = {0};
 static inline void    load_configuration(void)
@@ -1335,6 +1340,17 @@ static inline void updatePC(uintptr_t cur_loc)
 }
 #endif
 
+static inline void visitTB_debug(uintptr_t cur_loc, uintptr_t tb_mode)
+{
+    if (symbolic_mode == 0) return;
+    printf("visiting TB 0x%lx [%d] [%d] [%lu] [DEBUG]\n", cur_loc, symbolic_mode, mode, tb_mode);
+    current_tb_pc = cur_loc;
+    if (tb_mode != mode) {
+        printf("Executing TB in wrong mode\n");
+        tcg_abort();
+    }
+}
+
 static inline void visitTB(uintptr_t cur_loc)
 {
     // printf("visiting TB 0x%lx\n", cur_loc);
@@ -1455,7 +1471,7 @@ void print_temp(size_t idx);
 void print_temp(size_t idx)
 {
     if (s_temps[idx]) {
-        printf("t[%lu](%s) is ", idx, get_reg_name(internal_tcg_context, idx));
+        printf("t[%lu](%s) is ", idx, get_reg_name(tcg_ctx, idx));
         print_expr(s_temps[idx]);
     }
 }
@@ -1629,7 +1645,7 @@ static void add_consistency_check(Expr* e, uintptr_t value, size_t size, OPKIND 
     printf("CONSISTENCY_CHECK id=%lu size=%lu type=%s pc=%lx value=%lx\n",
         GET_QUERY_IDX(next_query - 1), size, opkind_to_str(opkind), current_tb_pc, value);
 #if 0
-    if (GET_QUERY_IDX(next_query - 1) >= 4000) {
+    if (GET_QUERY_IDX(next_query - 1) >= 305) {
         tcg_abort();
     }
 #endif
@@ -3742,7 +3758,11 @@ static inline void qemu_store(TCGTemp* t_addr, TCGTemp* t_val, uintptr_t offset,
     CHECK_TEMPS_COUNT(tcg_ctx);
 }
 
-static inline void qemu_extend_helper(uintptr_t packed_idx)
+static inline void qemu_extend_helper(uintptr_t packed_idx
+#if DEBUG_EXPR_CONSISTENCY
+                                        , uintptr_t val
+#endif
+                                        )
 {
     uintptr_t out_idx = UNPACK_0(packed_idx);
     uintptr_t a_idx   = UNPACK_1(packed_idx);
@@ -3783,6 +3803,12 @@ static inline void qemu_extend_helper(uintptr_t packed_idx)
         default:
             tcg_abort();
     }
+
+#if DEBUG_EXPR_CONSISTENCY
+    if (s_temps[a_idx]) {
+        add_consistency_check(s_temps[a_idx], val, 8, ZEXT);
+    }
+#endif
 
     if (s_temps[a_idx]->opkind == opkind
             && CONST(s_temps[a_idx]->op2) <= opkind_const_param) {
@@ -5680,6 +5706,27 @@ static int instrument = 0;
 int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                                    uint8_t* tb_code, TCGContext* tcg_ctx)
 {
+#if 0
+    {
+        TCGOp* op;
+        QTAILQ_FOREACH(op, &tcg_ctx->ops, link)
+        {
+            // skip TB prologue
+            if (op->opc != INDEX_op_insn_start) {
+                continue;
+            }
+
+            TCGTemp* t_pc = new_non_conflicting_temp(TCG_TYPE_PTR);
+            tcg_movi(t_pc, (uintptr_t)tb_pc, 0, op, NULL, tcg_ctx);
+            TCGTemp* t_mode = new_non_conflicting_temp(TCG_TYPE_PTR);
+            tcg_movi(t_mode, (uintptr_t)mode, 0, op, NULL, tcg_ctx);
+            add_void_call_2(visitTB_debug, t_pc, t_mode, op, NULL, tcg_ctx);
+            tcg_temp_free_internal(t_pc);
+            tcg_temp_free_internal(t_mode);
+            break;
+        }
+    }
+#endif
     if (symbolic_mode == 0)
         return 0;
 #if 1
@@ -5712,8 +5759,6 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
         }
         return 0;
     }
-
-    internal_tcg_context  = tcg_ctx;
 
     register_helpers();
 
@@ -6574,7 +6619,6 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
 #if 1
                     extend(t_to, t_from, get_extend_kind(op->opc), op, tcg_ctx);
 #else
-
                     uint64_t opkind = get_extend_kind(op->opc);
 
                     uint64_t v1 = 0;
@@ -6585,8 +6629,15 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                     TCGTemp* t_packed = new_non_conflicting_temp(TCG_TYPE_PTR);
                     tcg_movi(t_packed, (uintptr_t)v1, 0, op, NULL, tcg_ctx);
 
+#if DEBUG_EXPR_CONSISTENCY
+                    MARK_TEMP_AS_ALLOCATED(t_from);
+                    add_void_call_2(qemu_extend_helper, t_packed, t_from, op, NULL,
+                                    tcg_ctx);
+                    MARK_TEMP_AS_NOT_ALLOCATED(t_to);
+#else
                     add_void_call_1(qemu_extend_helper, t_packed, op, NULL,
                                     tcg_ctx);
+#endif
                     tcg_temp_free_internal(t_packed);
 #endif
                 }
@@ -7947,6 +7998,8 @@ int is_symbolic_model(uintptr_t pc, CPUArchState *cpu) {
         return 0;
     }
 
+    // printf("Lookup PC %lx\n", pc);
+
     CPUX86State* env = (CPUX86State*) cpu;
     LIB_MODEL model = (LIB_MODEL) g_hash_table_lookup(plt_addrs, (gpointer) pc);
     if (mode == 0 && model > 0) {
@@ -7957,64 +8010,78 @@ int is_symbolic_model(uintptr_t pc, CPUArchState *cpu) {
             // printf("[0x%lx] strcmp(%s, %s)\n", model_caller_addr, (char *)(uintptr_t)env->regs[R_EDI], (char *)(uintptr_t)env->regs[R_ESI]);
             mode = model_strcmp(env, model_caller_addr, 0);
             clear_call_args_temps();
+            clear_xmm_regs(env);
         } else if (model == STRNCMP) {
             // printf("[0x%lx] strncmp(%s, %s, %lu)\n", model_caller_addr, (char *)(uintptr_t)env->regs[R_EDI], (char *)(uintptr_t)env->regs[R_ESI], (uintptr_t)env->regs[R_EDX]);
             mode = model_strcmp(env, model_caller_addr, env->regs[R_EDX]);
             clear_call_args_temps();
+            clear_xmm_regs(env);
         } else if (model == STRLEN) {
             // printf("[0x%lx] strlen(%s)\n", model_caller_addr, (char *)(uintptr_t)env->regs[R_EDI]);
             mode = model_strlen(env, model_caller_addr, 0);
             clear_call_args_temps();
+            clear_xmm_regs(env);
         } else if (model == STRNLEN) {
             // printf("[0x%lx] strnlen(%s, %lu)\n", model_caller_addr, (char *)(uintptr_t)env->regs[R_EDI], (uintptr_t)env->regs[R_ESI]);
             mode = model_strlen(env, model_caller_addr, env->regs[R_ESI]);
             clear_call_args_temps();
+            clear_xmm_regs(env);
         } else if (model == MALLOC) {
             // printf("[0x%lx] malloc(%lu)\n", model_caller_addr, (uintptr_t)env->regs[R_EDI]);
             clear_call_args_temps();
+            clear_xmm_regs(env);
             mode = 1;
         } else if (model == REALLOC) {
             // printf("[0x%lx] realloc(0x%lx, %lu)\n", model_caller_addr, (uintptr_t)env->regs[R_EDI], (uintptr_t)env->regs[R_ESI]);
             clear_call_args_temps();
+            clear_xmm_regs(env);
             mode = 1;
         } else if (model == FREE) {
             // printf("[0x%lx] free(0x%lx)\n", model_caller_addr, (uintptr_t)env->regs[R_EDI]);
             clear_call_args_temps();
+            clear_xmm_regs(env);
             mode = 1;
         }  else if (model == CALLOC) {
             // printf("[0x%lx] calloc(%lu)\n", model_caller_addr, (uintptr_t)env->regs[R_EDI]);
             clear_call_args_temps();
+            clear_xmm_regs(env);
             mode = 1;
         } else if (model == PRINTF) {
             // printf("[0x%lx] printf(%p, ...)\n", model_caller_addr, (char *)(uintptr_t)env->regs[R_EDI]);
             clear_call_args_temps();
+            clear_xmm_regs(env);
             mode = 2;
         } else if (model == MEMCHR) {
             // printf("[0x%lx] memchr(%p, %c, %lu)\n", model_caller_addr, (char *)(uintptr_t)env->regs[R_EDI], (int)(uintptr_t)env->regs[R_ESI], (uintptr_t)env->regs[R_EDX]);
             mode = model_memchr(env, model_caller_addr);
             clear_call_args_temps();
+            clear_xmm_regs(env);
         } else if (model == MEMCMP) {
             // printf("[0x%lx] memcmp(%p, %p, %lu)\n", model_caller_addr, (char *)(uintptr_t)env->regs[R_EDI], (char*)(uintptr_t)env->regs[R_ESI], (uintptr_t)env->regs[R_EDX]);
             mode = model_memcmp(env, model_caller_addr);
             clear_call_args_temps();
+            clear_xmm_regs(env);
         } else if (model == MEMMOVE || model == MEMCPY) {
             // printf("[0x%lx] %s(%p, %p, %lu)\n", model_caller_addr, model == MEMMOVE ? "memmove" : "memcpy", (char *)(uintptr_t)env->regs[R_EDI], (char*)(uintptr_t)env->regs[R_ESI], (uintptr_t)env->regs[R_EDX]);
             // FixMe: memmove may overlap!
             qemu_memmove((uintptr_t)env->regs[R_ESI], (uintptr_t)env->regs[R_EDI], (uintptr_t)env->regs[R_EDX]);
             mode = 2;
             clear_call_args_temps();
+            clear_xmm_regs(env);
         } else if (model == MEMSET) {
             // printf("[0x%lx] memset(%p, %lx, %lu)\n", model_caller_addr, (char *)(uintptr_t)env->regs[R_EDI], (uintptr_t)env->regs[R_ESI], (uintptr_t)env->regs[R_EDX]);
-            Expr* value = s_temps[temp_idx(tcg_find_temp_arch_reg(internal_tcg_context, "rsi"))];
+            Expr* value = s_temps[temp_idx(tcg_find_temp_arch_reg(tcg_ctx, "rsi"))];
             qemu_memset(value, (uintptr_t)env->regs[R_EDI], (uintptr_t)env->regs[R_EDX]);
             mode = 2;
             clear_call_args_temps();
+            clear_xmm_regs(env);
         } else if (model == STRCPY) {
             // printf("[0x%lx] strcpy(%p, %p)\n", model_caller_addr, (char *)(uintptr_t)env->regs[R_EDI], (char*)(uintptr_t)env->regs[R_ESI]);
             uintptr_t len = strlen((char*)(uintptr_t)env->regs[R_ESI]);
             mode = model_strlen(env, model_caller_addr, 0);
             qemu_memmove((uintptr_t)env->regs[R_ESI], (uintptr_t)env->regs[R_EDI], len + 1);
             clear_call_args_temps();
+            clear_xmm_regs(env);
         } else if (model == STRNCPY) {
             // printf("[0x%lx] strncpy(%p, %p, %lu)\n", model_caller_addr, (char *)(uintptr_t)env->regs[R_EDI], (char*)(uintptr_t)env->regs[R_ESI], (uintptr_t)env->regs[R_EDX]);
             uintptr_t n = (uintptr_t)env->regs[R_EDX];
@@ -8023,6 +8090,7 @@ int is_symbolic_model(uintptr_t pc, CPUArchState *cpu) {
             if (len < n) len += 1;
             qemu_memmove((uintptr_t)env->regs[R_ESI], (uintptr_t)env->regs[R_EDI], len);
             clear_call_args_temps();
+            clear_xmm_regs(env);
         }
         // printf("Return address is %lx [%lx]\n", model_caller_addr, rsp);
         if (mode == 2) {
