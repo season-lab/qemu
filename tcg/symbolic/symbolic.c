@@ -210,6 +210,7 @@ typedef enum {
     STRCMP,
     STRNCMP,
     PRINTF,
+    FPRINTF,
     STRLEN,
     STRNLEN,
     MEMCHR,
@@ -283,11 +284,13 @@ inline static void parse_plt_info(char* path)
         } else if (strcmp(token, "memset") == 0 ||
                     strcmp(token, "__memset_chk") == 0) {
             plt->model = MEMSET;
-        } else if (strcmp(token, "printf") == 0 ||
-                    strcmp(token, "fprintf") == 0 ||
-                    strcmp(token, "vfprintf") == 0 ||
-                    strcmp(token, "__printf_chk") == 0) {
+        } else if (strcmp(token, "printf") == 0) {
             plt->model = PRINTF;
+        } else if (strcmp(token, "fprintf") == 0
+                    || strcmp(token, "vfprintf") == 0
+                    || strcmp(token, "__printf_chk") == 0
+                    ) {
+            plt->model = FPRINTF;
         }
         token = strtok(NULL, ",");
         if (!token || plt->model == 0) {
@@ -1349,10 +1352,24 @@ static inline void visitTB_debug(uintptr_t cur_loc, uintptr_t tb_mode)
         printf("Executing TB in wrong mode\n");
         tcg_abort();
     }
+#if 0
+    if (GET_QUERY_IDX(next_query) > 9200) {
+        if (*((uint8_t*)0x40007ff1a0) == 0x70) {
+            printf("[DEBUG] Value at 0x%lx is %x at PC %lx\n", 0x40007ff1a0, 0x70, cur_loc);
+        }
+    }
+#endif
 }
 
 static inline void visitTB(uintptr_t cur_loc)
 {
+#if 0
+    if (GET_QUERY_IDX(next_query) > 9200) {
+        if (*((uint8_t*)0x40007ff1a0) == 0x70) {
+            printf("Value at 0x%lx is %x at PC %lx\n", 0x40007ff1a0, 0x70, cur_loc);
+        }
+    }
+#endif
     // printf("visiting TB 0x%lx\n", cur_loc);
     current_tb_pc = cur_loc;
 
@@ -1583,16 +1600,19 @@ int count = 0;
 static void add_consistency_check(Expr* e, uintptr_t value, size_t size, OPKIND opkind)
 {
 #if 0
-#if 0
-    Expr** exprs = debug_expr_addr(0x40007ff200, 8, 0, NULL);
-    if (GET_QUERY_IDX(next_query - 1) >= 2600) {
-        for (size_t i = 0; i < 8; i++) {
-            printf("Expr at 0x%lx\n", 0x40007ff200 + i);
-            print_expr(exprs[i]);
+#if 1
+    if (GET_QUERY_IDX(next_query - 1) >= 9700) {
+        if (*((uint8_t*)0x40007ff1a0) == 0x70) {
+            printf("Value at 0x%lx is %x\n", 0x40007ff1a0, 0x70);
+            Expr** exprs = debug_expr_addr(0x40007ff1a0, 1, 0, NULL);
+            for (size_t i = 0; i < 1; i++) {
+                printf("Expr at 0x%lx\n", 0x40007ff1a0 + i);
+                print_expr(exprs[i]);
+            }
         }
     }
 #endif
-    if (GET_QUERY_IDX(next_query - 1) >= 29896) { // && *((uint8_t*)0x8b1ba0) == 0x20) {
+    if (GET_QUERY_IDX(next_query - 1) >= 9915) { // && *((uint8_t*)0x8b1ba0) == 0x20) {
         printf("PC: %lx\n", current_tb_pc);
         tcg_abort();
     }
@@ -1645,7 +1665,7 @@ static void add_consistency_check(Expr* e, uintptr_t value, size_t size, OPKIND 
     printf("CONSISTENCY_CHECK id=%lu size=%lu type=%s pc=%lx value=%lx\n",
         GET_QUERY_IDX(next_query - 1), size, opkind_to_str(opkind), current_tb_pc, value);
 #if 0
-    if (GET_QUERY_IDX(next_query - 1) >= 305) {
+    if (GET_QUERY_IDX(next_query - 1) >= 9915) {
         tcg_abort();
     }
 #endif
@@ -8047,10 +8067,15 @@ int is_symbolic_model(uintptr_t pc, CPUArchState *cpu) {
             clear_xmm_regs(env);
             mode = 1;
         } else if (model == PRINTF) {
-            // printf("[0x%lx] printf(%p, ...)\n", model_caller_addr, (char *)(uintptr_t)env->regs[R_EDI]);
+            // printf("[0x%lx] printf(%s, ...)\n", model_caller_addr, (char *)(uintptr_t)env->regs[R_EDI]);
             clear_call_args_temps();
             clear_xmm_regs(env);
-            mode = 2;
+            mode = 1;
+        }  else if (model == FPRINTF) {
+            // printf("[0x%lx] fprintf(%s, ...)\n", model_caller_addr, (char *)(uintptr_t)env->regs[R_ESI]);
+            clear_call_args_temps();
+            clear_xmm_regs(env);
+            mode = 1;
         } else if (model == MEMCHR) {
             // printf("[0x%lx] memchr(%p, %c, %lu)\n", model_caller_addr, (char *)(uintptr_t)env->regs[R_EDI], (int)(uintptr_t)env->regs[R_ESI], (uintptr_t)env->regs[R_EDX]);
             mode = model_memchr(env, model_caller_addr);
