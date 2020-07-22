@@ -20,7 +20,7 @@
 #define DEBUG_EXPR_CONSISTENCY  0
 #define LINEARIZATION           0
 #define VISIT_LINEARIZATION     1
-#define VISIT_LINEARIZATION_TR  (4096 * 2)
+#define VISIT_LINEARIZATION_TR  (1024 * 6)
 
 #define printf(...) fprintf(stderr, __VA_ARGS__)
 
@@ -220,6 +220,7 @@ typedef enum {
     MEMCPY,
     STRCPY,
     STRNCPY,
+    FPUTC,
 } LIB_MODEL;
 
 typedef struct {
@@ -291,6 +292,8 @@ inline static void parse_plt_info(char* path)
                     || strcmp(token, "__printf_chk") == 0
                     ) {
             plt->model = FPRINTF;
+        } else if (strcmp(token, "fputc") == 0) {
+            plt->model = FPUTC;
         }
         token = strtok(NULL, ",");
         if (!token || plt->model == 0) {
@@ -8116,7 +8119,12 @@ int is_symbolic_model(uintptr_t pc, CPUArchState *cpu) {
             qemu_memmove((uintptr_t)env->regs[R_ESI], (uintptr_t)env->regs[R_EDI], len);
             clear_call_args_temps();
             clear_xmm_regs(env);
-        }
+        }  else if (model == FPUTC) {
+            // printf("[0x%lx] fputc(%c, ...)\n", model_caller_addr, (char)(uintptr_t)env->regs[R_EDI]);
+            mode = 2;
+            clear_call_args_temps();
+            clear_xmm_regs(env);
+        } 
         // printf("Return address is %lx [%lx]\n", model_caller_addr, rsp);
         if (mode == 2) {
             return 1; // switch code cache
