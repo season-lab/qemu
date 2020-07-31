@@ -5466,6 +5466,8 @@ static inline void concretize_mem(uintptr_t addr, uintptr_t size)
         return;
     }
 
+    // printf("Memory concretization of %lu bytes at %lx\n", size, addr);
+
     Expr*     bytes_expr  = NULL;
     uintptr_t bytes_value = 0;
     size_t    bytes_count = 0;
@@ -5484,7 +5486,7 @@ static inline void concretize_mem(uintptr_t addr, uintptr_t size)
 
                 bytes_expr = e_byte;
 
-                bytes_value |= *(((uint8_t*)addr) + i) << (bytes_count * 8);
+                bytes_value |= ((uint64_t)*(((uint8_t*)addr) + i)) << (bytes_count * 8);
                 bytes_count += 1;
 
                 if (bytes_count == sizeof(uintptr_t)) {
@@ -6928,7 +6930,8 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                                strcmp(helper_name, "pcmpgtl_xmm") == 0 ||
                                strcmp(helper_name, "pcmpgtq_xmm") == 0 ||
                                strcmp(helper_name, "pminub_xmm") == 0 ||
-                               strcmp(helper_name, "pmaxub_xmm") == 0) {
+                               strcmp(helper_name, "pmaxub_xmm") == 0 ||
+                               strcmp(helper_name, "pmullw_xmm") == 0) {
 
                         OPKIND    opkind;
                         uintptr_t slice;
@@ -6975,9 +6978,14 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                                 if (helper_name[2] == 'i') {
                                     opkind = MIN;
                                     slice  = suffix_to_slice(helper_name[5], 0);
-                                } else {
+                                } else if (helper_name[2] == 'a') {
                                     opkind = MAX;
                                     slice  = suffix_to_slice(helper_name[5], 0);
+                                } else if (helper_name[2] == 'u') {
+                                    opkind = MUL;
+                                    slice  = suffix_to_slice(helper_name[5], 0);
+                                } else {
+                                    tcg_abort();
                                 }
                                 break;
                             }
@@ -7377,7 +7385,9 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                                strcmp(helper_name, "cvtsi2sd") == 0 ||
                                strcmp(helper_name, "cvtsi2ss") == 0 ||
                                strcmp(helper_name, "cvtsi2ssq") == 0 ||
-                               strcmp(helper_name, "cvttss2sq") == 0) {
+                               strcmp(helper_name, "cvttss2sq") == 0 ||
+                               strcmp(helper_name, "cvtdq2pd") == 0
+                               ) {
 
                         // we do not yet support floating point
 
@@ -7399,6 +7409,7 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
 
                     } else if (strcmp(helper_name, "divsd") == 0 ||
                                strcmp(helper_name, "divss") == 0 ||
+                               strcmp(helper_name, "divpd") == 0 ||
                                strcmp(helper_name, "addsd") == 0 ||
                                strcmp(helper_name, "addss") == 0 ||
                                strcmp(helper_name, "subss") == 0 ||
@@ -7433,11 +7444,15 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                         MARK_TEMP_AS_ALLOCATED(t_dst);
                         add_void_call_2(concretize_mem, t_dst, t_size, op, NULL,
                                         tcg_ctx);
+                        add_void_call_2(clear_mem, t_dst, t_size, op,
+                                                NULL, tcg_ctx);
                         MARK_TEMP_AS_NOT_ALLOCATED(t_dst);
 
                         MARK_TEMP_AS_ALLOCATED(t_src);
                         add_void_call_2(concretize_mem, t_src, t_size, op, NULL,
                                         tcg_ctx);
+                        add_void_call_2(clear_mem, t_src, t_size, op,
+                                                NULL, tcg_ctx);
                         MARK_TEMP_AS_NOT_ALLOCATED(t_src);
 
                         tcg_temp_free_internal(t_size);

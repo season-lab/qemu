@@ -1026,6 +1026,7 @@ static void qemu_xmm_pshuf(uint64_t* dst_addr, uint64_t* src_addr,
     uint8_t count = 0;
     for (size_t i = 0; i < XMM_BYTES; i += size) {
         // ToDo: check endianness
+        // FIXME: we assumd dst != src
         uint8_t src_pos = ((order >> (2 * count++)) & 3) * size;
         for (size_t k = 0; k < size; k++) {
             dst_expr_addr[i + k] = src_expr_addr[src_pos + k];
