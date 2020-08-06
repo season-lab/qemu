@@ -3454,12 +3454,10 @@ static inline void qemu_load(TCGTemp* t_addr, TCGTemp* t_val, uintptr_t offset,
     CHECK_TEMPS_COUNT(tcg_ctx);
 }
 
-static inline void qemu_multi_page_store(l3_page_t* l3_page,
-                                         uintptr_t l3_page_idx, uintptr_t size,
-                                         Expr* v)
+static inline void qemu_multi_page_store(l2_page_t* l2_page, uintptr_t l2_page_idx,
+                                        l3_page_t* l3_page, uintptr_t l3_page_idx,
+                                        uintptr_t size, Expr* v, size_t expr_index)
 {
-    assert(0);
-
     uintptr_t pa_size  = 1 << L3_PAGE_BITS;
     ssize_t   new_size = (ssize_t)size;
 
@@ -3473,14 +3471,21 @@ static inline void qemu_multi_page_store(l3_page_t* l3_page,
             Expr* e                           = new_expr();
             e->opkind                         = EXTRACT8;
             e->op1                            = v;
-            size_t idx                        = i;
+            size_t idx                        = expr_index;
             e->op2                            = (Expr*)idx;
             l3_page->entries[l3_page_idx + i] = e;
             new_size--;
+            expr_index += 1;
         }
     }
 
-    assert(new_size > 0);
+    if(new_size > 0) {
+        l2_page_idx += 1;
+        assert(l2_page_idx < (1 << L2_PAGE_BITS)); // ToDo: handli this case
+        l3_page_t* l3_page = l2_page->entries[l2_page_idx];
+        if (l3_page == NULL) return;
+        qemu_multi_page_store(l2_page, l2_page_idx, l3_page, 0, new_size, v, expr_index);
+    }
 }
 
 #if LINEARIZATION
@@ -3566,7 +3571,7 @@ static inline void qemu_store_helper(uintptr_t orig_addr,
 
     uintptr_t l3_page_idx = addr & 0xFFFF;
     if (l3_page_idx + size > 1 << L3_PAGE_BITS) {
-        qemu_multi_page_store(l3_page, l3_page_idx, size, s_temps[val_idx]);
+        qemu_multi_page_store(l2_page, l2_page_idx, l3_page, l3_page_idx, size, s_temps[val_idx], 0);
         return;
     }
 
