@@ -17,6 +17,8 @@
 //#define DISABLE_SOLVER
 #define SYMBOLIC_COSTANT_ACCESS 1
 #define SYMBOLIC_INPUT_ACCESS   1
+#define JUMP_TABLE_FINDER       0
+#define SYMBOLIC_PC_FINDER      0
 #define DEBUG_EXPR_CONSISTENCY  0
 #define LINEARIZATION           0
 #define VISIT_LINEARIZATION     1
@@ -2317,7 +2319,10 @@ static inline void qemu_jump_table(TCGTemp* t_addr, TCGOp* op_in,
     TCGTemp* t_query = new_non_conflicting_temp(TCG_TYPE_I64);
     tcg_load_n(t_query_addr, t_query, 0, 0, 0, sizeof(uintptr_t), op_in, NULL,
                tcg_ctx);
-
+#if 0
+    add_void_call_1(print_expr, t_out, op_in, &op, tcg_ctx);
+    mark_insn_as_instrumentation(op);
+#endif
     tcg_store_n(t_query, t_out, offsetof(Query, query), 0, 1, sizeof(uintptr_t),
                 op_in, NULL, tcg_ctx);
 
@@ -2328,9 +2333,6 @@ static inline void qemu_jump_table(TCGTemp* t_addr, TCGOp* op_in,
 
     tcg_store_n(t_query_addr, t_query, 0, 1, 1, sizeof(uintptr_t), op_in, NULL,
                 tcg_ctx);
-
-    // add_void_call_1(print_expr, t_out, op_in, &op, tcg_ctx);
-    // mark_insn_as_instrumentation(op);
 
     tcg_set_label(label_a_concrete, op_in, NULL, tcg_ctx);
 
@@ -6403,23 +6405,24 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                 if (instrument) {
                     uintptr_t offset = (uintptr_t)op->args[2];
                     if (is_eip_offset(offset)) {
-
                         TCGTemp* t_value = arg_temp(op->args[0]);
+#if SYMBOLIC_PC_FINDER
+#if 1
                         qemu_pc_write(t_value, op, tcg_ctx);
-#if 0
+#else
                         MARK_TEMP_AS_ALLOCATED(t_value);
                         add_void_call_1(qemu_pc_write_helper, t_value, op, NULL,
                                         tcg_ctx);
                         MARK_TEMP_AS_NOT_ALLOCATED(t_value);
 #endif
-
+#endif
                         if (jump_table_finder_prev_instr.scale_is_addr_size &&
                             jump_table_finder_prev_instr.displacement &&
                             jump_table_finder_prev_instr.addr &&
                             jump_table_finder_prev_instr.index &&
                             jump_table_finder_prev_instr.has_done_load &&
                             jump_table_finder_prev_instr.mov == t_value) {
-#if 0
+#if JUMP_TABLE_FINDER
                             // printf("\nJump Table at %lx?\n", pc);
                             qemu_jump_table(jump_table_finder_prev_instr.addr,
                                             op, tcg_ctx);
