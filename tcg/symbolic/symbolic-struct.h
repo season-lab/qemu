@@ -174,10 +174,6 @@ typedef enum OPKIND {
     MOV,
     //
     MODEL,
-    MODEL_STRCMP,
-    MODEL_STRLEN,
-    MODEL_MEMCHR,
-    MODEL_MEMCMP
 } OPKIND;
 
 typedef enum EXTENDKIND {
@@ -207,12 +203,23 @@ typedef struct {
     uint8_t arg3;
 } QueryArgs8;
 
+typedef enum {
+    MODEL_STRCMP,
+    MODEL_STRLEN,
+    MODEL_MEMCHR,
+    MODEL_MEMCMP,
+    MODEL_MALLOC,
+    MODEL_CALLOC,
+    MODEL_REALLOC,
+} MODEL_T;
+
 typedef struct Query {
     Expr*     query;
     uintptr_t address;
     union {
         QueryArgs8 args8;
         uintptr_t  args64;
+        MODEL_T    model;
         struct {
             uint16_t index;
             uint16_t count;
@@ -442,6 +449,16 @@ static inline const char* opkind_to_str(uint8_t opkind)
 
         case MODEL:
             return "MODEL";
+
+        default:
+            printf("\nstr(opkind=%u) is unknown\n", opkind);
+            ABORT();
+    }
+}
+
+static inline const char* model_to_str(uint8_t opkind)
+{
+    switch (opkind) {
         case MODEL_STRCMP:
             return "MODEL_STRCMP";
         case MODEL_STRLEN:
@@ -450,9 +467,15 @@ static inline const char* opkind_to_str(uint8_t opkind)
             return "MODEL_MEMCHR";
         case MODEL_MEMCMP:
             return "MODEL_MEMCMP";
+        case MODEL_MALLOC:
+            return "MODEL_MALLOC";
+        case MODEL_CALLOC:
+            return "MODEL_CALLOC";
+        case MODEL_REALLOC:
+            return "MODEL_REALLOC";
 
         default:
-            printf("\nstr(opkind=%u) is unknown\n", opkind);
+            printf("\nstr(model=%u) is unknown\n", opkind);
             ABORT();
     }
 }

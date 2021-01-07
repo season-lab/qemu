@@ -111,13 +111,14 @@ static inline int model_strcmp(CPUX86State* env, uintptr_t pc, uintptr_t n)
     v          = PACK_3(v, n);
 
     Expr* e = new_expr();
-    e->opkind = MODEL_STRCMP;
+    e->opkind = MODEL;
     e->op1 = s1_expr;
     e->op2 = s2_expr;
     SET_EXPR_CONST_OP(e->op3, e->op3_is_const, v);
 
     next_query[0].query   = e;
     next_query[0].address = pc;
+    next_query[0].model   = MODEL_STRCMP;
     next_query++;
 
     return mode;
@@ -161,12 +162,13 @@ static inline int model_strlen(CPUX86State* env, uintptr_t pc, uintptr_t n)
     v          = PACK_1(v, n);
 
     Expr* e = new_expr();
-    e->opkind = MODEL_STRLEN;
+    e->opkind = MODEL;
     e->op1 = s1_expr;
     SET_EXPR_CONST_OP(e->op2, e->op2_is_const, v);
 
     next_query[0].query   = e;
     next_query[0].address = pc;
+    next_query[0].model   = MODEL_STRLEN;
     next_query++;
 
     return mode;
@@ -215,12 +217,13 @@ static inline int model_memchr(CPUX86State* env, uintptr_t pc)
     v          = PACK_2(v, c);
 
     Expr* e = new_expr();
-    e->opkind = MODEL_MEMCHR;
+    e->opkind = MODEL;
     e->op1 = expr;
     SET_EXPR_CONST_OP(e->op2, e->op2_is_const, v);
 
     next_query[0].query   = e;
     next_query[0].address = pc;
+    next_query[0].model   = MODEL_MEMCHR;
     next_query++;
 
     return mode;
@@ -276,14 +279,48 @@ static inline int model_memcmp(CPUX86State* env, uintptr_t pc)
     v          = PACK_1(v, n);
 
     Expr* e = new_expr();
-    e->opkind = MODEL_MEMCMP;
+    e->opkind = MODEL;
     e->op1 = s1_expr;
     e->op2 = s2_expr;
     SET_EXPR_CONST_OP(e->op3, e->op3_is_const, v);
 
     next_query[0].query   = e;
     next_query[0].address = pc;
+    next_query[0].model   = MODEL_MEMCMP;
     next_query++;
 
     return mode;
+}
+
+static inline void model_alloc(CPUX86State* env, uintptr_t pc, uintptr_t reg_with_size)
+{
+    Expr* size_expr = NULL;
+    switch (reg_with_size)
+    {
+        case R_EDI:
+            size_expr = s_temps[temp_idx(tcg_find_temp_arch_reg(tcg_ctx, "rdi"))];
+            break;
+        case R_ESI:
+            size_expr = s_temps[temp_idx(tcg_find_temp_arch_reg(tcg_ctx, "rsi"))];
+            break;
+        
+        default:
+            tcg_abort();
+    }
+    
+    if (size_expr == NULL) {
+        return;
+    }
+
+    size_t size = (size_t)(uintptr_t)env->regs[reg_with_size];
+
+    Expr* e = new_expr();
+    e->opkind = MODEL;
+    e->op1 = size_expr;
+    SET_EXPR_CONST_OP(e->op2, e->op2_is_const, size);
+
+    next_query[0].query   = e;
+    next_query[0].address = pc;
+    next_query[0].model   = MODEL_MALLOC;
+    next_query++;
 }

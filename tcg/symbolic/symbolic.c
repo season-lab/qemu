@@ -4778,13 +4778,13 @@ void qemu_syscall_helper(uintptr_t syscall_no, uintptr_t syscall_arg0,
         case SYS_OPEN:
         case SYS_OPENAT:
             fp = ((int)ret_val);
-            if (s_config.symbolic_inject_input_mode == FROM_FILE && fp >= 0) {
+            if (fp >= 0) {
                 const char* fname = nr == SYS_OPEN ? (const char*)syscall_arg0
                                                    : (const char*)syscall_arg1;
                 last_open_file = basename(fname);
                 last_open_fp = fp;
                 // printf("Opening file [%d]: %s\n", fp, basename(fname));
-                if (strcmp(fname, s_config.inputfile) == 0) {
+                if (s_config.symbolic_inject_input_mode == FROM_FILE && strcmp(fname, s_config.inputfile) == 0) {
 
                     if (input_fp[fp]) {
                         if (input_fp[fp]->shared_counter == 1) {
@@ -8074,11 +8074,13 @@ int is_symbolic_model(uintptr_t pc, CPUArchState *cpu) {
             clear_xmm_regs(env);
         } else if (model == MALLOC) {
             // printf("[0x%lx] malloc(%lu)\n", model_caller_addr, (uintptr_t)env->regs[R_EDI]);
+            model_alloc(env, model_caller_addr, R_EDI);
             clear_call_args_temps();
             clear_xmm_regs(env);
             mode = 1;
         } else if (model == REALLOC) {
             // printf("[0x%lx] realloc(0x%lx, %lu)\n", model_caller_addr, (uintptr_t)env->regs[R_EDI], (uintptr_t)env->regs[R_ESI]);
+            model_alloc(env, model_caller_addr, R_ESI);
             clear_call_args_temps();
             clear_xmm_regs(env);
             mode = 1;
@@ -8089,6 +8091,7 @@ int is_symbolic_model(uintptr_t pc, CPUArchState *cpu) {
             mode = 1;
         }  else if (model == CALLOC) {
             // printf("[0x%lx] calloc(%lu)\n", model_caller_addr, (uintptr_t)env->regs[R_EDI]);
+            model_alloc(env, model_caller_addr, R_EDI);
             clear_call_args_temps();
             clear_xmm_regs(env);
             mode = 1;
