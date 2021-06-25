@@ -434,7 +434,7 @@ static inline void    load_configuration(void)
         else if (strcmp(var, "FROM_FILE") == 0) {
             s_config.symbolic_inject_input_mode = FROM_FILE;
             s_config.inputfile = getenv("SYMBOLIC_TESTCASE_NAME");
-            assert(s_config.inputfile && "Neet to specify testcase path.");
+            assert(s_config.inputfile && "Need to specify testcase path.");
         }
     }
     assert(s_config.symbolic_inject_input_mode != NO_INPUT &&
