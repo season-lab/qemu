@@ -5,7 +5,7 @@
 static SyscallDesc kSyscallDesc[MAX_SYSCALL_NR];
 static int symbolic_syscall_init = 0;
 
-#include <ustat.h>
+// #include <ustat.h> // deprecated?
 #include <linux/unistd.h>
 #include <asm/ldt.h>
 #include <linux/aio_abi.h>
@@ -23,7 +23,7 @@ static void init_syscall_handler(void)
   kSyscallDesc[TARGET_NR_fstat] = (SyscallDesc){2, 0, 1, {0, sizeof(struct stat), 0, 0, 0, 0}, NULL, NULL};
   kSyscallDesc[TARGET_NR_pipe] = (SyscallDesc){1, 0, 1, {sizeof(int)*2, 0, 0, 0, 0, 0}, NULL, NULL};
   kSyscallDesc[TARGET_NR_times] = (SyscallDesc){1, 0, 1, {sizeof(struct tms), 0, 0, 0, 0, 0}, NULL, NULL};
-  kSyscallDesc[TARGET_NR_ustat] = (SyscallDesc){2, 0, 1, {0, sizeof(struct ustat), 0, 0, 0, 0}, NULL, NULL};
+  // kSyscallDesc[TARGET_NR_ustat] = (SyscallDesc){2, 0, 1, {0, sizeof(struct ustat), 0, 0, 0, 0}, NULL, NULL};
   kSyscallDesc[TARGET_NR_getrlimit] = (SyscallDesc){2, 0, 1, {0, sizeof(struct rlimit), 0, 0, 0, 0}, NULL, NULL};
   kSyscallDesc[TARGET_NR_getrusage] = (SyscallDesc){2, 0, 1, {0, sizeof(struct rusage), 0, 0, 0, 0}, NULL, NULL};
   kSyscallDesc[TARGET_NR_gettimeofday] = (SyscallDesc){2, 0, 1, {sizeof(struct timeval), sizeof(struct timezone), 0, 0, 0, 0}, NULL, NULL};
