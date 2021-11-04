@@ -964,7 +964,7 @@ static void qemu_xmm_pmovmskb(uintptr_t dst_idx, uint64_t* src_addr,
 static void qemu_xmm_mov_mm_T0(uint64_t* dst_addr, uintptr_t src_idx, size_t size)
 {
     Expr** dst_expr_addr =
-        get_expr_addr((uintptr_t)dst_addr, XMM_BYTES, 0, NULL);
+        get_expr_addr((uintptr_t)dst_addr, XMM_BYTES, 1, NULL);
     if (s_temps[src_idx] == NULL) {
         if (dst_expr_addr == NULL) {
             return;
