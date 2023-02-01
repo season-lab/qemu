@@ -13,13 +13,15 @@
 #include "config.h"
 #include "symbolic-instrumentation.h"
 
+#include "../../config.h"
+
 //#define SYMBOLIC_DEBUG
 //#define DISABLE_SOLVER
 #define SYMBOLIC_COSTANT_ACCESS 0
 #define SYMBOLIC_INPUT_ACCESS   0
 #define JUMP_TABLE_FINDER       0
 #define SYMBOLIC_PC_FINDER      0
-#define DEBUG_EXPR_CONSISTENCY  0
+#define DEBUG_EXPR_CONSISTENCY  DEBUG_CONSISTENCY_CHECK
 #define LINEARIZATION           0
 #define VISIT_LINEARIZATION     1
 #define VISIT_LINEARIZATION_TR  (1024 * 6)
