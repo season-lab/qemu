@@ -510,9 +510,9 @@ static inline void print_expr_internal(Expr* expr, uint8_t reset)
         for (size_t i = 0; i < MAX_PRINT_CHECK; i++)
             printed[i] = 0;
 
-    printf("expr:");
+    fprintf(stderr, "expr:");
     if (expr == NULL) {
-        printf(" NULL\n");
+        fprintf(stderr, " NULL\n");
         return;
     }
 
@@ -520,45 +520,45 @@ static inline void print_expr_internal(Expr* expr, uint8_t reset)
     assert(expr->op2_is_const == 0 || expr->op2_is_const == 1);
     assert(expr->op3_is_const == 0 || expr->op3_is_const == 1);
 
-    // printf(" addr=%p", expr);
-    printf(" id=%lu", GET_EXPR_IDX(expr));
+    // fprintf(stderr, " addr=%p", expr);
+    fprintf(stderr, " id=%lu", GET_EXPR_IDX(expr));
     if (expr) {
-        printf(" is_symbolic_input=%u", expr->opkind == IS_SYMBOLIC);
-        printf(" op1_is_const=%u", expr->op1_is_const);
-        printf(" op2_is_const=%u", expr->op2_is_const);
+        fprintf(stderr, " is_symbolic_input=%u", expr->opkind == IS_SYMBOLIC);
+        fprintf(stderr, " op1_is_const=%u", expr->op1_is_const);
+        fprintf(stderr, " op2_is_const=%u", expr->op2_is_const);
         if (expr->opkind == IS_SYMBOLIC)
-            printf(" INPUT_%lu\n", (uintptr_t)expr->op1);
+            fprintf(stderr, " INPUT_%lu\n", (uintptr_t)expr->op1);
         else if (expr->opkind == IS_CONST)
-            printf(" 0x%lx\n", (uintptr_t)expr->op1);
+            fprintf(stderr, " 0x%lx\n", (uintptr_t)expr->op1);
         else {
 
             if (expr->op1_is_const || expr->op1 == NULL)
-                printf(" 0x%lx", (uintptr_t)expr->op1);
+                fprintf(stderr, " 0x%lx", (uintptr_t)expr->op1);
             else {
-                printf(" E_%lu", GET_EXPR_IDX(expr->op1));
+                fprintf(stderr, " E_%lu", GET_EXPR_IDX(expr->op1));
                 if (GET_EXPR_IDX(expr->op1) >= MAX_PRINT_CHECK) {
-                    printf("Invalid value: %lx\n", (uintptr_t)(expr->op1));
+                    fprintf(stderr, "Invalid value: %lx\n", (uintptr_t)(expr->op1));
                 }
             }
 
-            printf(" %s", opkind_to_str(expr->opkind));
+            fprintf(stderr, " %s", opkind_to_str(expr->opkind));
 
             if (expr->opkind != NEG && expr->opkind != PMOVMSKB && expr->opkind != BSWAP) {
                 if (expr->op2_is_const || expr->opkind == EXTRACT8 ||
                     expr->opkind == ZEXT || expr->opkind == SEXT ||
                     expr->op2 == NULL)
-                    printf(" 0x%lx", (uintptr_t)expr->op2);
+                    fprintf(stderr, " 0x%lx", (uintptr_t)expr->op2);
                 else
-                    printf(" E_%lu", GET_EXPR_IDX(expr->op2));
+                    fprintf(stderr, " E_%lu", GET_EXPR_IDX(expr->op2));
             }
 
             if (expr->opkind == EFLAGS_C_ADCQ || expr->op3_is_const) {
                 if (expr->op3_is_const)
-                    printf(" 0x%lx", (uintptr_t)expr->op3);
+                    fprintf(stderr, " 0x%lx", (uintptr_t)expr->op3);
                 else
-                    printf(" E_%lu", GET_EXPR_IDX(expr->op3));
+                    fprintf(stderr, " E_%lu", GET_EXPR_IDX(expr->op3));
             }
-            printf("\n");
+            fprintf(stderr, "\n");
 
             // FixMe: this makes a mess
 
@@ -568,12 +568,12 @@ static inline void print_expr_internal(Expr* expr, uint8_t reset)
             if (!expr->op1_is_const && expr->op1 != NULL) {
 
                 if (GET_EXPR_IDX(expr->op1) >= MAX_PRINT_CHECK) {
-                    printf("Invalid value: %lx\n", (uintptr_t)(expr->op1));
+                    fprintf(stderr, "Invalid value: %lx\n", (uintptr_t)(expr->op1));
                 }
 
                 assert(GET_EXPR_IDX(expr->op1) < MAX_PRINT_CHECK);
                 if (!printed[GET_EXPR_IDX(expr->op1)]) {
-                    printf("E_%lu:: ", GET_EXPR_IDX(expr->op1));
+                    fprintf(stderr, "E_%lu:: ", GET_EXPR_IDX(expr->op1));
                     print_expr_internal(expr->op1, 0);
                     printed[GET_EXPR_IDX(expr->op1)] = 1;
                 }
@@ -587,7 +587,7 @@ static inline void print_expr_internal(Expr* expr, uint8_t reset)
                 expr->op2 != NULL) {
                 assert(GET_EXPR_IDX(expr->op2) < MAX_PRINT_CHECK);
                 if (!printed[GET_EXPR_IDX(expr->op2)]) {
-                    printf("E_%lu:: ", GET_EXPR_IDX(expr->op2));
+                    fprintf(stderr, "E_%lu:: ", GET_EXPR_IDX(expr->op2));
                     print_expr_internal(expr->op2, 0);
                     printed[GET_EXPR_IDX(expr->op2)] = 1;
                 }
@@ -598,20 +598,19 @@ static inline void print_expr_internal(Expr* expr, uint8_t reset)
             if (expr->opkind == EFLAGS_C_ADCQ && !expr->op3_is_const) {
                 assert(GET_EXPR_IDX(expr->op3) < MAX_PRINT_CHECK);
                 if (!printed[GET_EXPR_IDX(expr->op3)]) {
-                    printf("E_%lu:: ", GET_EXPR_IDX(expr->op3));
+                    fprintf(stderr, "E_%lu:: ", GET_EXPR_IDX(expr->op3));
                     print_expr_internal(expr->op3, 0);
                     printed[GET_EXPR_IDX(expr->op3)] = 1;
                 }
             }
         }
     } else {
-        printf("\n");
+        fprintf(stderr, "\n");
     }
 }
 
 static inline void print_expr(Expr* expr)
 {
-    printf("\n");
     print_expr_internal(expr, 1);
 }
 

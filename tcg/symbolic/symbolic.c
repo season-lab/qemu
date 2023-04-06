@@ -289,7 +289,8 @@ inline static void parse_plt_info(char* path)
         } else if (strcmp(token, "memset") == 0 ||
                     strcmp(token, "__memset_chk") == 0) {
             plt->model = MEMSET;
-        } else if (strcmp(token, "printf") == 0) {
+        } else if (strcmp(token, "printf") == 0 
+                    || strcmp(token, "_IO_printf") == 0) {
             plt->model = PRINTF;
         } else if (strcmp(token, "fprintf") == 0
                     || strcmp(token, "vfprintf") == 0
@@ -1625,23 +1626,64 @@ static void add_consistency_check(Expr* e, uintptr_t value, size_t size, OPKIND 
     }
 #endif
 
-    if (s_config.debug_fuzz_expr) {
+    printf("VALUE at 0x555557d99806: %x\n", *((uint8_t*)0x555557d99806));
+
+    static int fuzz_expr = -1;
+    static uint64_t fuzz_count = 0;
+    static uint64_t fuzz_value = 0;
+    if (fuzz_expr == -1) {
+
+        char* s = getenv("DEBUG_FUZZ_EXPR");
+        if (s == NULL)
+            fuzz_expr = 0;
+        else if (strcmp(s, "DUMP") == 0)
+            fuzz_expr = 1;
+        else if (strcmp(s, "CHECK") == 0)
+            fuzz_expr = 2;
+        else
+            abort();
+
+        if (fuzz_expr == 2) {
+            if (getenv("DEBUG_FUZZ_EXPR_COUNT"))
+                fuzz_count = atoi(getenv("DEBUG_FUZZ_EXPR_COUNT"));
+            else
+                abort();
+
+            if (getenv("DEBUG_FUZZ_EXPR_VALUE"))
+                fuzz_value = strtol(getenv("DEBUG_FUZZ_EXPR_VALUE"), NULL, 16);
+            else
+                abort();
+        }
+    }
+
+    static int debug_abort = -1;
+    if (debug_abort == -1) {
+        if (getenv("DEBUG_ABORT_ON_INCONSISTENCY")) 
+            debug_abort = 1;
+        else
+            debug_abort = 0;
+    }
+
+    if (fuzz_expr == 2) {
         // printf("CONSISTENCY_CHECK id=%lu size=%lu type=%s pc=%lx value=%lu\n",
         //            GET_QUERY_IDX(next_query), size, opkind_to_str(opkind), current_tb_pc, value);
-        if (s_config.debug_fuzz_expr_idx == GET_QUERY_IDX(next_query)) {
+        if (fuzz_count == GET_QUERY_IDX(next_query)) {
             printf("CONSISTENCY_CHECK id=%lu size=%lu type=%s pc=%lx value=%lx\n",
                     GET_QUERY_IDX(next_query), size, opkind_to_str(opkind), current_tb_pc, value);
-            uint64_t expected = s_config.debug_fuzz_expr_value;
+            uint64_t expected = fuzz_value;
             if (value != expected) {
-                printf("Mismatch fuzz debug expression: expected=%lu current=%lu\n", expected, value);
+                printf("Expression has wrong value: expected=%lu current=%lu\n", expected, value);
                 print_expr(e);
-                tcg_abort();
+                if (debug_abort) tcg_abort();
+                else exit(0);
             } else {
+                printf("Expression has expected value!\n");
                 exit(0);
             }
-        } else if (s_config.debug_fuzz_expr_idx < GET_QUERY_IDX(next_query)) {
-            printf("Consistency check has been bypassed.\n");
-            tcg_abort();
+        } else if (fuzz_count < GET_QUERY_IDX(next_query)) {
+            printf("Expression check has been bypassed\n");
+            if (debug_abort) tcg_abort();
+            else exit(0);
         }
         next_query++;
         return;
@@ -1657,6 +1699,17 @@ static void add_consistency_check(Expr* e, uintptr_t value, size_t size, OPKIND 
         return;
     }
 #endif
+
+    static int check_expr_consistency = -1;
+    if (check_expr_consistency == -1) {
+        if (getenv("DEBUG_EXPR_CONSISTENCY"))
+            check_expr_consistency = 1;
+        else
+            check_expr_consistency = 0;
+    }
+    if (check_expr_consistency == 0 && fuzz_expr != 1)
+        return;
+
     Expr*     consistency_expr = new_expr();
     consistency_expr->opkind   = CONSISTENCY_CHECK;
     consistency_expr->op1      = e;
@@ -1689,7 +1742,7 @@ static void add_consistency_check_addr(Expr* e, uintptr_t addr, size_t size, OPK
     }
     //
     if (!s_config.debug_fuzz_expr) {
-        printf("CONSISTENCY CHECK %s for addr=%lx size=%lu\n", opkind_to_str(opkind), addr, size);
+        // printf("CONSISTENCY CHECK %s for addr=%lx size=%lu\n", opkind_to_str(opkind), addr, size);
     }
     add_consistency_check(e, concrete_value, size, opkind);
 }
@@ -2820,7 +2873,7 @@ static void add_consistency_check_load(Expr* e, uintptr_t addr, size_t size)
     }
     //
     if (!s_config.debug_fuzz_expr) {
-        printf("CONSISTENCY CHECK LOAD for addr=%lx size=%lu value=%lx\n", addr, size, concrete_value);
+        // printf("CONSISTENCY CHECK LOAD for addr=%lx size=%lu value=%lx\n", addr, size, concrete_value);
     }
     add_consistency_check(e, concrete_value, size, SYMBOLIC_LOAD);
 #if 0
@@ -3617,7 +3670,7 @@ static inline void qemu_store_helper(uintptr_t orig_addr,
 
 #if DEBUG_EXPR_CONSISTENCY
         if (!s_config.debug_fuzz_expr) {
-            printf("CONSISTENCY CHECK STORE for addr=%lx size=%lu\n", addr, size);
+            // printf("CONSISTENCY CHECK STORE for addr=%lx size=%lu\n", addr, size);
         }
         add_consistency_check(s_temps[val_idx], concrete_val, size, SYMBOLIC_STORE);
 #endif
@@ -7162,8 +7215,8 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                                strcmp(helper_name, "punpckhdq_xmm") == 0 ||
                                strcmp(helper_name, "punpckhqdq_xmm") == 0) {
 
-                        TCGTemp* t_dst_addr = arg_temp(op->args[0]);
-                        TCGTemp* t_src_addr = arg_temp(op->args[1]);
+                        TCGTemp* t_dst_addr = arg_temp(op->args[1]);
+                        TCGTemp* t_src_addr = arg_temp(op->args[2]);
 
                         uint8_t slice;
                         switch (helper_name[7]) {
@@ -7203,8 +7256,8 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
 
                         MARK_TEMP_AS_ALLOCATED(t_dst_addr);
                         MARK_TEMP_AS_ALLOCATED(t_src_addr);
-                        add_void_call_3(qemu_xmm_punpck, t_dst_addr, t_src_addr,
-                                        t_slice, op, NULL, tcg_ctx);
+                        add_void_call_4(qemu_xmm_punpck, t_dst_addr, t_src_addr,
+                                        t_slice, t_lowbytes, op, NULL, tcg_ctx);
                         MARK_TEMP_AS_NOT_ALLOCATED(t_dst_addr);
                         MARK_TEMP_AS_NOT_ALLOCATED(t_src_addr);
                         tcg_temp_free_internal(t_slice);
@@ -7232,8 +7285,8 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                                strcmp(helper_name, "punpckhdq_xmm") == 0 ||
                                strcmp(helper_name, "punpckhqdq_xmm") == 0) {
 
-                        TCGTemp* t_dst_addr = arg_temp(op->args[0]);
-                        TCGTemp* t_src_addr = arg_temp(op->args[1]);
+                        TCGTemp* t_dst_addr = arg_temp(op->args[1]);
+                        TCGTemp* t_src_addr = arg_temp(op->args[2]);
 
                         uint8_t slice;
                         switch (helper_name[7]) {
@@ -7282,8 +7335,8 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
 
                     } else if (strcmp(helper_name, "packuswb_xmm") == 0) {
 
-                        TCGTemp* t_dst_addr = arg_temp(op->args[0]);
-                        TCGTemp* t_src_addr = arg_temp(op->args[1]);
+                        TCGTemp* t_dst_addr = arg_temp(op->args[1]);
+                        TCGTemp* t_src_addr = arg_temp(op->args[2]);
 
                         uint8_t sign;
                         if (helper_name[4] == 'u') {
@@ -7312,7 +7365,7 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                         uint8_t packed_size;
                         switch (helper_name[7]) {
                             case 'b':
-                                packed_size = 2;
+                                packed_size = 1;
                                 break;
                             case 'w':
                                 packed_size = 2;
