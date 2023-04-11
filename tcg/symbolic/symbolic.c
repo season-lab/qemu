@@ -7214,10 +7214,13 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                                strcmp(helper_name, "punpckhwd_xmm") == 0 ||
                                strcmp(helper_name, "punpckhdq_xmm") == 0 ||
                                strcmp(helper_name, "punpckhqdq_xmm") == 0) {
-
+#if FUZZOLIC_FIX_PUNPCK
                         TCGTemp* t_dst_addr = arg_temp(op->args[1]);
                         TCGTemp* t_src_addr = arg_temp(op->args[2]);
-
+#else
+                        TCGTemp* t_dst_addr = arg_temp(op->args[0]);
+                        TCGTemp* t_src_addr = arg_temp(op->args[1]);
+#endif
                         uint8_t slice;
                         switch (helper_name[7]) {
                             case 'b':
@@ -7256,8 +7259,13 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
 
                         MARK_TEMP_AS_ALLOCATED(t_dst_addr);
                         MARK_TEMP_AS_ALLOCATED(t_src_addr);
+#if FUZZOLIC_FIX_PUNPCK
                         add_void_call_4(qemu_xmm_punpck, t_dst_addr, t_src_addr,
                                         t_slice, t_lowbytes, op, NULL, tcg_ctx);
+#else
+                        add_void_call_3(qemu_xmm_punpck, t_dst_addr, t_src_addr,
+                                        t_slice, op, NULL, tcg_ctx);
+#endif
                         MARK_TEMP_AS_NOT_ALLOCATED(t_dst_addr);
                         MARK_TEMP_AS_NOT_ALLOCATED(t_src_addr);
                         tcg_temp_free_internal(t_slice);
@@ -7275,63 +7283,6 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
 
                         MARK_TEMP_AS_NOT_ALLOCATED(t_env);
                         MARK_TEMP_AS_NOT_ALLOCATED(t_ptr);
-
-                    } else if (strcmp(helper_name, "punpcklbw_xmm") == 0 ||
-                               strcmp(helper_name, "punpcklwd_xmm") == 0 ||
-                               strcmp(helper_name, "punpckldq_xmm") == 0 ||
-                               strcmp(helper_name, "punpcklqdq_xmm") == 0 ||
-                               strcmp(helper_name, "punpckhbw_xmm") == 0 ||
-                               strcmp(helper_name, "punpckhwd_xmm") == 0 ||
-                               strcmp(helper_name, "punpckhdq_xmm") == 0 ||
-                               strcmp(helper_name, "punpckhqdq_xmm") == 0) {
-
-                        TCGTemp* t_dst_addr = arg_temp(op->args[1]);
-                        TCGTemp* t_src_addr = arg_temp(op->args[2]);
-
-                        uint8_t slice;
-                        switch (helper_name[7]) {
-                            case 'b':
-                                slice = 1;
-                                break;
-                            case 'w':
-                                slice = 2;
-                                break;
-                            case 'd':
-                                slice = 4;
-                                break;
-                            case 'q':
-                                slice = 8;
-                                break;
-                            default:
-                                tcg_abort();
-                        }
-
-                        uint8_t lowbytes;
-                        if (helper_name[6] == 'l') {
-                            lowbytes = 1;
-                        } else if (helper_name[6] == 'h') {
-                            lowbytes = 0;
-                        } else {
-                            tcg_abort();
-                        }
-
-                        TCGTemp* t_slice =
-                            new_non_conflicting_temp(TCG_TYPE_PTR);
-                        tcg_movi(t_slice, (uintptr_t)slice, 0, op, NULL,
-                                 tcg_ctx);
-
-                        TCGTemp* t_lowbytes =
-                            new_non_conflicting_temp(TCG_TYPE_PTR);
-                        tcg_movi(t_lowbytes, lowbytes, 0, op, NULL, tcg_ctx);
-
-                        MARK_TEMP_AS_ALLOCATED(t_dst_addr);
-                        MARK_TEMP_AS_ALLOCATED(t_src_addr);
-                        add_void_call_4(qemu_xmm_punpck, t_dst_addr, t_src_addr,
-                                        t_slice, t_lowbytes, op, NULL, tcg_ctx);
-                        MARK_TEMP_AS_NOT_ALLOCATED(t_dst_addr);
-                        MARK_TEMP_AS_NOT_ALLOCATED(t_src_addr);
-                        tcg_temp_free_internal(t_slice);
-                        tcg_temp_free_internal(t_lowbytes);
 
                     } else if (strcmp(helper_name, "packuswb_xmm") == 0) {
 
@@ -7365,7 +7316,11 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                         uint8_t packed_size;
                         switch (helper_name[7]) {
                             case 'b':
+#if FUZZOLIC_FIX_PUNPCK
                                 packed_size = 1;
+#else
+                                packed_size = 2;
+#endif
                                 break;
                             case 'w':
                                 packed_size = 2;
