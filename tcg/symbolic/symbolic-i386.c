@@ -777,9 +777,9 @@ static void qemu_xmm_op_internal(uintptr_t opkind, uint8_t* dst_addr,
                 build_concat_expr(&dst_expr_addr[i], &dst_addr[i], slice, 0);
 
 #if DEBUG_EXPR_CONSISTENCY
-            printf("XMM_OP_A1:\n");
+            // printf("XMM_OP_A1:\n");
             add_consistency_check_addr(dst_slice, ((uintptr_t)dst_addr) + i, slice, opkind);
-            printf("XMM_OP_B1:\n");
+            // printf("XMM_OP_B1:\n");
             if (opkind == SHL || opkind == SHR || opkind == SAR) {
                 if (slice == 16) {
                     add_consistency_check_addr(src_slice->op1, ((uintptr_t)src_addr), 1, opkind);
@@ -805,15 +805,15 @@ static void qemu_xmm_op_internal(uintptr_t opkind, uint8_t* dst_addr,
 
 #if DEBUG_EXPR_CONSISTENCY
             if (dst_expr_addr[i]) {
-                printf("XMM_OP_A2: addr=%p\n", dst_addr + i);
+                // printf("XMM_OP_A2: addr=%p\n", dst_addr + i);
                 add_consistency_check(dst_expr_addr[i], dst_addr[i], slice, opkind);
             }
             if (src_expr_addr[i]) {
-                printf("XMM_OP_B2:\n");
+                // printf("XMM_OP_B2:\n");
                 if (opkind == SHL || opkind == SHR || opkind == SAR) {
                     add_consistency_check(src_expr_addr[0], src_addr[0], 1, opkind);
                 } else {
-                    printf("ADDR: %p\n", &src_addr[i]);
+                    // printf("ADDR: %p\n", &src_addr[i]);
                     add_consistency_check(src_expr_addr[i], src_addr[i], slice, opkind);
                 }
             }
@@ -1123,7 +1123,7 @@ static void qemu_xmm_pack(uint64_t* dst_addr, uint64_t* src_addr,
     uint8_t opkind =
         UNPACK_2(packed_info) ? SIGNED_SATURATION : UNSIGNED_SATURATION;
 
-#if 1
+#if 0
     printf("Helper qemu_xmm_pack: symbolic op %d packed=%d unpacked=%d dst=%p src=%p\n", opkind, packed_size, unpacked_size, dst_addr, src_addr);
 #endif
 
@@ -1138,12 +1138,16 @@ static void qemu_xmm_pack(uint64_t* dst_addr, uint64_t* src_addr,
 
         unsigned offset        = ((i / packed_size) * unpacked_size);
         Expr*    bytes_to_pack = build_concat_expr(
+#if FUZZOLIC_FIX_XMM_REG_ACCESS
             dst_exprs + offset,  ((uint8_t*)dst_addr) + offset, unpacked_size, 0);
-
+#else
+            src_expr_addr + offset, ((uint8_t*)src_addr) + offset, unpacked_size, 0);
+#endif
+#if 0
         fprintf(stderr, "PACKING AT %p %p\n",  ((uint8_t*)dst_addr),  ((uint8_t*)dst_addr) + offset);
         printf("DATA: %x\n", *((uint16_t*)(((uint8_t*)dst_addr) + offset)));
         add_consistency_check_addr(bytes_to_pack, (((uintptr_t)dst_addr) + offset), unpacked_size, opkind);
-
+#endif
         for (size_t k = 0; k < packed_size; k++) {
 
             Expr* e   = new_expr();
@@ -1161,11 +1165,17 @@ static void qemu_xmm_pack(uint64_t* dst_addr, uint64_t* src_addr,
 
         unsigned offset        = ((i / packed_size) * unpacked_size);
         Expr*    bytes_to_pack = build_concat_expr(
+#if FUZZOLIC_FIX_XMM_REG_ACCESS
             src_expr_addr + offset,  ((uint8_t*)src_addr) + offset, unpacked_size, 0);
-
+#else
+            dst_exprs + offset, dst_addr + offset, unpacked_size, 0);
+#endif
+#if 0
         printf("DATA: %x\n", *((uint16_t*)((uint8_t*)src_addr) + offset));
+#endif
+#if DEBUG_EXPR_CONSISTENCY
         add_consistency_check_addr(bytes_to_pack, (((uintptr_t)src_addr) + offset), unpacked_size, opkind);
-
+#endif
         for (size_t k = 0; k < packed_size; k++) {
 
             Expr* e   = new_expr();
