@@ -813,6 +813,7 @@ static void qemu_xmm_op_internal(uintptr_t opkind, uint8_t* dst_addr,
                 if (opkind == SHL || opkind == SHR || opkind == SAR) {
                     add_consistency_check(src_expr_addr[0], src_addr[0], 1, opkind);
                 } else {
+                    // printf("ADDR: %p\n", &src_addr[i]);
                     add_consistency_check(src_expr_addr[i], src_addr[i], slice, opkind);
                 }
             }
@@ -1123,7 +1124,7 @@ static void qemu_xmm_pack(uint64_t* dst_addr, uint64_t* src_addr,
         UNPACK_2(packed_info) ? SIGNED_SATURATION : UNSIGNED_SATURATION;
 
 #if 0
-    printf("Helper qemu_xmm_pack: symbolic op\n");
+    printf("Helper qemu_xmm_pack: symbolic op %d packed=%d unpacked=%d dst=%p src=%p\n", opkind, packed_size, unpacked_size, dst_addr, src_addr);
 #endif
 
     // make a copy of dest exprs
@@ -1134,30 +1135,57 @@ static void qemu_xmm_pack(uint64_t* dst_addr, uint64_t* src_addr,
 
     // ToDo: check endianness
     for (size_t i = 0; i < XMM_BYTES / 2; i += packed_size) {
+
         unsigned offset        = ((i / packed_size) * unpacked_size);
         Expr*    bytes_to_pack = build_concat_expr(
-            dst_exprs + offset, dst_addr + offset, unpacked_size, 0);
+#if FUZZOLIC_FIX_XMM_REG_ACCESS
+            dst_exprs + offset,  ((uint8_t*)dst_addr) + offset, unpacked_size, 0);
+#else
+            src_expr_addr + offset, ((uint8_t*)src_addr) + offset, unpacked_size, 0);
+#endif
+#if 0
+        fprintf(stderr, "PACKING AT %p %p\n",  ((uint8_t*)dst_addr),  ((uint8_t*)dst_addr) + offset);
+        printf("DATA: %x\n", *((uint16_t*)(((uint8_t*)dst_addr) + offset)));
+        add_consistency_check_addr(bytes_to_pack, (((uintptr_t)dst_addr) + offset), unpacked_size, opkind);
+#endif
         for (size_t k = 0; k < packed_size; k++) {
+
             Expr* e   = new_expr();
             e->opkind = opkind;
             e->op1    = bytes_to_pack;
             SET_EXPR_CONST_OP(e->op2, e->op2_is_const, packed_size);
             SET_EXPR_CONST_OP(e->op3, e->op3_is_const, k);
             dst_expr_addr[i + k] = e;
+
+            // fprintf(stderr, "EXPR ID: %ld\n", GET_EXPR_IDX(e));
         }
     }
 
     for (size_t i = 0; i < (XMM_BYTES / 2); i += packed_size) {
+
         unsigned offset        = ((i / packed_size) * unpacked_size);
         Expr*    bytes_to_pack = build_concat_expr(
-            src_expr_addr + offset, src_addr + offset, unpacked_size, 0);
+#if FUZZOLIC_FIX_XMM_REG_ACCESS
+            src_expr_addr + offset,  ((uint8_t*)src_addr) + offset, unpacked_size, 0);
+#else
+            dst_exprs + offset, dst_addr + offset, unpacked_size, 0);
+#endif
+#if 0
+        printf("DATA: %x\n", *((uint16_t*)((uint8_t*)src_addr) + offset));
+#endif
+#if DEBUG_EXPR_CONSISTENCY
+        add_consistency_check_addr(bytes_to_pack, (((uintptr_t)src_addr) + offset), unpacked_size, opkind);
+#endif
         for (size_t k = 0; k < packed_size; k++) {
+
             Expr* e   = new_expr();
             e->opkind = opkind;
             e->op1    = bytes_to_pack;
             SET_EXPR_CONST_OP(e->op2, e->op2_is_const, packed_size);
             SET_EXPR_CONST_OP(e->op3, e->op3_is_const, k);
             dst_expr_addr[(XMM_BYTES / 2) + i + k] = e;
+
+            // fprintf(stderr, "EXPR ID: %ld\n", GET_EXPR_IDX(e));
         }
     }
 }
