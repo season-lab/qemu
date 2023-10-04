@@ -1138,11 +1138,7 @@ static void qemu_xmm_pack(uint64_t* dst_addr, uint64_t* src_addr,
 
         unsigned offset        = ((i / packed_size) * unpacked_size);
         Expr*    bytes_to_pack = build_concat_expr(
-#if FUZZOLIC_FIX_XMM_REG_ACCESS
             dst_exprs + offset,  ((uint8_t*)dst_addr) + offset, unpacked_size, 0);
-#else
-            src_expr_addr + offset, ((uint8_t*)src_addr) + offset, unpacked_size, 0);
-#endif
 #if 0
         fprintf(stderr, "PACKING AT %p %p\n",  ((uint8_t*)dst_addr),  ((uint8_t*)dst_addr) + offset);
         printf("DATA: %x\n", *((uint16_t*)(((uint8_t*)dst_addr) + offset)));
@@ -1165,11 +1161,7 @@ static void qemu_xmm_pack(uint64_t* dst_addr, uint64_t* src_addr,
 
         unsigned offset        = ((i / packed_size) * unpacked_size);
         Expr*    bytes_to_pack = build_concat_expr(
-#if FUZZOLIC_FIX_XMM_REG_ACCESS
             src_expr_addr + offset,  ((uint8_t*)src_addr) + offset, unpacked_size, 0);
-#else
-            dst_exprs + offset, dst_addr + offset, unpacked_size, 0);
-#endif
 #if 0
         printf("DATA: %x\n", *((uint16_t*)((uint8_t*)src_addr) + offset));
 #endif

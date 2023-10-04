@@ -13,7 +13,7 @@
 #include "config.h"
 #include "symbolic-instrumentation.h"
 
-#include "../../config.h"
+#define DEBUG_CONSISTENCY_CHECK 0
 
 //#define SYMBOLIC_DEBUG
 //#define DISABLE_SOLVER
@@ -7214,13 +7214,8 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                                strcmp(helper_name, "punpckhwd_xmm") == 0 ||
                                strcmp(helper_name, "punpckhdq_xmm") == 0 ||
                                strcmp(helper_name, "punpckhqdq_xmm") == 0) {
-#if FUZZOLIC_FIX_PUNPCK
                         TCGTemp* t_dst_addr = arg_temp(op->args[1]);
                         TCGTemp* t_src_addr = arg_temp(op->args[2]);
-#else
-                        TCGTemp* t_dst_addr = arg_temp(op->args[0]);
-                        TCGTemp* t_src_addr = arg_temp(op->args[1]);
-#endif
                         uint8_t slice;
                         switch (helper_name[7]) {
                             case 'b':
@@ -7259,13 +7254,8 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
 
                         MARK_TEMP_AS_ALLOCATED(t_dst_addr);
                         MARK_TEMP_AS_ALLOCATED(t_src_addr);
-#if FUZZOLIC_FIX_PUNPCK
                         add_void_call_4(qemu_xmm_punpck, t_dst_addr, t_src_addr,
                                         t_slice, t_lowbytes, op, NULL, tcg_ctx);
-#else
-                        add_void_call_3(qemu_xmm_punpck, t_dst_addr, t_src_addr,
-                                        t_slice, op, NULL, tcg_ctx);
-#endif
                         MARK_TEMP_AS_NOT_ALLOCATED(t_dst_addr);
                         MARK_TEMP_AS_NOT_ALLOCATED(t_src_addr);
                         tcg_temp_free_internal(t_slice);
@@ -7316,11 +7306,7 @@ int        parse_translation_block(TranslationBlock* tb, uintptr_t tb_pc,
                         uint8_t packed_size;
                         switch (helper_name[7]) {
                             case 'b':
-#if FUZZOLIC_FIX_PUNPCK
                                 packed_size = 1;
-#else
-                                packed_size = 2;
-#endif
                                 break;
                             case 'w':
                                 packed_size = 2;
