@@ -503,9 +503,9 @@ static inline size_t get_opkind_width(OPKIND opkind)
 }
 
 #define MAX_PRINT_CHECK (1024 * 1024)
-uint8_t            printed[MAX_PRINT_CHECK];
 static inline void print_expr_internal(Expr* expr, uint8_t reset)
 {
+    static uint8_t printed[MAX_PRINT_CHECK];
     if (reset)
         for (size_t i = 0; i < MAX_PRINT_CHECK; i++)
             printed[i] = 0;
